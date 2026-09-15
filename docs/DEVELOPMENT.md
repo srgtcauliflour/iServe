@@ -6,9 +6,10 @@ The initial repository contained only planning documents and six v0.1 issues. Th
 change starts issue #1 with a SwiftUI iPhone/iPad dashboard, an injectable
 `ServerCoordinator`/`ServerService` lifecycle boundary, unit tests, and CI.
 
-**This is not a working server yet.** Choose Folder and Start Server are disabled
-and labelled as future work. No filesystem access, listener, fabricated endpoint,
-PHP runtime, WebDAV dependency or background mode is included.
+**This is not a working server yet.** Issue #2 implementation adds Files folder
+selection, local bookmark persistence, stale-bookmark refresh, Retry and Forget.
+Root metadata is validated under temporary scoped access. Start Server remains
+disabled; no listener, fabricated endpoint, PHP or WebDAV runtime is included.
 
 ## Build
 
@@ -45,6 +46,7 @@ App icons and distribution metadata are not included in this development bootstr
 
 - `App/`: dashboard, observable coordinator, active-scene lifecycle forwarding.
 - `ServerCore/`: injectable transport ownership boundary; no transport yet.
+- `FileSystem/`: scoped root validation, saved bookmarks and provider error recovery.
 - Other top-level module directories explain ownership for subsequent issues.
 - `Tests/iServeTests/`: coordinator shutdown and initial-state tests.
 
@@ -57,22 +59,31 @@ The bootstrap intentionally does not invent a synchronous network-start contract
 ## Manual acceptance (macOS/iOS required)
 
 1. Generate the project and launch on both iPhone and iPad simulators.
-2. Confirm dashboard, empty folder state, stopped status and preview explanation.
-3. Confirm Choose Folder and Start Server are disabled; no endpoint is advertised.
+2. Confirm dashboard and stopped status. Choose a folder under On My iPhone/iPad;
+   confirm its name appears and no absolute path is shown.
+3. Repeat with iCloud Drive and an installed third-party Files provider. Cancel the
+   picker and confirm the previous folder remains unchanged. Start Server remains
+   disabled; no endpoint is advertised.
 4. Rotate each simulator and enable the largest accessibility text size. All
    explanatory text and controls must remain reachable by scrolling.
 5. With VoiceOver enabled, verify headings and disabled controls are understandable.
 6. Leave the app and return. Status remains stopped; no automatic start occurs.
+7. Terminate and relaunch. Confirm the folder restores from its bookmark. Remove or
+   revoke the folder/provider and relaunch; expect a recoverable message. Reconnect
+   the provider and use Retry, or reselect the folder.
+8. Use Forget Folder, relaunch, and confirm no selection is restored. The folder and
+   its contents must remain intact. Verify stale bookmark renewal on a real device
+   when the provider exposes a stale bookmark; unit tests cover this deterministically.
 
 A clean simulator build and these manual checks remain part of issue #1's gate.
-Coordinator tests do not prove device lifecycle or filesystem/network correctness.
+Coordinator/provider-double tests do not prove actual Files-provider or network correctness.
 The development environment used to author this change is Linux without Swift or
 Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
 
 ## Next tasks
 
-1. Issue #2: Files picker, bookmark restoration and balanced scoped-access lifetimes
-   with recoverable errors and tests. Replace the disabled folder action.
+1. Issue #2: implementation and deterministic tests added; run the real Files-provider
+   acceptance checklist above before closing the issue.
 2. Issue #3: secure path resolver and hostile-path/symlink corpus, before file access.
 3. Issue #4: bounded HTTP parser and Network.framework listener, including readiness,
    cancellation, timeouts and connection limits. Replace the disabled start action.

@@ -35,6 +35,6 @@ PHP and WebDAV deliberately come after the HTTP/filesystem/streaming foundations
 ## Development bootstrap
 
 The app foundation now includes a SwiftUI dashboard, coordinator lifecycle boundary,
-unit test target and macOS CI. **File selection and HTTP serving are not implemented
-in this bootstrap.** See [Development guide](docs/DEVELOPMENT.md) for Xcode project
+unit test target and macOS CI. Files folder selection, saved bookmarks and recoverable folder-access errors are
+implemented. **HTTP serving is not implemented yet.** See [Development guide](docs/DEVELOPMENT.md) for Xcode project
 generation, simulator tests, validation limits and the next implementation tasks.

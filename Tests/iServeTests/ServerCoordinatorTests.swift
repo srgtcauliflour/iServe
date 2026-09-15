@@ -31,6 +31,34 @@ final class ServerCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testFolderReplacementStopsServiceBeforeAcquiringNewRoot() {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        access.onStart = { XCTAssertEqual(service.stopCount, 1) }
+        coordinator.selectFolder(access.url)
+        XCTAssertEqual(folders.selectedURL, access.url)
+        coordinator.forgetFolder()
+        XCTAssertEqual(service.stopCount, 2)
+        XCTAssertNil(folders.selectedURL)
+    }
+
+    @MainActor
+    func testSceneExitRetainsBookmarkWithoutHoldingAnyScope() {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+        coordinator.leaveActiveScene()
+        XCTAssertTrue(folders.hasSavedFolder)
+        XCTAssertEqual(access.events.filter { $0 == "start" }.count, 1)
+        XCTAssertEqual(access.events.filter { $0 == "stop" }.count, 1)
+        XCTAssertEqual(service.stopCount, 2)
+    }
+
+    @MainActor
     func testProductionBootstrapCanStopBeforeStart() {
         let coordinator = ServerCoordinator()
         coordinator.stop()

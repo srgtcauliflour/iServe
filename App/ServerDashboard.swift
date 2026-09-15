@@ -1,6 +1,9 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ServerDashboard: View {
+    @State private var isChoosingFolder = false
+    @State private var didRestore = false
     let coordinator: ServerCoordinator
 
     var body: some View {
@@ -25,14 +28,27 @@ struct ServerDashboard: View {
                 }
 
                 Section {
-                    Label("No folder selected", systemImage: "folder")
-                    Button("Choose Folder", systemImage: "folder.badge.plus") {}
-                        .disabled(true)
-                        .accessibilityHint("Folder selection is not available in this development build.")
+                    Label(coordinator.folders.folderName ?? "No folder selected", systemImage: "folder")
+                    Button("Choose Folder", systemImage: "folder.badge.plus") {
+                        isChoosingFolder = true
+                    }
+                    if coordinator.folders.hasSavedFolder {
+                        Button("Retry Saved Folder", systemImage: "arrow.clockwise") {
+                            coordinator.restoreFolder()
+                        }
+                        Button("Forget Folder", role: .destructive) {
+                            coordinator.forgetFolder()
+                        }
+                    }
+                    if let message = coordinator.folders.errorMessage {
+                        Label(message, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Folder error: \(message)")
+                    }
                 } header: {
                     Text("Shared folder")
                 } footer: {
-                    Text("Files folder access is the next development milestone.")
+                    Text("The selected folder is remembered on this device. You can change or forget it at any time.")
                 }
 
                 Section {
@@ -40,7 +56,7 @@ struct ServerDashboard: View {
                     LabeledContent("Status", value: "Stopped")
                     Button("Start Server", systemImage: "play.fill") {}
                         .disabled(true)
-                        .accessibilityHint("Requires folder access and the HTTP listener, coming in later milestones.")
+                        .accessibilityHint("The HTTP listener is not available in this development build.")
                 } header: {
                     Text("Server")
                 } footer: {
@@ -56,11 +72,26 @@ struct ServerDashboard: View {
                 }
 
                 Section("Development preview") {
-                    Text("This build establishes the app foundation. It does not yet read or serve files.")
+                    Text("Folder selection is available. HTTP serving is still in development.")
                         .font(.footnote)
                 }
             }
             .navigationTitle("iServe")
+            .task {
+                guard !didRestore else { return }
+                didRestore = true
+                coordinator.restoreFolder()
+            }
+            .fileImporter(isPresented: $isChoosingFolder,
+                          allowedContentTypes: [.folder],
+                          allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first { coordinator.selectFolder(url) }
+                case .failure(let error):
+                    coordinator.folders.reportPickerFailure(error)
+                }
+            }
         }
     }
 }

@@ -18,6 +18,7 @@ targets:
     sources:
       - App
       - ServerCore
+      - FileSystem
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.srgtcauliflour.iServe
