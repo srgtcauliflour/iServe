@@ -31,3 +31,10 @@ See [`docs/MASTER-SPEC.md`](docs/MASTER-SPEC.md), [`docs/ROADMAP.md`](docs/ROADM
 `Choose Files folder → Start Server → another LAN device opens the displayed URL → index.html is served correctly.`
 
 PHP and WebDAV deliberately come after the HTTP/filesystem/streaming foundations are proven.
+
+## Development bootstrap
+
+The app foundation now includes a SwiftUI dashboard, coordinator lifecycle boundary,
+unit test target and macOS CI. **File selection and HTTP serving are not implemented
+in this bootstrap.** See [Development guide](docs/DEVELOPMENT.md) for Xcode project
+generation, simulator tests, validation limits and the next implementation tasks.
