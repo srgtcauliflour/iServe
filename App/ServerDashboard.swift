@@ -231,7 +231,7 @@ private struct RequestLogEntryRow: View {
                 Spacer()
                 Text("\(entry.status)")
                     .font(.callout.monospacedDigit())
-                    .foregroundStyle(entry.status < 400 ? .secondary : .orange)
+                    .foregroundStyle(entry.status < 400 ? Color.secondary : Color.orange)
             }
             Text(entry.date, style: .time)
                 .font(.caption2)
