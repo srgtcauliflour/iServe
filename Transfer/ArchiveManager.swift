@@ -37,7 +37,10 @@ enum ArchiveManager {
     /// already exist; `items` may mix files and directories from the same
     /// parent folder.
     static func createArchive(containing items: [URL], at destination: URL) throws {
-        guard let archive = Archive(url: destination, accessMode: .create) else {
+        let archive: Archive
+        do {
+            archive = try Archive(url: destination, accessMode: .create)
+        } catch {
             throw ArchiveError.cannotCreateArchive
         }
         for item in items {
@@ -50,7 +53,10 @@ enum ArchiveManager {
     /// — without writing any file — if any entry is a symlink or would
     /// resolve outside `destination`.
     static func extractArchive(at source: URL, to destination: URL) throws {
-        guard let archive = Archive(url: source, accessMode: .read) else {
+        let archive: Archive
+        do {
+            archive = try Archive(url: source, accessMode: .read)
+        } catch {
             throw ArchiveError.cannotOpenArchive
         }
         let root = destination.resolvingSymlinksInPath().standardizedFileURL
@@ -79,7 +85,7 @@ enum ArchiveManager {
         let children = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
         guard !children.isEmpty else {
             let path = relativePath(of: url, relativeTo: base) + "/"
-            try archive.addEntry(with: path, type: .directory, uncompressedSize: 0, provider: { _, _ in Data() })
+            try archive.addEntry(with: path, type: .directory, uncompressedSize: Int64(0), provider: { _, _ in Data() })
             return
         }
         for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {

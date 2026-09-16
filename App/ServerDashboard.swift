@@ -7,6 +7,7 @@ struct ServerDashboard: View {
     @State private var didRestore = false
     @State private var didCopyEndpoint = false
     @State private var isShowingBrowser = false
+    @State private var isShowingFileManager = false
     @State private var requestCount = 0
     @State private var bytesTransferred = 0
     @State private var recentEntries: [RequestLogEntry] = []
@@ -96,6 +97,9 @@ struct ServerDashboard: View {
                     InAppBrowserSheet(url: endpointURL)
                 }
             }
+            .sheet(isPresented: $isShowingFileManager) {
+                FileManagerScreen(model: FileManagerViewModel(folders: coordinator.folders))
+            }
         }
     }
 
@@ -153,6 +157,11 @@ struct ServerDashboard: View {
                     coordinator.forgetFolder()
                 }
                 .disabled(isBusy || isRunning)
+            }
+            if coordinator.folders.selectedURL != nil {
+                Button("Open File Manager", systemImage: "folder.badge.gearshape") {
+                    isShowingFileManager = true
+                }
             }
             if let message = coordinator.folders.errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle")

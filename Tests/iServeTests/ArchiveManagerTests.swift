@@ -95,7 +95,7 @@ final class ArchiveManagerTests: XCTestCase {
             try archive.addEntry(
                 with: "../outside.txt",
                 type: .file,
-                uncompressedSize: 4,
+                uncompressedSize: Int64(4),
                 provider: { _, _ in Data("evil".utf8) }
             )
         }
@@ -116,7 +116,7 @@ final class ArchiveManagerTests: XCTestCase {
             try archive.addEntry(
                 with: "sub/../../outside2.txt",
                 type: .file,
-                uncompressedSize: 4,
+                uncompressedSize: Int64(4),
                 provider: { _, _ in Data("evil".utf8) }
             )
         }
@@ -153,10 +153,7 @@ final class ArchiveManagerTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeRawArchive(at url: URL, _ populate: (Archive) throws -> Void) throws {
-        guard let archive = Archive(url: url, accessMode: .create) else {
-            XCTFail("failed to create test archive")
-            return
-        }
+        let archive = try Archive(url: url, accessMode: .create)
         try populate(archive)
     }
 }
