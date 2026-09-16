@@ -78,6 +78,7 @@ final class LiveServerServiceTests: XCTestCase {
         XCTAssertEqual(access.events, ["start"])
     }
 
+    @MainActor
     private func waitForSnapshot(
         _ log: RequestLog,
         expectingAtLeast count: Int,
