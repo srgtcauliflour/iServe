@@ -9,6 +9,10 @@ on:
         description: "Also build a signed .ipa for device testing"
         type: boolean
         default: false
+      create_release:
+        description: "Publish the signed .ipa as a GitHub release (requires build_ipa)"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -38,6 +42,11 @@ jobs:
     needs: ios
     runs-on: macos-15
     timeout-minutes: 30
+    # contents: write only so this job can publish a GitHub release when
+    # create_release is set - the workflow default (contents: read) still
+    # applies to every other job.
+    permissions:
+      contents: write
     env:
       KEYCHAIN_PATH: /tmp/ios-signing.keychain-db
       KEYCHAIN_PASSWORD: temporary-ci-keychain-password
@@ -165,6 +174,29 @@ jobs:
           name: iServe-signed-ipa
           path: build/export/*.ipa
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: inputs.create_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*([0-9.]+).*/\1/p' project.yml | head -n1)
+          if [ -z "$version" ]; then
+            echo "Could not read MARKETING_VERSION from project.yml" >&2
+            exit 1
+          fi
+          tag="v${version}"
+          ipa_path=$(ls build/export/*.ipa | head -n1)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; uploading/replacing the .ipa asset."
+            gh release upload "$tag" "$ipa_path" --clobber
+          else
+            gh release create "$tag" "$ipa_path" \
+              --target "${{ github.sha }}" \
+              --title "iServe $tag" \
+              --notes "Signed .ipa build for iServe $tag."
+          fi
 
       - name: Remove temporary keychain
         if: always()
