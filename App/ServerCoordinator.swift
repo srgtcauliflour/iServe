@@ -86,10 +86,7 @@ final class ServerCoordinator {
                 let host = ipAddressProvider() ?? "localhost"
                 state = .running(endpoint: "http://\(host):\(port)/")
             } catch {
-                // Never surface the underlying error's description: it may
-                // originate from FileSystem/Network.framework and could
-                // include a local path or other implementation detail.
-                state = .error("The server could not be started. Try again.")
+                state = .error(Self.sanitizedStartFailureMessage(for: error))
             }
         }
     }
@@ -101,5 +98,27 @@ final class ServerCoordinator {
 
     private func folderState() -> State {
         folders.selectedURL == nil ? .noFolder : .ready
+    }
+
+    /// Maps a start() failure to a message safe to show a remote-free, local
+    /// user: specific enough to say which layer failed, but never the raw
+    /// error description, which may originate from FileSystem/Network.framework
+    /// and could include a local path or other implementation detail.
+    private static func sanitizedStartFailureMessage(for error: Error) -> String {
+        switch error {
+        case LiveServerService.ServiceError.noFolderSelected:
+            return "No folder is selected."
+        case LiveServerService.ServiceError.accessDenied:
+            return "Could not access the selected folder. Try choosing it again."
+        case let serverError as HTTPServer.ServerError:
+            switch serverError {
+            case .alreadyRunning:
+                return "The server is already running."
+            case .listenerFailed(let reason):
+                return "The network listener failed to start (\(reason)). If iServe just asked for Local Network access, allow it in Settings > iServe and try again."
+            }
+        default:
+            return "The server could not be started. Try again."
+        }
     }
 }

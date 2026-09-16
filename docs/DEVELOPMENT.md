@@ -146,6 +146,27 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
    pass itself — this has not been validated against an actual Files provider
    root or a second physical LAN device, only CI simulators.
 
+   Real-device testing found two bugs simulators didn't catch:
+   - Folder selection silently failed to complete (the system picker never
+     dismissed) on a build that was archived unsigned and resigned after the
+     fact by a third-party tool, across every location/provider tried. A
+     properly signed build (`xcodebuild archive` + `-exportArchive` with a
+     real certificate/profile) fixed it outright — not something to chase
+     further in the app's own code, but a hard requirement for any future
+     device-test build to be produced through a real signing path, never an
+     unsigned-then-resigned one.
+   - `Start Server` failed immediately with no listener ever coming up: the
+     project never declared `NSLocalNetworkUsageDescription`
+     (`project.yml`'s `INFOPLIST_KEY_NSLocalNetworkUsageDescription`), which
+     iOS requires before it will even prompt for the Local Network
+     permission a listening `NWListener` needs on a real device — CI's
+     simulators don't enforce this the same way, so it only surfaced here.
+     `ServerCoordinator`'s error mapping was also widened
+     (`sanitizedStartFailureMessage`) to name which layer failed
+     (no-folder/access-denied/listener-failed) instead of one generic
+     message, so the next real-device failure is diagnosable from the
+     dashboard alone.
+
 PHP, WebDAV, archives and public-reachability tooling stay in their agreed later
 milestones. Do not close the v0.1 acceptance gate until a real second LAN device
 loads the selected site and traversal/large-file checks pass.

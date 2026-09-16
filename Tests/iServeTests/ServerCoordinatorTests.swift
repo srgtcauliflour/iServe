@@ -132,6 +132,42 @@ final class ServerCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testListenerFailureNamesTheFailureWithoutLeakingItsRawDescription() async throws {
+        let service = RecordingServerService()
+        service.startResult = .failure(HTTPServer.ServerError.listenerFailed("POSIXErrorCode(48): Address already in use"))
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+
+        guard case .error(let message) = coordinator.state else {
+            return XCTFail("expected an error state, got \(coordinator.state)")
+        }
+        XCTAssertTrue(message.contains("Local Network"))
+    }
+
+    @MainActor
+    func testAccessDeniedFailureNamesFolderAccessRatherThanAGenericMessage() async throws {
+        let service = RecordingServerService()
+        service.startResult = .failure(LiveServerService.ServiceError.accessDenied)
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+
+        guard case .error(let message) = coordinator.state else {
+            return XCTFail("expected an error state, got \(coordinator.state)")
+        }
+        XCTAssertTrue(message.contains("access the selected folder"))
+    }
+
+    @MainActor
     func testStoppingAfterRunningStopsTheServiceAndReturnsToUnavailable() async throws {
         let service = RecordingServerService()
         let access = StubFolderAccess()
