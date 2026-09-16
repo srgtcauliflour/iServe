@@ -85,7 +85,7 @@ now uses in place of `UnconfiguredServerService`.
 
 - `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
   `start(allowUploads:)` acquires scoped access to the currently selected
-  folder via `FolderRootManager.beginServingAccess()` — for the entire
+  folder via `FolderRootManager.beginAccess()` — for the entire
   server session, not just validation — builds an `HTTPServer` rooted there
   with a real `StaticFileHandler`/`SecurePathResolver` (passing
   `allowUploads` straight through to the handler) and a fresh `RequestLog`,

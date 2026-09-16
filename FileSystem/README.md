@@ -27,14 +27,18 @@ future handler (issues #5+) must call `resolve(requestPath:)` and treat any thro
 `ResolutionError` as a generic 400/403/404 without surfacing the case internals or
 any local path to the remote client.
 
-`beginServingAccess()`/`endServingAccess(_:)` (issue #6) give a server session
+`beginAccess()`/`endAccess(_:)` (issue #6) give any independent access holder
 its own scope lifetime, separate from selection/restoration's transient
-validation scope: `beginServingAccess()` acquires scope for the *currently*
-selected root and returns that exact URL for the caller (`LiveServerService`)
-to retain and serve through; `endServingAccess(_:)` releases scope for that
-same URL, not whatever happens to be selected by the time serving stops (the
-selection may have changed since). `LiveServerService` must release access
-only after its `HTTPServer` has cancelled its listener and every connection —
-never before. Do not use a remembered `selectedURL` alone as proof that scope
-is currently held; only a session holding a URL returned by
-`beginServingAccess()` may treat it as scoped.
+validation scope: `beginAccess()` acquires scope for the *currently*
+selected root and returns that exact URL for the caller to retain and use;
+`endAccess(_:)` releases scope for that same URL, not whatever happens to be
+selected by the time the caller is done (the selection may have changed
+since). `LiveServerService` is one such caller — it must release access only
+after its `HTTPServer` has cancelled its listener and every connection, never
+before. The underlying security-scoped access is reference-counted, so more
+than one independent caller (for example `LiveServerService` serving and
+`App/FileManagerScreen.swift` browsing the same root locally) may hold it at
+once; each just needs its own matching `beginAccess()`/`endAccess(_:)` pair.
+Do not use a remembered `selectedURL` alone as proof that scope is currently
+held; only a caller holding a URL returned by `beginAccess()` may treat it as
+scoped.

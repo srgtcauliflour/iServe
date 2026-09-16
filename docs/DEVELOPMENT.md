@@ -130,7 +130,7 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
 5. Issue #6 (partial): `ServerCore/LiveServerService.swift` replaces
    `UnconfiguredServerService` — it acquires scoped access to the selected
    folder for the whole server session via
-   `FolderRootManager.beginServingAccess()`/`endServingAccess(_:)`, builds a
+   `FolderRootManager.beginAccess()`/`endAccess(_:)`, builds a
    real `HTTPServer(router: StaticFileHandler(...))` over that root, and
    releases scope only after the listener/connections have cancelled.
    `ServerCore/ServerService.swift`'s protocol now includes `start()`.
