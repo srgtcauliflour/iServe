@@ -20,8 +20,24 @@ response sets both to the requested range instead (see
 `.partialContent`), so this reader never touches the rest of the file even
 though the file handle it opened could seek anywhere in it.
 
-Streaming ZIP generation is still v0.3 (see `docs/ROADMAP.md`) and builds on
-this reader rather than replacing it.
+`ArchiveManager` (v0.3, file manager) creates and extracts ZIP archives for
+the native in-app file manager screen — Apple has no first-party ZIP
+archive API, and `AGENTS.md`'s "no arbitrary shell execution" plus the iOS
+sandbox rule out shelling out to `zip`/`unzip`/`ditto`, so this wraps
+[ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (MIT-licensed,
+pure Swift, added via Swift Package Manager) — the first third-party
+dependency in this project. `createArchive(containing:at:)` recursively
+adds files/directories preserving structure; `extractArchive(at:to:)`
+defends against "Zip Slip" independently of whatever protection
+ZIPFoundation itself applies, since iServe already accepts remote uploads
+and a malicious client could upload a crafted `.zip` for later local
+extraction: every entry's destination is walked and containment-checked one
+component at a time, the same way `FileSystem/SecurePathResolver.swift`
+checks a remote request path, and any symlink entry is refused outright
+rather than materialized. Tested directly in
+`Tests/iServeTests/ArchiveManagerTests.swift` — byte-exact round trips,
+nested/empty directories, multi-item selections, and rejection of both a
+traversal entry path and a symlink entry without writing anything.
 
 `Transfer/ByteRangeParser.swift` (v0.3) parses an HTTP `Range` request
 header (RFC 7233 §2.1) against a known file size into a validated,
