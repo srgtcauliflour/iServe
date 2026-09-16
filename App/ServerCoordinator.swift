@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 @MainActor
 @Observable
@@ -17,20 +18,32 @@ final class ServerCoordinator {
     let folders: FolderRootManager
     private let service: any ServerService
     private let ipAddressProvider: @Sendable () -> String?
+    private let deviceNameProvider: @Sendable () -> String
+    private let bonjourAdvertiser: BonjourAdvertiser
 
     init(
         service: any ServerService = UnconfiguredServerService(),
         folders: FolderRootManager = FolderRootManager(),
-        ipAddressProvider: @escaping @Sendable () -> String? = LocalNetworkAddress.preferredIPv4Address
+        ipAddressProvider: @escaping @Sendable () -> String? = LocalNetworkAddress.preferredIPv4Address,
+        deviceNameProvider: @escaping @Sendable () -> String = { UIDevice.current.name },
+        bonjourAdvertiser: BonjourAdvertiser = BonjourAdvertiser()
     ) {
         self.service = service
         self.folders = folders
         self.ipAddressProvider = ipAddressProvider
+        self.deviceNameProvider = deviceNameProvider
+        self.bonjourAdvertiser = bonjourAdvertiser
         self.state = folders.selectedURL == nil ? .noFolder : .ready
     }
 
     /// The current session's sanitized request telemetry, or `nil` when not running.
     var requestLog: RequestLog? { service.requestLog }
+
+    /// Bonjour/mDNS advertisement state for the current session — purely a
+    /// discoverability convenience alongside `state`'s IP-based endpoint,
+    /// never required for it: a `.failed` advertisement never affects
+    /// whether the server itself is reachable by address.
+    var bonjourState: BonjourAdvertiser.State { bonjourAdvertiser.state }
 
     var statusTitle: String {
         switch state {
@@ -45,26 +58,26 @@ final class ServerCoordinator {
 
     func selectFolder(_ url: URL) {
         // Future active transfers must stop before replacing their root authority.
-        service.stop()
+        stopServing()
         folders.select(url)
         state = folderState()
     }
 
     func restoreFolder() {
-        service.stop()
+        stopServing()
         folders.restore()
         state = folderState()
     }
 
     func forgetFolder() {
-        service.stop()
+        stopServing()
         folders.forget()
         state = folderState()
     }
 
     /// Stop on loss of active scene state. Returning to the app never restarts serving.
     func leaveActiveScene() {
-        service.stop()
+        stopServing()
         state = .unavailable
     }
 
@@ -88,6 +101,7 @@ final class ServerCoordinator {
                 let port = try await service.start()
                 let host = ipAddressProvider() ?? "localhost"
                 state = .running(endpoint: "http://\(host):\(port)/")
+                bonjourAdvertiser.start(name: deviceNameProvider(), port: Int(port))
             } catch {
                 state = .error(Self.sanitizedStartFailureMessage(for: error))
             }
@@ -95,8 +109,13 @@ final class ServerCoordinator {
     }
 
     func stop() {
-        service.stop()
+        stopServing()
         state = .unavailable
+    }
+
+    private func stopServing() {
+        service.stop()
+        bonjourAdvertiser.stop()
     }
 
     private func folderState() -> State {

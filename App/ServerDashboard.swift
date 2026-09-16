@@ -188,6 +188,17 @@ struct ServerDashboard: View {
                     UIPasteboard.general.string = endpoint
                     didCopyEndpoint = true
                 }
+                if case .published(let name) = coordinator.bonjourState {
+                    Label(name, systemImage: "dot.radiowaves.left.and.right")
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Also discoverable on the local network as \(name)")
+                }
+                DisclosureGroup("Show QR Code") {
+                    QRCodeView(string: endpoint)
+                        .frame(maxWidth: 220)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity)
+                }
                 Text("Open this address from another device on the same network.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

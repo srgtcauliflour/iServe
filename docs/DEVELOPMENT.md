@@ -215,12 +215,25 @@ already pass in CI).
    `Handlers/StaticFileHandler.swift` redirects (`301`) a directory request
    without a trailing slash first, so relative links resolve correctly.
    `ServerCore/HTTPResponse.swift` gained `.redirect(to:)` and `.html(_:)`
-   constructors for this. See `Handlers/README.md`. Not yet done from v0.2's
-   list: network interface discovery/IPv4+IPv6 presentation beyond the
-   single preferred address `Networking/LocalNetworkAddress.swift` already
-   finds, Bonjour/mDNS advertisement, QR/copy/share connection helpers
-   beyond the existing Copy button, browser uploads, and the public-address-
-   vs-reachability distinction.
+   constructors for this. See `Handlers/README.md`.
+2. Bonjour/mDNS advertisement + QR connection helper: `Networking/BonjourAdvertiser.swift`
+   publishes the running session as `_http._tcp.` via `NetService`, so a
+   nearby device can find it by name; `App/ServerCoordinator.swift` starts
+   it once `service.start()` returns a port and stops it everywhere it
+   stops the underlying service, exposed as `bonjourState` for the
+   dashboard. `App/QRCodeView.swift` renders the endpoint as a scannable
+   QR code on-device via CoreImage (`CIFilter.qrCodeGenerator`), shown in
+   a "Show QR Code" disclosure next to the existing Copy Address button.
+   `project.yml` gained `INFOPLIST_KEY_NSBonjourServices: _http._tcp.`
+   alongside the existing `NSLocalNetworkUsageDescription` — Bonjour
+   advertisement requires both. See `Networking/README.md` for why that
+   Info.plist setting is unverified by CI and what to try if a real-device
+   test shows it isn't actually advertising.
+
+Not yet done from v0.2's list: network interface discovery/IPv4+IPv6
+presentation beyond the single preferred address
+`Networking/LocalNetworkAddress.swift` already finds, browser uploads, and
+the public-address-vs-reachability distinction.
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

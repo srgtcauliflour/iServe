@@ -185,6 +185,45 @@ final class ServerCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testStartingTheServerBeginsBonjourAdvertisement() async throws {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(
+            service: service, folders: folders, ipAddressProvider: { "192.0.2.1" },
+            deviceNameProvider: { "Test Device" }
+        )
+        coordinator.selectFolder(access.url)
+        XCTAssertEqual(coordinator.bonjourState, .idle)
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+
+        // Advertisement is asynchronous past this point (system Bonjour
+        // registration), but start() moves it out of .idle synchronously -
+        // the same signal the dashboard uses to know serving has begun.
+        XCTAssertNotEqual(coordinator.bonjourState, .idle)
+    }
+
+    @MainActor
+    func testStoppingReturnsBonjourAdvertisementToIdle() async throws {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(
+            service: service, folders: folders, ipAddressProvider: { "192.0.2.1" },
+            deviceNameProvider: { "Test Device" }
+        )
+        coordinator.selectFolder(access.url)
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+        XCTAssertNotEqual(coordinator.bonjourState, .idle)
+
+        coordinator.stop()
+        XCTAssertEqual(coordinator.bonjourState, .idle)
+    }
+
+    @MainActor
     private func waitUntil(
         timeout: TimeInterval = 2,
         _ condition: @escaping () -> Bool,
