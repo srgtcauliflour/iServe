@@ -229,6 +229,27 @@ already pass in CI).
    advertisement requires both. See `Networking/README.md` for why that
    Info.plist setting is unverified by CI and what to try if a real-device
    test shows it isn't actually advertising.
+3. In-app browser: `App/InAppBrowserView.swift`'s `InAppBrowserSheet` wraps
+   `WKWebView` to preview the running server's own endpoint without leaving
+   iServe or retyping the address into Safari — no address bar, no history,
+   just the one URL it's given, a Reload button, and an "Open in Safari"
+   fallback (`openURL`). Opened via a new "Preview in App" button in
+   `ServerDashboard`'s connections section, next to Copy Address. Its
+   `WKNavigationDelegate` (`WebView.Coordinator`) follows the same pattern
+   as `BonjourAdvertiser`'s `NetServiceDelegate`: `nonisolated` methods
+   that extract only `Sendable` values before hopping to MainActor, this
+   time via `WebViewLoadState` (a `@MainActor @Observable` class) rather
+   than `@Binding`, since a `Binding`'s wrapped get/set closures aren't
+   guaranteed `Sendable`. Loads the endpoint's plain `http://` URL as-is —
+   relies on iOS's long-standing App Transport Security exemption for
+   literal-IP-address hosts (the endpoint is always a dotted-quad IPv4
+   address, never a resolvable hostname) rather than adding an ATS
+   exception to `project.yml`; unverified by CI, same caveat as the
+   Bonjour Info.plist setting above. If a real-device test shows the
+   preview failing to load specifically due to ATS, the fix is
+   `NSAppTransportSecurity` → `NSAllowsLocalNetworking: true` in Info.plist
+   (also likely needs `project.yml`'s `info:`/`properties:` block, per the
+   same reasoning as the Bonjour services array).
 
 Not yet done from v0.2's list: network interface discovery/IPv4+IPv6
 presentation beyond the single preferred address

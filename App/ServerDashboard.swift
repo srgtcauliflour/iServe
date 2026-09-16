@@ -6,6 +6,7 @@ struct ServerDashboard: View {
     @State private var isChoosingFolder = false
     @State private var didRestore = false
     @State private var didCopyEndpoint = false
+    @State private var isShowingBrowser = false
     @State private var requestCount = 0
     @State private var bytesTransferred = 0
     @State private var recentEntries: [RequestLogEntry] = []
@@ -37,6 +38,10 @@ struct ServerDashboard: View {
     private var endpoint: String? {
         if case .running(let endpoint) = coordinator.state { return endpoint }
         return nil
+    }
+
+    private var endpointURL: URL? {
+        endpoint.flatMap(URL.init(string:))
     }
 
     private var serverStatusText: String {
@@ -79,6 +84,11 @@ struct ServerDashboard: View {
                     if let url = urls.first { coordinator.selectFolder(url) }
                 case .failure(let error):
                     coordinator.folders.reportPickerFailure(error)
+                }
+            }
+            .sheet(isPresented: $isShowingBrowser) {
+                if let endpointURL {
+                    InAppBrowserSheet(url: endpointURL)
                 }
             }
         }
@@ -187,6 +197,9 @@ struct ServerDashboard: View {
                 Button(didCopyEndpoint ? "Copied" : "Copy Address", systemImage: "doc.on.doc") {
                     UIPasteboard.general.string = endpoint
                     didCopyEndpoint = true
+                }
+                Button("Preview in App", systemImage: "safari") {
+                    isShowingBrowser = true
                 }
                 if case .published(let name) = coordinator.bonjourState {
                     Label(name, systemImage: "dot.radiowaves.left.and.right")
