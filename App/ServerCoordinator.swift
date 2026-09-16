@@ -18,14 +18,19 @@ final class ServerCoordinator {
     let folders: FolderRootManager
     private let service: any ServerService
     private let ipAddressProvider: @Sendable () -> String?
-    private let deviceNameProvider: @Sendable () -> String
+    private let deviceNameProvider: @MainActor @Sendable () -> String
     private let bonjourAdvertiser: BonjourAdvertiser
 
     init(
         service: any ServerService = UnconfiguredServerService(),
         folders: FolderRootManager = FolderRootManager(),
         ipAddressProvider: @escaping @Sendable () -> String? = LocalNetworkAddress.preferredIPv4Address,
-        deviceNameProvider: @escaping @Sendable () -> String = { UIDevice.current.name },
+        // @MainActor, unlike ipAddressProvider above: UIDevice.current is
+        // itself main-actor-isolated, so a plain @Sendable closure wrapping
+        // it can't reference it at all. Calling it stays synchronous since
+        // every call site here is already MainActor-isolated (inside
+        // start()'s Task, which inherits that isolation).
+        deviceNameProvider: @escaping @MainActor @Sendable () -> String = { UIDevice.current.name },
         bonjourAdvertiser: BonjourAdvertiser = BonjourAdvertiser()
     ) {
         self.service = service
