@@ -292,6 +292,33 @@ improvements, and transfer/request/client statistics beyond the existing
 request log — were deliberately not blocking; pick them up under v0.3 if
 they turn out to matter there rather than reopening v0.2.
 
+## v0.3 progress
+
+1. HTTP Range/206 and resumable downloads, `docs/ROADMAP.md`'s first v0.3
+   deliverable, started: `Transfer/ByteRangeParser.swift` parses a single
+   `Range` request header (RFC 7233) against a file's real size;
+   `Handlers/StaticFileHandler.swift`'s `fileResponse(for:request:)` turns a
+   satisfiable one into `HTTPResponse.partialContent` (`206`,
+   `Content-Range`), an out-of-bounds one into `.rangeNotSatisfiable`
+   (`416`), and anything else (no header, or a multi-range request this
+   parser doesn't implement — RFC 7233 §3.1 allows ignoring those) into the
+   ordinary full `.file` response, which now always advertises
+   `Accept-Ranges: bytes` so a client knows a later Range request will
+   work. `Transfer/FileChunkReader.swift` gained `offset`/required
+   `length` parameters so it streams only the requested span, never the
+   whole file, for either case. Applies to a direct file request and to a
+   directory's resolved `index.html`/`.htm` alike. Multi-range requests
+   (`bytes=0-499,500-999`, which would need a `multipart/byteranges`
+   response) are a deliberate gap, not an oversight — see
+   `Transfer/README.md`. See also `ServerCore/README.md`,
+   `Handlers/README.md`.
+
+Not yet started from v0.3: multi-selection + streaming ZIP downloads, the
+authentication/session layer and capability-based permissions/profiles,
+WebDAV, optional multiple mounted folders, rate/connection/request limits,
+and the in-app sandboxed file manager (see `docs/ROADMAP.md` for all of
+these).
+
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation
 annotation, a SwiftUI type-checker timeout from a body expression grown too

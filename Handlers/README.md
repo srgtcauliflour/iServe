@@ -58,13 +58,29 @@ to disk, through `Transfer/MultipartFormDataParser.swift` and
 `Transfer/FileChunkWriter.swift`, the same "handler decides, connection
 does the I/O" split as a download's `HTTPResponseBody.file`.
 
+`fileResponse(for:request:)` (v0.3, HTTP Range/resumable downloads) checks
+`request.headers["Range"]` against `Transfer/ByteRangeParser.swift` before
+building a file response: a satisfiable single range becomes
+`HTTPResponse.partialContent` (`206`, `Content-Range`, and an
+`HTTPFileBody` whose `offset`/`length` cover only that span); an
+out-of-bounds one becomes `.rangeNotSatisfiable` (`416`); anything this
+parser doesn't understand (no header, or multiple ranges — RFC 7233 §3.1
+allows ignoring those) falls back to the ordinary full `.file` response,
+which itself now always advertises `Accept-Ranges: bytes` so a client knows
+a later Range request will work. Applies uniformly to a direct file
+request and a directory's resolved `index.html`/`.htm` — both go through
+the same `fileResponse(for:request:)`.
+
 Covered by `Tests/iServeTests/StaticFileHandlerTests.swift` (router behavior:
 index preference, status mapping, MIME types, the trailing-slash redirect,
-and the upload-authorization methods — no networking),
+the upload-authorization methods, and Range routing — no networking),
 `Tests/iServeTests/DirectoryListingRendererTests.swift`
 (sorting, escaping, hidden-entry omission, the upload form's presence/absence
 — no filesystem-authorization concerns, pure rendering), and
 `Tests/iServeTests/StaticFileServingLifecycleTests.swift`/
-`Tests/iServeTests/UploadLifecycleTests.swift` (the same handler driven by a
+`Tests/iServeTests/UploadLifecycleTests.swift`/
+`Tests/iServeTests/RangeLifecycleTests.swift` (the same handler driven by a
 real `HTTPServer` over loopback, including following a real redirect to a
-real listing, and a real multipart upload landing on disk byte-exact).
+real listing, a real multipart upload landing on disk byte-exact, and two
+Range requests together reconstructing a file exactly — the resumed-download
+case this all exists for).

@@ -40,19 +40,19 @@ struct StaticFileHandler: HTTPRouter {
             guard path.hasSuffix("/") else {
                 return .redirect(to: path + "/")
             }
-            return respondToDirectory(path: path, directoryURL: resolved)
+            return respondToDirectory(path: path, directoryURL: resolved, request: request)
         }
-        return fileResponse(for: resolved)
+        return fileResponse(for: resolved, request: request)
     }
 
     /// `path` is guaranteed to end in "/" here: `route(_:)` redirects
     /// otherwise before this is ever called.
-    private func respondToDirectory(path: String, directoryURL: URL) -> HTTPResponse {
+    private func respondToDirectory(path: String, directoryURL: URL, request: HTTPRequest) -> HTTPResponse {
         for candidate in Self.indexCandidates {
             guard let indexURL = try? resolver.resolve(requestPath: path + candidate) else { continue }
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: indexURL.path, isDirectory: &isDirectory), !isDirectory.boolValue {
-                return fileResponse(for: indexURL)
+                return fileResponse(for: indexURL, request: request)
             }
         }
         return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path, allowUploads: allowUploads))
@@ -90,12 +90,26 @@ struct StaticFileHandler: HTTPRouter {
         return resolved
     }
 
-    private func fileResponse(for url: URL) -> HTTPResponse {
+    /// Honors a single-range `Range` request (v0.3, RFC 7233) via
+    /// `Transfer/ByteRangeParser.swift`: `206` for a satisfiable range,
+    /// `416` for one that's out of bounds, or the ordinary full `200`
+    /// response for no `Range` header (or one this parser doesn't
+    /// implement, e.g. multiple ranges — RFC 7233 §3.1 explicitly permits
+    /// ignoring those rather than erroring).
+    private func fileResponse(for url: URL, request: HTTPRequest) -> HTTPResponse {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? Int else {
             return .internalServerError()
         }
-        return .file(url: url, length: size, contentType: MIMEType.forPathExtension(url.pathExtension))
+        let contentType = MIMEType.forPathExtension(url.pathExtension)
+        switch ByteRangeParser.parse(request.headers["Range"], fileSize: size) {
+        case .notRequested:
+            return .file(url: url, length: size, contentType: contentType)
+        case .satisfiable(let range):
+            return .partialContent(url: url, fileSize: size, range: range, contentType: contentType)
+        case .unsatisfiable:
+            return .rangeNotSatisfiable(fileSize: size)
+        }
     }
 
     /// Strips any query string from the raw request-target. Does not decode or

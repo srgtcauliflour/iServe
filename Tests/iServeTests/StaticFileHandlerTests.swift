@@ -22,6 +22,12 @@ final class StaticFileHandlerTests: XCTestCase {
         HTTPRequest(method: method, target: target, httpVersion: "HTTP/1.1", headers: HTTPHeaders())
     }
 
+    private func request(_ target: String, range: String) -> HTTPRequest {
+        var headers = HTTPHeaders()
+        headers.add(name: "Range", value: range)
+        return HTTPRequest(method: "GET", target: target, httpVersion: "HTTP/1.1", headers: headers)
+    }
+
     func testPrefersIndexHtmlOverIndexHtmWhenBothExist() throws {
         try "html".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         try "htm".write(to: root.appendingPathComponent("index.htm"), atomically: true, encoding: .utf8)
@@ -188,5 +194,49 @@ final class StaticFileHandlerTests: XCTestCase {
     func testAuthorizeUploadedFileRejectsAnEmptyFilename() {
         let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
         XCTAssertNil(handler.authorizeUploadedFile(directoryPath: "/", filename: ""))
+    }
+
+    // MARK: - HTTP Range (v0.3)
+
+    func testPlainRequestAdvertisesAcceptRanges() throws {
+        try "0123456789".write(to: root.appendingPathComponent("data.txt"), atomically: true, encoding: .utf8)
+        let response = makeHandler().route(request("/data.txt"))
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.headers["Accept-Ranges"], "bytes")
+    }
+
+    func testSatisfiableRangeReturns206WithContentRangeAndOnlyThatSpan() throws {
+        try "0123456789".write(to: root.appendingPathComponent("data.txt"), atomically: true, encoding: .utf8)
+        let response = makeHandler().route(request("/data.txt", range: "bytes=2-5"))
+        XCTAssertEqual(response.status, 206)
+        XCTAssertEqual(response.headers["Content-Range"], "bytes 2-5/10")
+        XCTAssertEqual(response.headers["Content-Length"], "4")
+        guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.offset, 2)
+        XCTAssertEqual(file.length, 4)
+    }
+
+    func testUnsatisfiableRangeReturns416WithContentRangeNamingTheFullSize() throws {
+        try "0123456789".write(to: root.appendingPathComponent("data.txt"), atomically: true, encoding: .utf8)
+        let response = makeHandler().route(request("/data.txt", range: "bytes=1000-2000"))
+        XCTAssertEqual(response.status, 416)
+        XCTAssertEqual(response.headers["Content-Range"], "bytes */10")
+    }
+
+    func testUnrecognizedRangeSyntaxFallsBackToTheFullFile() throws {
+        try "0123456789".write(to: root.appendingPathComponent("data.txt"), atomically: true, encoding: .utf8)
+        // Multiple ranges aren't supported; RFC 7233 permits ignoring them.
+        let response = makeHandler().route(request("/data.txt", range: "bytes=0-1,2-3"))
+        XCTAssertEqual(response.status, 200)
+        guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.offset, 0)
+        XCTAssertEqual(file.length, 10)
+    }
+
+    func testRangeAppliesToAResolvedIndexFileToo() throws {
+        try "0123456789".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let response = makeHandler().route(request("/", range: "bytes=0-3"))
+        XCTAssertEqual(response.status, 206)
+        XCTAssertEqual(response.headers["Content-Range"], "bytes 0-3/10")
     }
 }

@@ -16,11 +16,16 @@ now uses in place of `UnconfiguredServerService`.
 - `HTTPRequest`/`HTTPResponse`/`HTTPHeaders` are the transport-neutral request
   and response model. `HTTPResponse.body` (an `HTTPResponseBody`) is `.empty`,
   a small in-memory `.data` (every status/error page this core generates
-  itself), or `.file(HTTPFileBody)` — a URL + byte length from an already
-  successful `SecurePathResolver` resolution, never file contents. Only
-  `HTTPConnection` opens and reads a `.file` body, through
+  itself), or `.file(HTTPFileBody)` — a URL + a byte span (`offset`/`length`)
+  from an already successful `SecurePathResolver` resolution, never file
+  contents. Only `HTTPConnection` opens and reads a `.file` body, through
   `Transfer/FileChunkReader.swift`, in bounded chunks — `AGENTS.md` requires
-  bounded streaming, never a whole-file `Data` load.
+  bounded streaming, never a whole-file `Data` load. `.file(url:length:contentType:...)`
+  is the whole-file case (`offset` 0), and always sets `Accept-Ranges: bytes`;
+  `.partialContent(url:fileSize:range:contentType:)` (v0.3, HTTP Range) is a
+  `206` for one already-validated `Transfer/ByteRangeParser.swift` range,
+  setting `offset`/`length` to just that span so `HTTPConnection` streams
+  only it; `.rangeNotSatisfiable(fileSize:)` is the matching `416`.
 - `HTTPRouter` dispatches a method-supported request to a response.
   `NotFoundRouter` is the original v0.1 bootstrap implementation;
   `Handlers/StaticFileHandler.swift` (issue #5) is the real one, resolving
@@ -121,8 +126,11 @@ byte-exact and a real request recorded into an injected `RequestLog`),
 success, multiple files in one request, a payload larger than one read
 chunk arriving byte-exact, uploads disabled, a traversal filename, an
 overwrite attempt, and exceeding `maxUploadBytes` — each checking both the
-HTTP response and the actual filesystem effect or lack of one), and
-`LiveServerServiceTests.swift` (a real folder served through the full
-scoped-access + `HTTPServer` session lifecycle, including the session's
-`requestLog` going from `nil` to populated to `nil` again across
-start/request/stop).
+HTTP response and the actual filesystem effect or lack of one),
+`RangeLifecycleTests.swift` (a real Range GET over loopback — an exact byte
+span, `416` for an out-of-bounds range, and two Range requests together
+reconstructing a whole file exactly, the resumed-download case Range
+support exists for), and `LiveServerServiceTests.swift` (a real folder
+served through the full scoped-access + `HTTPServer` session lifecycle,
+including the session's `requestLog` going from `nil` to populated to `nil`
+again across start/request/stop).
