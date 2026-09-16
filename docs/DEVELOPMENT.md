@@ -146,7 +146,7 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
    pass itself — this has not been validated against an actual Files provider
    root or a second physical LAN device, only CI simulators.
 
-   Real-device testing found two bugs simulators didn't catch:
+   Real-device testing found three bugs simulators didn't catch:
    - Folder selection silently failed to complete (the system picker never
      dismissed) on a build that was archived unsigned and resigned after the
      fact by a third-party tool, across every location/provider tried. A
@@ -155,14 +155,29 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
      further in the app's own code, but a hard requirement for any future
      device-test build to be produced through a real signing path, never an
      unsigned-then-resigned one.
-   - `Start Server` failed immediately with no listener ever coming up: the
-     project never declared `NSLocalNetworkUsageDescription`
+   - `Start Server` failed immediately with the same generic message
+     regardless of what was fixed, which turned out to be because
+     **`App/iServeApp.swift` never actually constructed `LiveServerService`**
+     — it still built `ServerCoordinator()` with every default parameter,
+     silently using the `UnconfiguredServerService` bootstrap (which always
+     throws immediately, touching no network at all) in the shipped app the
+     whole time issue #6 appeared to be "done". No test caught this because
+     nothing exercises `iServeApp`'s own `init()` — `ServerCoordinatorTests`
+     and `LiveServerServiceTests` both inject their dependencies directly and
+     never touch the real wiring. Fixed by giving `iServeApp` an explicit
+     `init()` that builds one `FolderRootManager`, wraps it in a
+     `LiveServerService`, and passes both into `ServerCoordinator`. This is
+     exactly the kind of gap an actual device tap-through catches and a unit
+     suite structurally cannot; there is no automated regression test for it
+     here for the same reason.
+   - Speculatively (unconfirmed until the above fix let the real listener run
+     at all): the project never declared `NSLocalNetworkUsageDescription`
      (`project.yml`'s `INFOPLIST_KEY_NSLocalNetworkUsageDescription`), which
-     iOS requires before it will even prompt for the Local Network
-     permission a listening `NWListener` needs on a real device — CI's
-     simulators don't enforce this the same way, so it only surfaced here.
-     `ServerCoordinator`'s error mapping was also widened
-     (`sanitizedStartFailureMessage`) to name which layer failed
+     iOS requires before it will even prompt for the Local Network permission
+     a listening `NWListener` needs on a real device. Added defensively; keep
+     it regardless of whether it turns out to matter once `LiveServerService`
+     is actually reachable. `ServerCoordinator`'s error mapping was also
+     widened (`sanitizedStartFailureMessage`) to name which layer failed
      (no-folder/access-denied/listener-failed) instead of one generic
      message, so the next real-device failure is diagnosable from the
      dashboard alone.
