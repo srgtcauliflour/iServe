@@ -1,3 +1,4 @@
+@preconcurrency import QuickLook
 import SwiftUI
 
 /// Native in-app file manager (v0.3): browse the selected root, preview
@@ -27,7 +28,12 @@ struct FileManagerScreen: View {
                     .navigationTitle(directory.lastPathComponent)
             }
         }
-        .quickLookPreview($model.previewURL)
+        .sheet(isPresented: previewPresented) {
+            if let previewURL = model.previewURL {
+                QuickLookPreview(url: previewURL)
+                    .ignoresSafeArea()
+            }
+        }
         .alert("Error", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -37,11 +43,51 @@ struct FileManagerScreen: View {
         .onDisappear { model.stop() }
     }
 
+    private var previewPresented: Binding<Bool> {
+        Binding(
+            get: { model.previewURL != nil },
+            set: { isPresented in if !isPresented { model.previewURL = nil } }
+        )
+    }
+
     private var errorPresented: Binding<Bool> {
         Binding(
             get: { model.errorMessage != nil },
             set: { isPresented in if !isPresented { model.errorMessage = nil } }
         )
+    }
+}
+
+/// Wraps `QLPreviewController` (UIKit) rather than SwiftUI's own
+/// `quickLookPreview(_:)` view modifier, which — despite being documented —
+/// isn't resolvable as a member on an arbitrary view hierarchy in this
+/// project's toolchain; `QLPreviewController` is the well-established,
+/// reliable path and needs no such assumption.
+private struct QuickLookPreview: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {
+        context.coordinator.url = url
+        controller.reloadData()
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        var url: URL
+        init(url: URL) { self.url = url }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            url as NSURL
+        }
     }
 }
 
