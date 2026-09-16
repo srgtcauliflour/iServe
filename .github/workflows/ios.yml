@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      build_ipa:
+        description: "Also build an unsigned .ipa for device testing"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -28,3 +33,46 @@ jobs:
           name: ios-test-results
           path: build/*.xcresult
           if-no-files-found: ignore
+  ipa:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_ipa
+    needs: ios
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Archive without code signing
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild archive \
+            -project iServe.xcodeproj \
+            -scheme iServe \
+            -archivePath build/iServe.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+      - name: Package unsigned .ipa
+        run: |
+          set -euo pipefail
+          app_path="build/iServe.xcarchive/Products/Applications/iServe.app"
+          if [ ! -d "$app_path" ]; then
+            echo "Expected app bundle not found at $app_path" >&2
+            find build/iServe.xcarchive -maxdepth 4 >&2 || true
+            exit 1
+          fi
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$app_path" build/Payload/
+          (cd build && zip -qry iServe-unsigned.ipa Payload)
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: iServe-unsigned-ipa
+          path: build/iServe-unsigned.ipa
+          if-no-files-found: error
