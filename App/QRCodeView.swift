@@ -25,8 +25,10 @@ struct QRCodeView: View {
     /// `nil` only if CoreImage's generator itself fails (in practice, only
     /// for input too long to encode as a QR symbol). Not private so
     /// `QRCodeViewTests` can exercise the encoding itself, not just that
-    /// the view builds.
-    static func image(for string: String) -> UIImage? {
+    /// the view builds. `nonisolated`: pure CoreImage computation, touching
+    /// nothing UI/main-thread-bound, so it needn't inherit `View`'s
+    /// implicit `@MainActor` isolation - callable from a plain test method.
+    nonisolated static func image(for string: String) -> UIImage? {
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(string.utf8)
         filter.correctionLevel = "M"
