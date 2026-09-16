@@ -10,11 +10,14 @@ import Foundation
 /// posture — an exact request for one still resolves normally; it's only
 /// left out of the listing itself.
 enum DirectoryListingRenderer {
-    private static let byteFormatter: ByteCountFormatter = {
+    // Computed, not stored: ByteCountFormatter is a non-Sendable class, so a
+    // `static let` would be shared mutable state under Swift 6 strict
+    // concurrency. A fresh instance per access has no such state to share.
+    private static var byteFormatter: ByteCountFormatter {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter
-    }()
+    }
 
     struct Entry {
         let name: String
