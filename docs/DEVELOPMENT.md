@@ -88,11 +88,22 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
    (`FileSystem/SecurePathResolver.swift`, `Tests/iServeTests/SecurePathResolverTests.swift`).
    It is not yet wired to anything remote-facing because no HTTP layer exists yet;
    issue #5's static handler must be the first caller.
-3. Issue #4: bounded HTTP parser and Network.framework listener, including readiness,
-   cancellation, timeouts and connection limits. Replace the disabled start action.
+3. Issue #4: `ServerCore/HTTPServer.swift` + `HTTPConnection.swift` (Network.framework
+   listener/connection lifecycle) and `HTTPRequestParser.swift` (bounded, transport-
+   independent parser) are added, with `NotFoundRouter` as a placeholder router. See
+   `ServerCore/README.md`. Not yet wired to `ServerCoordinator`/the dashboard — issue
+   #6 replaces `UnconfiguredServerService` with a real implementation. No keep-alive/
+   pipelining yet (documented v0.1 simplification); a specific requested port that
+   never becomes available can leave `start()` pending indefinitely since only `.any`
+   is exercised by the test suite.
 4. Issue #5: static routing, MIME, GET/HEAD and bounded streaming/backpressure, routed
-   exclusively through `SecurePathResolver.resolve(requestPath:)`.
-5. Issue #6: real local endpoints, sanitized bounded logs and dashboard integration.
+   exclusively through `SecurePathResolver.resolve(requestPath:)`. Replaces
+   `NotFoundRouter` with a real `HTTPRouter` and gives `HTTPResponse`/`HTTPConnection`
+   a chunked body path instead of a single in-memory `Data` body.
+5. Issue #6: real local endpoints, sanitized bounded logs and dashboard integration —
+   replace `UnconfiguredServerService` with an `HTTPServer`-backed `ServerService` and
+   surface `HTTPServer.state`/the bound port in `ServerDashboard`. Replace the disabled
+   start action.
 
 PHP, WebDAV, archives and public-reachability tooling stay in their agreed later
 milestones. Do not close the v0.1 acceptance gate until a real second LAN device
