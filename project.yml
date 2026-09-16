@@ -31,6 +31,9 @@ targets:
       - path: Transfer
         excludes:
           - "*.md"
+      - path: Networking
+        excludes:
+          - "*.md"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.srgtcauliflour.iServe

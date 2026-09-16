@@ -27,6 +27,14 @@ future handler (issues #5+) must call `resolve(requestPath:)` and treat any thro
 `ResolutionError` as a generic 400/403/404 without surfacing the case internals or
 any local path to the remote client.
 
-Issue #4/#5 must add a server-session scope lifetime, reacquire access before
-serving and retain it until all connections/file operations finish cancellation.
-Do not use a remembered URL as proof that scope is currently held.
+`beginServingAccess()`/`endServingAccess(_:)` (issue #6) give a server session
+its own scope lifetime, separate from selection/restoration's transient
+validation scope: `beginServingAccess()` acquires scope for the *currently*
+selected root and returns that exact URL for the caller (`LiveServerService`)
+to retain and serve through; `endServingAccess(_:)` releases scope for that
+same URL, not whatever happens to be selected by the time serving stops (the
+selection may have changed since). `LiveServerService` must release access
+only after its `HTTPServer` has cancelled its listener and every connection —
+never before. Do not use a remembered `selectedURL` alone as proof that scope
+is currently held; only a session holding a URL returned by
+`beginServingAccess()` may treat it as scoped.

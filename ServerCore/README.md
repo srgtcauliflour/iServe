@@ -1,9 +1,9 @@
 # ServerCore
 
 The v0.1 HTTP core (issue #4): a bounded, transport-independent parser plus a
-Network.framework transport built on top of it. Nothing here is wired into the
-app yet — `App/ServerCoordinator.swift` still uses `UnconfiguredServerService`
-until issue #6 replaces it with a real `HTTPServer`-backed implementation.
+Network.framework transport built on top of it, plus (issue #6)
+`LiveServerService`, the real `ServerService` `App/ServerCoordinator.swift`
+now uses in place of `UnconfiguredServerService`.
 
 - `HTTPRequestParser` parses only the request line and header section of an
   HTTP/1.1 request (GET/HEAD carry no body). It is a plain value type with no
@@ -46,9 +46,22 @@ until issue #6 replaces it with a real `HTTPServer`-backed implementation.
   a timer meant for a stalled request); a hard maximum connection lifetime
   bounds a connection that never makes any progress at all.
 
+- `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
+  `start()` acquires scoped access to the currently selected folder via
+  `FolderRootManager.beginServingAccess()` — for the entire server session,
+  not just validation — builds an `HTTPServer` rooted there with a real
+  `StaticFileHandler`/`SecurePathResolver`, and starts it. `stop()` cancels
+  the listener/connections (`await`ed inside a detached `Task`, since the
+  `ServerService` protocol's `stop()` itself must stay synchronous) before
+  releasing that same scoped access — never before, per `FileSystem/README.md`'s
+  ordering requirement. `ServerCoordinator` owns exactly one of these; nothing
+  else should construct an `HTTPServer` for the app's own serving session.
+
 Covered by `Tests/iServeTests/HTTPRequestParserTests.swift` (bounded parsing,
 independent of any listener), `HTTPRouterTests.swift` (headers/response
 encoding), `ServerLifecycleTests.swift` (real loopback start/stop determinism,
-GET/HEAD/unsupported-method behavior, concurrent connections), and
+GET/HEAD/unsupported-method behavior, concurrent connections),
 `StaticFileServingLifecycleTests.swift` (a real `StaticFileHandler` served
-end to end, including a large payload streamed byte-exact).
+end to end, including a large payload streamed byte-exact), and
+`LiveServerServiceTests.swift` (a real folder served through the full
+scoped-access + `HTTPServer` session lifecycle).

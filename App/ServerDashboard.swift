@@ -1,10 +1,45 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ServerDashboard: View {
     @State private var isChoosingFolder = false
     @State private var didRestore = false
+    @State private var didCopyEndpoint = false
     let coordinator: ServerCoordinator
+
+    private var canStart: Bool {
+        switch coordinator.state {
+        case .ready, .error, .unavailable: true
+        default: false
+        }
+    }
+
+    private var isBusy: Bool {
+        if case .starting = coordinator.state { return true }
+        return false
+    }
+
+    private var isRunning: Bool {
+        if case .running = coordinator.state { return true }
+        return false
+    }
+
+    private var endpoint: String? {
+        if case .running(let endpoint) = coordinator.state { return endpoint }
+        return nil
+    }
+
+    private var serverStatusText: String {
+        switch coordinator.state {
+        case .noFolder: "No folder selected"
+        case .ready: "Stopped"
+        case .starting: "Starting…"
+        case .running: "Running"
+        case .error(let message): message
+        case .unavailable: "Stopped"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -32,13 +67,16 @@ struct ServerDashboard: View {
                     Button("Choose Folder", systemImage: "folder.badge.plus") {
                         isChoosingFolder = true
                     }
+                    .disabled(isBusy || isRunning)
                     if coordinator.folders.hasSavedFolder {
                         Button("Retry Saved Folder", systemImage: "arrow.clockwise") {
                             coordinator.restoreFolder()
                         }
+                        .disabled(isBusy || isRunning)
                         Button("Forget Folder", role: .destructive) {
                             coordinator.forgetFolder()
                         }
+                        .disabled(isBusy || isRunning)
                     }
                     if let message = coordinator.folders.errorMessage {
                         Label(message, systemImage: "exclamationmark.triangle")
@@ -53,10 +91,22 @@ struct ServerDashboard: View {
 
                 Section {
                     LabeledContent("Profile", value: "Website / Read Only")
-                    LabeledContent("Status", value: "Stopped")
-                    Button("Start Server", systemImage: "play.fill") {}
-                        .disabled(true)
-                        .accessibilityHint("The HTTP listener is not available in this development build.")
+                    LabeledContent("Status", value: serverStatusText)
+                    if isRunning {
+                        Button("Stop Server", systemImage: "stop.fill", role: .destructive) {
+                            coordinator.stop()
+                        }
+                    } else {
+                        Button("Start Server", systemImage: "play.fill") {
+                            coordinator.start()
+                        }
+                        .disabled(!canStart)
+                        .accessibilityHint(
+                            canStart
+                            ? "Starts serving the selected folder to your local network."
+                            : "Choose a folder before starting the server."
+                        )
+                    }
                 } header: {
                     Text("Server")
                 } footer: {
@@ -64,19 +114,27 @@ struct ServerDashboard: View {
                 }
 
                 Section("Connections") {
-                    Text("No listening endpoint")
-                        .foregroundStyle(.secondary)
-                    Text("Local addresses will appear here when the server is ready. Public connectivity depends on your network.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Development preview") {
-                    Text("Folder selection is available. HTTP serving is still in development.")
-                        .font(.footnote)
+                    if let endpoint {
+                        Label(endpoint, systemImage: "network")
+                            .textSelection(.enabled)
+                        Button(didCopyEndpoint ? "Copied" : "Copy Address", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = endpoint
+                            didCopyEndpoint = true
+                        }
+                        Text("Open this address from another device on the same network.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("No listening endpoint")
+                            .foregroundStyle(.secondary)
+                        Text("Local addresses will appear here when the server is ready. Public connectivity depends on your network.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle("iServe")
+            .onChange(of: endpoint) { _, _ in didCopyEndpoint = false }
             .task {
                 guard !didRestore else { return }
                 didRestore = true

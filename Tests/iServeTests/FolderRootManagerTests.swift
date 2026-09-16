@@ -161,6 +161,50 @@ final class FolderRootManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testBeginServingAccessReturnsSelectedURLAndAcquiresScope() {
+        let access = StubFolderAccess()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        manager.select(access.url)
+        access.events = []
+
+        let scoped = manager.beginServingAccess()
+        XCTAssertEqual(scoped, access.url)
+        XCTAssertEqual(access.events, ["start"])
+    }
+
+    @MainActor
+    func testBeginServingAccessReturnsNilWithoutASelectedFolder() {
+        let access = StubFolderAccess()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        XCTAssertNil(manager.beginServingAccess())
+        XCTAssertTrue(access.events.isEmpty)
+    }
+
+    @MainActor
+    func testBeginServingAccessReturnsNilWhenScopeIsDenied() {
+        let access = StubFolderAccess()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        manager.select(access.url)
+        access.events = []
+        access.grantsScope = false
+
+        XCTAssertNil(manager.beginServingAccess())
+        XCTAssertEqual(access.events, ["start"])
+    }
+
+    @MainActor
+    func testEndServingAccessStopsScopeForTheGivenURL() {
+        let access = StubFolderAccess()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        manager.select(access.url)
+        access.events = []
+
+        let scoped = manager.beginServingAccess()!
+        manager.endServingAccess(scoped)
+        XCTAssertEqual(access.events, ["start", "stop"])
+    }
+
+    @MainActor
     func testUserDefaultsBookmarkSurvivesStoreRecreationAndForget() {
         let name = "iServe.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!

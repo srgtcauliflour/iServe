@@ -127,11 +127,24 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
    `Transfer/README.md`, `ServerCore/README.md`. Still not wired to
    `ServerCoordinator`/the dashboard, and still no real filesystem-provider
    security-scoped session — issue #6 owns both.
-5. Issue #6: real local endpoints, sanitized bounded logs and dashboard integration —
-   replace `UnconfiguredServerService` with an `HTTPServer`-backed `ServerService`
-   constructed with a `StaticFileHandler`/`SecurePathResolver` over the session's
-   security-scoped root, and surface `HTTPServer.state`/the bound port in
-   `ServerDashboard`. Replace the disabled start action.
+5. Issue #6 (partial): `ServerCore/LiveServerService.swift` replaces
+   `UnconfiguredServerService` — it acquires scoped access to the selected
+   folder for the whole server session via
+   `FolderRootManager.beginServingAccess()`/`endServingAccess(_:)`, builds a
+   real `HTTPServer(router: StaticFileHandler(...))` over that root, and
+   releases scope only after the listener/connections have cancelled.
+   `ServerCore/ServerService.swift`'s protocol now includes `start()`.
+   `App/ServerCoordinator.swift`'s `State` gained `.noFolder`/`.ready`/
+   `.starting`/`.running(endpoint:)`/`.error` (`.unavailable` keeps its prior
+   meaning: scene-inactive or an explicit stop); `start()` resolves the
+   endpoint via the new `Networking/LocalNetworkAddress.swift`
+   (`getifaddrs`-based LAN IPv4 discovery, injectable for tests). Start/Stop
+   in `ServerDashboard` are wired to real state, with a Copy button for the
+   endpoint.
+   Remaining for issue #6: a real request log and request/byte counters
+   (`Logging/` is still just a placeholder), and the real-device acceptance
+   pass itself — this has not been validated against an actual Files provider
+   root or a second physical LAN device, only CI simulators.
 
 PHP, WebDAV, archives and public-reachability tooling stay in their agreed later
 milestones. Do not close the v0.1 acceptance gate until a real second LAN device

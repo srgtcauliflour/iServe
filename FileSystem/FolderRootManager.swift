@@ -59,6 +59,24 @@ final class FolderRootManager {
         errorMessage = nil
     }
 
+    /// Acquires scoped access for the *currently* selected root and returns
+    /// that exact URL, or `nil` if there is no selected root or access could
+    /// not be granted. The caller — a server session — must retain this URL
+    /// and pass it back to `endServingAccess(_:)` when done; a remembered URL
+    /// alone is never proof that scope is currently held, and this call does
+    /// not itself track whether access remains outstanding.
+    func beginServingAccess() -> URL? {
+        guard let selectedURL, access.startAccessing(selectedURL) else { return nil }
+        return selectedURL
+    }
+
+    /// Releases scope previously granted by `beginServingAccess()` for `url`.
+    /// Takes the exact URL that was scoped, not `selectedURL`, since the
+    /// selection may have changed since access was acquired.
+    func endServingAccess(_ url: URL) {
+        access.stopAccessing(url)
+    }
+
     func reportPickerFailure(_ error: Error) {
         let cocoaError = error as NSError
         guard !(cocoaError.domain == NSCocoaErrorDomain &&
