@@ -96,6 +96,33 @@ final class ServerCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testUploadsAreDisabledByDefaultAndFlowThroughToStart() async throws {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+        XCTAssertEqual(service.lastAllowUploads, false)
+    }
+
+    @MainActor
+    func testEnablingUploadsBeforeStartingPassesThatChoiceToTheService() async throws {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+        coordinator.uploadsEnabled = true
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+        XCTAssertEqual(service.lastAllowUploads, true)
+    }
+
+    @MainActor
     func testCallingStartAgainWhileRunningDoesNotRestartTheService() async throws {
         let service = RecordingServerService()
         let access = StubFolderAccess()
@@ -303,9 +330,11 @@ private final class RecordingServerService: ServerService {
     var startCallCount = 0
     var startResult: Result<UInt16, Error> = .success(8080)
     var requestLog: RequestLog?
+    private(set) var lastAllowUploads: Bool?
 
-    func start() async throws -> UInt16 {
+    func start(allowUploads: Bool) async throws -> UInt16 {
         startCallCount += 1
+        lastAllowUploads = allowUploads
         return try startResult.get()
     }
 

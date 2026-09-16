@@ -22,8 +22,24 @@ actor HTTPConnection {
     private var idleTimeoutTask: Task<Void, Never>?
     private var lifetimeTimeoutTask: Task<Void, Never>?
     private var streamingFile: FileChunkReader?
+    private var uploadState: UploadState?
     private var didClose = false
     private var didRespond = false
+
+    /// Everything `HTTPConnection` tracks while streaming a POST upload's
+    /// body straight to disk (v0.2). One struct rather than several loose
+    /// optionals so `close()`/failure paths can't forget to clean up part
+    /// of it.
+    private struct UploadState {
+        let request: HTTPRequest
+        let directoryPath: String
+        var parser: MultipartFormDataParser
+        let contentLength: Int
+        var bytesConsumed = 0
+        var currentFileWriter: FileChunkWriter?
+        var currentFileURL: URL?
+        var uploadedFileNames: [String] = []
+    }
 
     init(
         connection: NWConnection,
@@ -62,6 +78,7 @@ actor HTTPConnection {
         lifetimeTimeoutTask = nil
         streamingFile?.close()
         streamingFile = nil
+        discardIncompleteUpload()
         connection.cancel()
         onClose(id)
     }
@@ -91,14 +108,20 @@ actor HTTPConnection {
         }
         if let data, !data.isEmpty {
             resetIdleTimeout()
-            do {
-                if let request = try parser.feed(data) {
-                    respond(to: request)
+            if uploadState != nil {
+                processUploadBytes(data)
+                guard !didRespond, !didClose else { return }
+            } else {
+                do {
+                    if let request = try parser.feed(data) {
+                        let leftover = parser.drainRemainder()
+                        respond(to: request, leftoverBodyBytes: leftover)
+                        guard !didRespond, !didClose else { return }
+                    }
+                } catch {
+                    respond(withParseError: error)
                     return
                 }
-            } catch {
-                respond(withParseError: error)
-                return
             }
         }
         if isComplete {
@@ -108,10 +131,12 @@ actor HTTPConnection {
         receiveMore()
     }
 
-    private func respond(to request: HTTPRequest) {
+    private func respond(to request: HTTPRequest, leftoverBodyBytes: Data) {
         switch request.method {
         case "GET", "HEAD":
             respond(with: router.route(request), suppressBody: request.method == "HEAD", request: request)
+        case "POST":
+            beginUpload(for: request, leftoverBodyBytes: leftoverBodyBytes)
         default:
             respond(with: .notImplemented(method: request.method), request: request)
         }
@@ -213,6 +238,176 @@ actor HTTPConnection {
         streamingFile?.close()
         streamingFile = nil
         close()
+    }
+
+    // MARK: - Uploads
+
+    /// Called once headers are parsed for a POST. Authorizes the whole
+    /// request up front — target is a directory, `Content-Type` names a
+    /// multipart boundary, `Content-Length` is present and within
+    /// `limits.maxUploadBytes`, and `router.authorizeUpload` accepts the
+    /// directory — before reading a single body byte. Anything short of
+    /// that responds immediately and never touches the body at all;
+    /// v0.1 has no keep-alive to preserve, so there's no need to drain and
+    /// discard bytes the client is still sending.
+    private func beginUpload(for request: HTTPRequest, leftoverBodyBytes: Data) {
+        guard let path = Self.pathIgnoringQuery(request.target), path.hasSuffix("/") else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+        guard let contentType = request.headers["Content-Type"],
+              let boundary = Self.multipartBoundary(from: contentType) else {
+            respond(with: .badRequest("Expected multipart/form-data"), request: request)
+            return
+        }
+        guard let contentLengthText = request.headers["Content-Length"],
+              let contentLength = Int(contentLengthText), contentLength >= 0 else {
+            respond(with: .lengthRequired(), request: request)
+            return
+        }
+        guard contentLength <= limits.maxUploadBytes else {
+            respond(with: .payloadTooLarge(), request: request)
+            return
+        }
+        guard router.authorizeUpload(directoryPath: path) else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+
+        uploadState = UploadState(
+            request: request,
+            directoryPath: path,
+            parser: MultipartFormDataParser(boundary: boundary),
+            contentLength: contentLength
+        )
+        guard !leftoverBodyBytes.isEmpty else { return }
+        processUploadBytes(leftoverBodyBytes)
+    }
+
+    /// Feeds newly received bytes into the active upload's multipart
+    /// parser, bounded to at most this upload's declared `Content-Length`
+    /// regardless of how much more the client actually sends.
+    private func processUploadBytes(_ data: Data) {
+        guard var state = uploadState else { return }
+
+        let remainingAllowed = max(0, state.contentLength - state.bytesConsumed)
+        let consuming = Data(data.prefix(remainingAllowed))
+        state.bytesConsumed += consuming.count
+
+        let events: [MultipartFormDataParser.Event]
+        do {
+            events = try state.parser.feed(consuming)
+        } catch {
+            uploadState = state
+            failUpload()
+            return
+        }
+        uploadState = state
+
+        for event in events {
+            handle(uploadEvent: event)
+            guard uploadState != nil else { return } // a prior event already finished/failed the request
+        }
+
+        if let current = uploadState, current.bytesConsumed >= current.contentLength {
+            // Every declared body byte has arrived but the parser never
+            // reported .finished - a truncated or malformed body.
+            failUpload()
+        }
+    }
+
+    private func handle(uploadEvent event: MultipartFormDataParser.Event) {
+        guard var state = uploadState else { return }
+        switch event {
+        case .partBegan(_, let filename):
+            guard let filename, !filename.isEmpty,
+                  let fileURL = router.authorizeUploadedFile(directoryPath: state.directoryPath, filename: filename),
+                  let writer = FileChunkWriter(url: fileURL, maxBytes: limits.maxUploadBytes) else {
+                state.currentFileWriter = nil
+                state.currentFileURL = nil
+                uploadState = state
+                return
+            }
+            state.currentFileWriter = writer
+            state.currentFileURL = fileURL
+            uploadState = state
+
+        case .partBodyChunk(let chunk):
+            guard let writer = state.currentFileWriter else { return }
+            do {
+                try writer.write(chunk)
+            } catch {
+                writer.close()
+                if let url = state.currentFileURL { try? FileManager.default.removeItem(at: url) }
+                state.currentFileWriter = nil
+                state.currentFileURL = nil
+                uploadState = state
+                failUpload()
+            }
+
+        case .partEnded:
+            if let writer = state.currentFileWriter, let url = state.currentFileURL {
+                writer.close()
+                state.uploadedFileNames.append(url.lastPathComponent)
+            }
+            state.currentFileWriter = nil
+            state.currentFileURL = nil
+            uploadState = state
+
+        case .finished:
+            uploadState = state
+            finishUpload()
+        }
+    }
+
+    private func finishUpload() {
+        guard let state = uploadState else { return }
+        uploadState = nil
+        let response: HTTPResponse = state.uploadedFileNames.isEmpty
+            ? .badRequest("No file was uploaded")
+            : .redirect(to: state.directoryPath, status: 303, reason: "See Other")
+        respond(with: response, request: state.request)
+    }
+
+    private func failUpload() {
+        guard let state = uploadState else { return }
+        discardIncompleteUpload()
+        respond(with: .badRequest("Upload failed"), request: state.request)
+    }
+
+    /// Closes and deletes whatever file the active upload was mid-write on,
+    /// then clears upload state entirely. Already-completed files from
+    /// earlier parts in the same request are left in place — a failure is
+    /// reported for the request as a whole, but doesn't retroactively
+    /// undo parts that had already finished successfully.
+    private func discardIncompleteUpload() {
+        guard let state = uploadState else { return }
+        state.currentFileWriter?.close()
+        if let url = state.currentFileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        uploadState = nil
+    }
+
+    private static func pathIgnoringQuery(_ target: String) -> String? {
+        guard !target.isEmpty else { return nil }
+        guard let queryIndex = target.firstIndex(of: "?") else { return target }
+        return String(target[target.startIndex..<queryIndex])
+    }
+
+    private static func multipartBoundary(from contentType: String) -> String? {
+        let parts = contentType.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let kind = parts.first, kind.caseInsensitiveCompare("multipart/form-data") == .orderedSame else {
+            return nil
+        }
+        for parameter in parts.dropFirst() where parameter.lowercased().hasPrefix("boundary=") {
+            var value = String(parameter.dropFirst("boundary=".count))
+            if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
+                value = String(value.dropFirst().dropLast())
+            }
+            return value.isEmpty ? nil : value
+        }
+        return nil
     }
 
     private func scheduleIdleTimeout() {

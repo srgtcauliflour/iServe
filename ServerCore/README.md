@@ -25,14 +25,21 @@ now uses in place of `UnconfiguredServerService`.
   `NotFoundRouter` is the original v0.1 bootstrap implementation;
   `Handlers/StaticFileHandler.swift` (issue #5) is the real one, resolving
   `request.target` (query string stripped) through
-  `FileSystem/SecurePathResolver.swift`.
+  `FileSystem/SecurePathResolver.swift`. Its two upload-authorization
+  requirements (v0.2, `authorizeUpload(directoryPath:)`/
+  `authorizeUploadedFile(directoryPath:filename:)`) exist because a POST
+  body can be arbitrarily large and must stream straight to disk — unlike
+  `route(_:)`, `HTTPConnection` can't get one synchronous `HTTPResponse`
+  back for an upload. Default implementations refuse every upload, so
+  `NotFoundRouter` and any future router that doesn't override them stay
+  upload-incapable for free.
 - `HTTPServer` (an actor) owns the `NWListener` lifecycle: `start()` is
   deterministic and repeatable, and `stop()` cancels the listener and awaits
   every live connection's cancellation before returning. A connection beyond
   `HTTPServerLimits.maxConcurrentConnections` is cancelled immediately rather
   than queued.
 - `HTTPConnection` (an actor) owns exactly one accepted `NWConnection`: it
-  reads bounded chunks into the parser, dispatches GET/HEAD through the
+  reads bounded chunks into the parser, dispatches GET/HEAD/POST through the
   router (anything else gets `501 Not Implemented`; oversized request
   lines/headers get `414`/`431` instead of a generic `400`), writes one
   response — streaming a `.file` body one `FileChunkReader` chunk at a time,
@@ -50,12 +57,38 @@ now uses in place of `UnconfiguredServerService`.
   never for a request that failed to parse at all, since there is no clean
   target to show for one.
 
+  **POST uploads (v0.2):** once headers are parsed for a POST,
+  `HTTPConnection` authorizes the *whole* request — target is a directory,
+  `Content-Type` names a `multipart/form-data` boundary, `Content-Length` is
+  present and within `HTTPServerLimits.maxUploadBytes`, and
+  `router.authorizeUpload(directoryPath:)` accepts it — before reading a
+  single body byte; anything short of that responds immediately without
+  touching the body at all (v0.1's no-keep-alive design means there's never
+  a need to drain and discard bytes a rejected client is still sending). A
+  request that passes all of that feeds every subsequent received chunk
+  into a `Transfer/MultipartFormDataParser.swift`, writing each file part
+  through a `Transfer/FileChunkWriter.swift` opened via
+  `router.authorizeUploadedFile(directoryPath:filename:)` — bounded the same
+  way a download is, one chunk at a time, never a whole upload buffered in
+  memory. A malformed/truncated body, a write past `maxUploadBytes`, or the
+  connection closing mid-upload all delete whatever partial file was in
+  progress (`docs/SECURITY.md`'s "partial-file cleanup") and, for the first
+  two, respond `400`; already-completed parts from earlier in the same
+  request are left in place rather than retroactively undone. On success,
+  responds `303 See Other` back to the directory so a browser's page
+  refresh after the redirect doesn't resubmit the upload.
+
 - `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
-  `start()` acquires scoped access to the currently selected folder via
-  `FolderRootManager.beginServingAccess()` — for the entire server session,
-  not just validation — builds an `HTTPServer` rooted there with a real
-  `StaticFileHandler`/`SecurePathResolver` and a fresh `RequestLog`, and
-  starts it. `stop()` cancels the listener/connections (`await`ed inside a
+  `start(allowUploads:)` acquires scoped access to the currently selected
+  folder via `FolderRootManager.beginServingAccess()` — for the entire
+  server session, not just validation — builds an `HTTPServer` rooted there
+  with a real `StaticFileHandler`/`SecurePathResolver` (passing
+  `allowUploads` straight through to the handler) and a fresh `RequestLog`,
+  and starts it. `allowUploads` is `ServerCoordinator.uploadsEnabled` at the
+  moment `start()` was called — off by default, and per `docs/SECURITY.md`
+  never implied just by having a folder selected — so a service must never
+  default it to `true` on its own; see `App/ServerCoordinator.swift`.
+  `stop()` cancels the listener/connections (`await`ed inside a
   detached `Task`, since the `ServerService` protocol's `stop()` itself must
   stay synchronous) before releasing that same scoped access — never before,
   per `FileSystem/README.md`'s ordering requirement — and drops the session's
@@ -76,12 +109,20 @@ now uses in place of `UnconfiguredServerService`.
   parameter.
 
 Covered by `Tests/iServeTests/HTTPRequestParserTests.swift` (bounded parsing,
-independent of any listener), `HTTPRouterTests.swift` (headers/response
-encoding), `ServerLifecycleTests.swift` (real loopback start/stop determinism,
-GET/HEAD/unsupported-method behavior, concurrent connections),
-`StaticFileServingLifecycleTests.swift` (a real `StaticFileHandler` served
-end to end, including a large payload streamed byte-exact and a real request
-recorded into an injected `RequestLog`), and `LiveServerServiceTests.swift`
-(a real folder served through the full scoped-access + `HTTPServer` session
-lifecycle, including the session's `requestLog` going from `nil` to
-populated to `nil` again across start/request/stop).
+independent of any listener, including that a POST's leading body bytes
+already sitting in the same network read as the header-terminating blank
+line survive via `drainRemainder()`), `HTTPRouterTests.swift`
+(headers/response encoding), `ServerLifecycleTests.swift` (real loopback
+start/stop determinism, GET/HEAD/unsupported-method behavior, concurrent
+connections), `StaticFileServingLifecycleTests.swift` (a real
+`StaticFileHandler` served end to end, including a large payload streamed
+byte-exact and a real request recorded into an injected `RequestLog`),
+`UploadLifecycleTests.swift` (a real multipart POST over loopback —
+success, multiple files in one request, a payload larger than one read
+chunk arriving byte-exact, uploads disabled, a traversal filename, an
+overwrite attempt, and exceeding `maxUploadBytes` — each checking both the
+HTTP response and the actual filesystem effect or lack of one), and
+`LiveServerServiceTests.swift` (a real folder served through the full
+scoped-access + `HTTPServer` session lifecycle, including the session's
+`requestLog` going from `nil` to populated to `nil` again across
+start/request/stop).

@@ -31,7 +31,13 @@ enum DirectoryListingRenderer {
     /// filesystem path. Entry links are relative to it, so the caller must
     /// only serve this for a request path the client's browser actually has
     /// as its current URL (i.e. after any trailing-slash redirect).
-    static func render(directoryURL: URL, requestPath: String) -> Data {
+    ///
+    /// `allowUploads` (v0.2) adds a plain HTML upload form — no JavaScript,
+    /// works with `StaticFileHandler`'s multipart handling alone — when the
+    /// caller has already decided this session/directory accepts uploads.
+    /// The renderer itself makes no such decision; see
+    /// `Handlers/StaticFileHandler.swift`'s `authorizeUpload(directoryPath:)`.
+    static func render(directoryURL: URL, requestPath: String, allowUploads: Bool = false) -> Data {
         let entries = listEntries(in: directoryURL)
         var html = """
         <!DOCTYPE html>
@@ -47,6 +53,8 @@ enum DirectoryListingRenderer {
         li { padding: 0.6em 0; border-bottom: 1px solid #e5e5ea; display: flex; justify-content: space-between; align-items: baseline; }
         a { color: #007aff; text-decoration: none; word-break: break-all; }
         .size { color: #8e8e93; font-size: 0.85em; white-space: nowrap; padding-left: 1em; }
+        form.upload { margin: 1.5em 0; padding: 1em; border: 1px dashed #c7c7cc; border-radius: 8px; }
+        form.upload button { margin-left: 0.5em; }
         </style>
         </head>
         <body>
@@ -74,8 +82,21 @@ enum DirectoryListingRenderer {
             html += "<li>Empty folder</li>\n"
         }
 
+        html += "</ul>\n"
+
+        if allowUploads {
+            // No `action`: submits back to this same directory URL,
+            // whatever path it was actually reached at.
+            html += """
+            <form class="upload" method="POST" enctype="multipart/form-data">
+            <input type="file" name="file" multiple>
+            <button type="submit">Upload</button>
+            </form>
+
+            """
+        }
+
         html += """
-        </ul>
         </body>
         </html>
         """

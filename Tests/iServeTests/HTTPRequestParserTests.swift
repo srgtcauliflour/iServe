@@ -52,6 +52,22 @@ final class HTTPRequestParserTests: XCTestCase {
         XCTAssertNotNil(try parser.feed(Data("\r\n".utf8)))
     }
 
+    func testDrainRemainderReturnsBodyBytesThatArrivedInTheSameReadAsTheBlankLine() throws {
+        var parser = HTTPRequestParser()
+        // A real POST client very often writes headers and body in one
+        // call, so they land in the very same network read.
+        let raw = "POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello"
+        let request = try XCTUnwrap(try parser.feed(Data(raw.utf8)))
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(parser.drainRemainder(), Data("hello".utf8))
+    }
+
+    func testDrainRemainderIsEmptyWhenNothingFollowedTheBlankLine() throws {
+        var parser = HTTPRequestParser()
+        _ = try XCTUnwrap(try parser.feed(Data("GET / HTTP/1.1\r\n\r\n".utf8)))
+        XCTAssertEqual(parser.drainRemainder(), Data())
+    }
+
     // MARK: - Bounded limits
 
     func testRejectsRequestLineTooLong() {

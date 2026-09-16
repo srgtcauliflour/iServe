@@ -11,7 +11,12 @@ protocol ServerService: AnyObject {
     /// listener reports ready. Throws (without starting anything) if there is
     /// no folder to serve, scoped access could not be acquired, or the
     /// underlying listener failed to start.
-    func start() async throws -> UInt16
+    ///
+    /// `allowUploads` (v0.2) is decided by the caller for this session only
+    /// — per `docs/SECURITY.md`, a write capability is never implied just
+    /// by selecting a folder, so a service must not default this to `true`
+    /// on its own.
+    func start(allowUploads: Bool) async throws -> UInt16
 
     /// Must synchronously initiate cancellation of every owned network
     /// resource and release any security-scoped access this service acquired
@@ -31,7 +36,7 @@ final class UnconfiguredServerService: ServerService {
 
     var requestLog: RequestLog? { nil }
 
-    func start() async throws -> UInt16 {
+    func start(allowUploads: Bool) async throws -> UInt16 {
         throw ServiceError.unavailable
     }
 

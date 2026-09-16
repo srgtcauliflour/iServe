@@ -34,11 +34,37 @@ bodies are handed back as `HTTPResponseBody.file` (a URL + byte length, not
 file contents) — `ServerCore/HTTPConnection.swift` is what actually streams
 them, via `Transfer/FileChunkReader.swift`.
 
+`StaticFileHandler.allowUploads` (v0.2, default `false`) is set by
+`ServerCore/LiveServerService.swift` from `ServerCoordinator.uploadsEnabled`
+— per `docs/SECURITY.md`, a write capability is never implied just by
+selecting a folder to serve, so this handler refuses every upload unless a
+caller opted in explicitly for that session. When `true`,
+`DirectoryListingRenderer` gets an extra plain-HTML upload form (no
+JavaScript) in its listing, and the handler implements `HTTPRouter`'s two
+upload-authorization requirements:
+- `authorizeUpload(directoryPath:)` — resolves `directoryPath` and confirms
+  it's an existing directory.
+- `authorizeUploadedFile(directoryPath:filename:)` — treats `filename` as
+  one atomic path component (rejecting `/`, `\`, `.`, `..`, and empty
+  outright, on top of `SecurePathResolver`'s own protections once the name
+  is percent-encoded and resolved against `directoryPath`), and refuses to
+  hand back a URL that already exists — "no destructive operations by
+  default" (`docs/MASTER-SPEC.md`) means an upload never silently
+  overwrites something already there.
+
+Neither method touches the filesystem beyond checking existence/type —
+`ServerCore/HTTPConnection.swift` is what actually streams an upload's body
+to disk, through `Transfer/MultipartFormDataParser.swift` and
+`Transfer/FileChunkWriter.swift`, the same "handler decides, connection
+does the I/O" split as a download's `HTTPResponseBody.file`.
+
 Covered by `Tests/iServeTests/StaticFileHandlerTests.swift` (router behavior:
-index preference, status mapping, MIME types, the trailing-slash redirect —
-no networking), `Tests/iServeTests/DirectoryListingRendererTests.swift`
-(sorting, escaping, hidden-entry omission — no filesystem-authorization
-concerns, pure rendering), and
-`Tests/iServeTests/StaticFileServingLifecycleTests.swift` (the same handler
-driven by a real `HTTPServer` over loopback, including following a real
-redirect to a real listing).
+index preference, status mapping, MIME types, the trailing-slash redirect,
+and the upload-authorization methods — no networking),
+`Tests/iServeTests/DirectoryListingRendererTests.swift`
+(sorting, escaping, hidden-entry omission, the upload form's presence/absence
+— no filesystem-authorization concerns, pure rendering), and
+`Tests/iServeTests/StaticFileServingLifecycleTests.swift`/
+`Tests/iServeTests/UploadLifecycleTests.swift` (the same handler driven by a
+real `HTTPServer` over loopback, including following a real redirect to a
+real listing, and a real multipart upload landing on disk byte-exact).

@@ -12,6 +12,12 @@ struct HTTPServerLimits: Sendable {
     /// Bound on each chunk read from a static file and handed to the network
     /// send; keeps memory use roughly constant regardless of file size.
     var writeChunkSize: Int
+    /// Upper bound on one POST upload's total body size (checked against
+    /// `Content-Length` before any body bytes are read, and re-enforced
+    /// while writing in case that header understated the truth) — guards
+    /// against the storage exhaustion `docs/SECURITY.md` calls out as a
+    /// threat to test.
+    var maxUploadBytes: Int
     var parserLimits: HTTPRequestParser.Limits
 
     static let `default` = HTTPServerLimits(
@@ -24,6 +30,7 @@ struct HTTPServerLimits: Sendable {
         maxConnectionLifetime: 600,
         readChunkSize: 8 * 1024,
         writeChunkSize: 64 * 1024,
+        maxUploadBytes: 4 * 1024 * 1024 * 1024,
         parserLimits: .default
     )
 }

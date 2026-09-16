@@ -16,6 +16,9 @@ struct StaticFileHandler: HTTPRouter {
     private static let indexCandidates = ["index.html", "index.htm"]
 
     let resolver: SecurePathResolver
+    /// Off by default: per `docs/SECURITY.md`, writes are an explicit
+    /// capability, never implied just by selecting a folder to serve.
+    var allowUploads: Bool = false
 
     func route(_ request: HTTPRequest) -> HTTPResponse {
         guard let path = Self.path(fromTarget: request.target) else { return .badRequest() }
@@ -52,7 +55,39 @@ struct StaticFileHandler: HTTPRouter {
                 return fileResponse(for: indexURL)
             }
         }
-        return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path))
+        return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path, allowUploads: allowUploads))
+    }
+
+    // MARK: - Uploads
+
+    func authorizeUpload(directoryPath: String) -> Bool {
+        guard allowUploads else { return false }
+        guard let resolved = try? resolver.resolve(requestPath: directoryPath) else { return false }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory) else { return false }
+        return isDirectory.boolValue
+    }
+
+    func authorizeUploadedFile(directoryPath: String, filename: String) -> URL? {
+        guard allowUploads else { return nil }
+        // Reject explicitly rather than rely solely on the resolver's own
+        // traversal protection: a filename is meant to be one atomic path
+        // component (what the browser showed the person picking a file),
+        // never something that introduces extra path structure.
+        guard !filename.isEmpty, filename != ".", filename != "..",
+              !filename.contains("/"), !filename.contains("\\") else {
+            return nil
+        }
+        guard let encodedFilename = filename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            return nil
+        }
+        guard let resolved = try? resolver.resolve(requestPath: directoryPath + encodedFilename) else {
+            return nil
+        }
+        // No destructive operations by default (docs/SECURITY.md): never
+        // silently overwrite something already there.
+        guard !FileManager.default.fileExists(atPath: resolved.path) else { return nil }
+        return resolved
     }
 
     private func fileResponse(for url: URL) -> HTTPResponse {

@@ -29,6 +29,12 @@ final class ServerCoordinator {
     }
 
     private(set) var state: State
+    /// Off by default: per `docs/SECURITY.md`, uploads are an explicit write
+    /// capability, never implied just by selecting a folder and starting
+    /// the server. Changing it while running has no effect on the current
+    /// session — only the next `start()` reads it; `ServerDashboard`
+    /// disables the toggle while running to avoid that confusion.
+    var uploadsEnabled = false
     let folders: FolderRootManager
     private let service: any ServerService
     private let ipAddressProvider: @Sendable () -> String?
@@ -141,7 +147,7 @@ final class ServerCoordinator {
         state = .starting
         Task {
             do {
-                let port = try await service.start()
+                let port = try await service.start(allowUploads: uploadsEnabled)
                 let host = ipAddressProvider() ?? "localhost"
                 state = .running(endpoint: "http://\(host):\(port)/")
                 runningPort = port

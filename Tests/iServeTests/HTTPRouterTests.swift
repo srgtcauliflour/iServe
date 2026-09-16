@@ -36,4 +36,15 @@ final class HTTPRouterTests: XCTestCase {
         let response = router.route(request)
         XCTAssertEqual(response.status, 404)
     }
+
+    func testLengthRequiredAndPayloadTooLargeUseTheExpectedStatusCodes() {
+        XCTAssertEqual(HTTPResponse.lengthRequired().status, 411)
+        XCTAssertEqual(HTTPResponse.payloadTooLarge().status, 413)
+    }
+
+    func testHTTPRouterDefaultImplementationsRefuseEveryUpload() {
+        let router = NotFoundRouter()
+        XCTAssertFalse(router.authorizeUpload(directoryPath: "/"))
+        XCTAssertNil(router.authorizeUploadedFile(directoryPath: "/", filename: "anything.txt"))
+    }
 }
