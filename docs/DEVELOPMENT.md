@@ -84,10 +84,14 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
 
 1. Issue #2: implementation and deterministic tests added; run the real Files-provider
    acceptance checklist above before closing the issue.
-2. Issue #3: secure path resolver and hostile-path/symlink corpus, before file access.
+2. Issue #3: `SecurePathResolver` and its hostile-path/symlink test corpus are added
+   (`FileSystem/SecurePathResolver.swift`, `Tests/iServeTests/SecurePathResolverTests.swift`).
+   It is not yet wired to anything remote-facing because no HTTP layer exists yet;
+   issue #5's static handler must be the first caller.
 3. Issue #4: bounded HTTP parser and Network.framework listener, including readiness,
    cancellation, timeouts and connection limits. Replace the disabled start action.
-4. Issue #5: static routing, MIME, GET/HEAD and bounded streaming/backpressure.
+4. Issue #5: static routing, MIME, GET/HEAD and bounded streaming/backpressure, routed
+   exclusively through `SecurePathResolver.resolve(requestPath:)`.
 5. Issue #6: real local endpoints, sanitized bounded logs and dashboard integration.
 
 PHP, WebDAV, archives and public-reachability tooling stay in their agreed later
