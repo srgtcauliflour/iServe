@@ -6,7 +6,16 @@ struct ServerDashboard: View {
     @State private var isChoosingFolder = false
     @State private var didRestore = false
     @State private var didCopyEndpoint = false
+    @State private var requestCount = 0
+    @State private var bytesTransferred = 0
+    @State private var recentEntries: [RequestLogEntry] = []
     let coordinator: ServerCoordinator
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
 
     private var canStart: Bool {
         switch coordinator.state {
@@ -124,12 +133,41 @@ struct ServerDashboard: View {
                         Text("Open this address from another device on the same network.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        LabeledContent("Requests", value: "\(requestCount)")
+                        LabeledContent("Transferred", value: Self.byteFormatter.string(fromByteCount: Int64(bytesTransferred)))
                     } else {
                         Text("No listening endpoint")
                             .foregroundStyle(.secondary)
                         Text("Local addresses will appear here when the server is ready. Public connectivity depends on your network.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                    }
+                }
+
+                if isRunning {
+                    Section("Recent requests") {
+                        if recentEntries.isEmpty {
+                            Text("No requests yet")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(recentEntries.prefix(10)) { entry in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text("\(entry.method) \(entry.path)")
+                                            .font(.callout)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Spacer()
+                                        Text("\(entry.status)")
+                                            .font(.callout.monospacedDigit())
+                                            .foregroundStyle(entry.status < 400 ? .secondary : .orange)
+                                    }
+                                    Text(entry.date, style: .time)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -139,6 +177,21 @@ struct ServerDashboard: View {
                 guard !didRestore else { return }
                 didRestore = true
                 coordinator.restoreFolder()
+            }
+            .task(id: isRunning) {
+                guard isRunning, let log = coordinator.requestLog else {
+                    requestCount = 0
+                    bytesTransferred = 0
+                    recentEntries = []
+                    return
+                }
+                while !Task.isCancelled {
+                    let snapshot = await log.snapshot()
+                    requestCount = snapshot.totalRequests
+                    bytesTransferred = snapshot.totalBytes
+                    recentEntries = snapshot.entries
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
             }
             .fileImporter(isPresented: $isChoosingFolder,
                           allowedContentTypes: [.folder],

@@ -44,24 +44,44 @@ now uses in place of `UnconfiguredServerService`.
   idle-read timeout guards the request-reading phase (and is cancelled once a
   response begins, so a slow-but-progressing file transfer isn't cut short by
   a timer meant for a stalled request); a hard maximum connection lifetime
-  bounds a connection that never makes any progress at all.
+  bounds a connection that never makes any progress at all. If constructed
+  with a `Logging/RequestLog.swift` instance, it records one sanitized entry
+  (method, target, status, declared byte count) per dispatched response —
+  never for a request that failed to parse at all, since there is no clean
+  target to show for one.
 
 - `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
   `start()` acquires scoped access to the currently selected folder via
   `FolderRootManager.beginServingAccess()` — for the entire server session,
   not just validation — builds an `HTTPServer` rooted there with a real
-  `StaticFileHandler`/`SecurePathResolver`, and starts it. `stop()` cancels
-  the listener/connections (`await`ed inside a detached `Task`, since the
-  `ServerService` protocol's `stop()` itself must stay synchronous) before
-  releasing that same scoped access — never before, per `FileSystem/README.md`'s
-  ordering requirement. `ServerCoordinator` owns exactly one of these; nothing
-  else should construct an `HTTPServer` for the app's own serving session.
+  `StaticFileHandler`/`SecurePathResolver` and a fresh `RequestLog`, and
+  starts it. `stop()` cancels the listener/connections (`await`ed inside a
+  detached `Task`, since the `ServerService` protocol's `stop()` itself must
+  stay synchronous) before releasing that same scoped access — never before,
+  per `FileSystem/README.md`'s ordering requirement — and drops the session's
+  `requestLog` reference so a subsequent restart starts from an empty log
+  rather than carrying over stale entries. `ServerCoordinator` owns exactly
+  one of these; nothing else should construct an `HTTPServer` for the app's
+  own serving session.
+
+  **`App/iServeApp.swift` is the only place that should construct a real
+  `LiveServerService`.** It was missed entirely for one release cycle — the
+  shipped app kept using the `UnconfiguredServerService` bootstrap by
+  default, so `Start Server` always failed even though every piece below it
+  worked and was fully tested. No test caught it because the test suite
+  injects its dependencies directly and nothing exercises `iServeApp`'s own
+  `init()`; only a real device tap-through surfaced it. If you add a new
+  `ServerService`-consuming entry point, make sure it actually constructs
+  `LiveServerService` rather than relying on `ServerCoordinator`'s default
+  parameter.
 
 Covered by `Tests/iServeTests/HTTPRequestParserTests.swift` (bounded parsing,
 independent of any listener), `HTTPRouterTests.swift` (headers/response
 encoding), `ServerLifecycleTests.swift` (real loopback start/stop determinism,
 GET/HEAD/unsupported-method behavior, concurrent connections),
 `StaticFileServingLifecycleTests.swift` (a real `StaticFileHandler` served
-end to end, including a large payload streamed byte-exact), and
-`LiveServerServiceTests.swift` (a real folder served through the full
-scoped-access + `HTTPServer` session lifecycle).
+end to end, including a large payload streamed byte-exact and a real request
+recorded into an injected `RequestLog`), and `LiveServerServiceTests.swift`
+(a real folder served through the full scoped-access + `HTTPServer` session
+lifecycle, including the session's `requestLog` going from `nil` to
+populated to `nil` again across start/request/stop).

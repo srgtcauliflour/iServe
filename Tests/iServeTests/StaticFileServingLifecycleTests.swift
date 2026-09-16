@@ -85,6 +85,42 @@ final class StaticFileServingLifecycleTests: XCTestCase {
         await server.stop()
     }
 
+    func testRequestLogRecordsRealRequestsThroughTheFullPipeline() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<html>hi</html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+
+        let log = RequestLog()
+        let server = HTTPServer(router: StaticFileHandler(resolver: SecurePathResolver(root: root)), requestLog: log)
+        let port = try await server.start()
+
+        _ = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/"))
+        _ = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/missing.txt"))
+
+        let snapshot = try await waitForSnapshot(log, expectingAtLeast: 2)
+        XCTAssertEqual(snapshot.totalRequests, 2)
+        XCTAssertTrue(snapshot.entries.contains { $0.path == "/" && $0.status == 200 })
+        XCTAssertTrue(snapshot.entries.contains { $0.path == "/missing.txt" && $0.status == 404 })
+        XCTAssertGreaterThan(snapshot.totalBytes, 0)
+
+        await server.stop()
+    }
+
+    private func waitForSnapshot(
+        _ log: RequestLog,
+        expectingAtLeast count: Int,
+        timeout: TimeInterval = 2
+    ) async throws -> RequestLog.Snapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let snapshot = await log.snapshot()
+            if snapshot.totalRequests >= count || Date() > deadline {
+                return snapshot
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
     private func makeTempDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("iServeStaticLifecycleRoot-\(UUID().uuidString)", isDirectory: true)

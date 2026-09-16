@@ -55,10 +55,12 @@ actor HTTPServer {
 
     private let router: any HTTPRouter
     private let limits: HTTPServerLimits
+    private let requestLog: RequestLog?
 
-    init(router: any HTTPRouter = NotFoundRouter(), limits: HTTPServerLimits = .default) {
+    init(router: any HTTPRouter = NotFoundRouter(), limits: HTTPServerLimits = .default, requestLog: RequestLog? = nil) {
         self.router = router
         self.limits = limits
+        self.requestLog = requestLog
     }
 
     /// Starts listening on `port` (default: any available port, the normal case
@@ -120,7 +122,8 @@ actor HTTPServer {
         let httpConnection = HTTPConnection(
             connection: connection,
             router: router,
-            limits: limits
+            limits: limits,
+            requestLog: requestLog
         ) { [weak self] id in
             guard let self else { return }
             Task { await self.remove(id) }

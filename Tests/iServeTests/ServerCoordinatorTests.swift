@@ -207,6 +207,7 @@ private final class RecordingServerService: ServerService {
     var stopCount = 0
     var startCallCount = 0
     var startResult: Result<UInt16, Error> = .success(8080)
+    var requestLog: RequestLog?
 
     func start() async throws -> UInt16 {
         startCallCount += 1

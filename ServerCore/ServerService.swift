@@ -2,6 +2,11 @@
 /// resources, plus any security-scoped access they acquire to serve them.
 @MainActor
 protocol ServerService: AnyObject {
+    /// The current session's sanitized request telemetry, or `nil` when not
+    /// running. A fresh log per session, so a restart doesn't carry over
+    /// stale entries from a previous run.
+    var requestLog: RequestLog? { get }
+
     /// Attempts to start serving and returns the bound local port once the
     /// listener reports ready. Throws (without starting anything) if there is
     /// no folder to serve, scoped access could not be acquired, or the
@@ -23,6 +28,8 @@ final class UnconfiguredServerService: ServerService {
     enum ServiceError: Error {
         case unavailable
     }
+
+    var requestLog: RequestLog? { nil }
 
     func start() async throws -> UInt16 {
         throw ServiceError.unavailable

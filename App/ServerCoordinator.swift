@@ -29,6 +29,9 @@ final class ServerCoordinator {
         self.state = folders.selectedURL == nil ? .noFolder : .ready
     }
 
+    /// The current session's sanitized request telemetry, or `nil` when not running.
+    var requestLog: RequestLog? { service.requestLog }
+
     var statusTitle: String {
         switch state {
         case .noFolder: "No folder selected"

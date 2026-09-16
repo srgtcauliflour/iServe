@@ -24,16 +24,26 @@ final class LiveServerServiceTests: XCTestCase {
         access.events = []
 
         let service = LiveServerService(folders: folders)
+        XCTAssertNil(service.requestLog)
+
         let port = try await service.start()
         XCTAssertEqual(access.events, ["start"])
+        XCTAssertNotNil(service.requestLog)
 
         let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "<html>ok</html>")
 
+        let log = try XCTUnwrap(service.requestLog)
+        let snapshot = try await waitForSnapshot(log, expectingAtLeast: 1)
+        XCTAssertEqual(snapshot.totalRequests, 1)
+        XCTAssertEqual(snapshot.entries.first?.path, "/")
+        XCTAssertEqual(snapshot.entries.first?.status, 200)
+
         service.stop()
         try await waitUntil { access.events.contains("stop") }
         XCTAssertEqual(access.events, ["start", "stop"])
+        XCTAssertNil(service.requestLog)
     }
 
     @MainActor
@@ -66,6 +76,21 @@ final class LiveServerServiceTests: XCTestCase {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .accessDenied)
         }
         XCTAssertEqual(access.events, ["start"])
+    }
+
+    private func waitForSnapshot(
+        _ log: RequestLog,
+        expectingAtLeast count: Int,
+        timeout: TimeInterval = 2
+    ) async throws -> RequestLog.Snapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let snapshot = await log.snapshot()
+            if snapshot.totalRequests >= count || Date() > deadline {
+                return snapshot
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
     }
 
     @MainActor

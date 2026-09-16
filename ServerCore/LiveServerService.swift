@@ -16,6 +16,7 @@ final class LiveServerService: ServerService {
     private let limits: HTTPServerLimits
     private var httpServer: HTTPServer?
     private var scopedURL: URL?
+    private(set) var requestLog: RequestLog?
 
     init(folders: FolderRootManager, limits: HTTPServerLimits = .default) {
         self.folders = folders
@@ -31,11 +32,13 @@ final class LiveServerService: ServerService {
         }
 
         let resolver = SecurePathResolver(root: scopedURL)
-        let server = HTTPServer(router: StaticFileHandler(resolver: resolver), limits: limits)
+        let log = RequestLog()
+        let server = HTTPServer(router: StaticFileHandler(resolver: resolver), limits: limits, requestLog: log)
         do {
             let port = try await server.start()
             self.httpServer = server
             self.scopedURL = scopedURL
+            self.requestLog = log
             return port
         } catch {
             folders.endServingAccess(scopedURL)
@@ -46,6 +49,7 @@ final class LiveServerService: ServerService {
     func stop() {
         guard let server = httpServer else { return }
         httpServer = nil
+        requestLog = nil
         let urlToRelease = scopedURL
         scopedURL = nil
         Task { @MainActor in

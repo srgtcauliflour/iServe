@@ -15,6 +15,7 @@ actor HTTPConnection {
     private let connection: NWConnection
     private let router: any HTTPRouter
     private let limits: HTTPServerLimits
+    private let requestLog: RequestLog?
     private let onClose: @Sendable (UUID) -> Void
 
     private var parser: HTTPRequestParser
@@ -28,11 +29,13 @@ actor HTTPConnection {
         connection: NWConnection,
         router: any HTTPRouter,
         limits: HTTPServerLimits,
+        requestLog: RequestLog? = nil,
         onClose: @escaping @Sendable (UUID) -> Void
     ) {
         self.connection = connection
         self.router = router
         self.limits = limits
+        self.requestLog = requestLog
         self.onClose = onClose
         self.parser = HTTPRequestParser(limits: limits.parserLimits)
     }
@@ -108,9 +111,9 @@ actor HTTPConnection {
     private func respond(to request: HTTPRequest) {
         switch request.method {
         case "GET", "HEAD":
-            respond(with: router.route(request), suppressBody: request.method == "HEAD")
+            respond(with: router.route(request), suppressBody: request.method == "HEAD", request: request)
         default:
-            respond(with: .notImplemented(method: request.method))
+            respond(with: .notImplemented(method: request.method), request: request)
         }
     }
 
@@ -129,7 +132,7 @@ actor HTTPConnection {
         }
     }
 
-    private func respond(with response: HTTPResponse, suppressBody: Bool = false) {
+    private func respond(with response: HTTPResponse, suppressBody: Bool = false, request: HTTPRequest? = nil) {
         guard !didClose, !didRespond else { return }
         didRespond = true
         // The idle-read timeout only guards the request-reading phase; once a
@@ -138,6 +141,13 @@ actor HTTPConnection {
         // isn't cut short by a timer meant for a client that stalls mid-request.
         idleTimeoutTask?.cancel()
         idleTimeoutTask = nil
+
+        if let request, let requestLog {
+            let bytes = suppressBody ? 0 : Self.declaredBodyLength(response.body)
+            Task {
+                await requestLog.record(method: request.method, path: request.target, status: response.status, bytes: bytes)
+            }
+        }
 
         let head = response.headEncoded()
         switch response.body {
@@ -217,6 +227,17 @@ actor HTTPConnection {
 
     private func resetIdleTimeout() {
         scheduleIdleTimeout()
+    }
+
+    private static func declaredBodyLength(_ body: HTTPResponseBody) -> Int {
+        switch body {
+        case .empty:
+            return 0
+        case .data(let data):
+            return data.count
+        case .file(let file):
+            return file.length
+        }
     }
 
     private func scheduleLifetimeTimeout() {

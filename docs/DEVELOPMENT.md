@@ -141,8 +141,12 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
    (`getifaddrs`-based LAN IPv4 discovery, injectable for tests). Start/Stop
    in `ServerDashboard` are wired to real state, with a Copy button for the
    endpoint.
-   Remaining for issue #6: a real request log and request/byte counters
-   (`Logging/` is still just a placeholder).
+   `Logging/RequestLog.swift` (an actor, bounded to 50 most-recent entries)
+   is a fresh-per-session, sanitized request log — method/target/status/byte
+   count only, never a local path — that `HTTPConnection` records into and
+   `ServerDashboard` polls once a second while running to show request
+   count, bytes transferred, and the most recent requests. This completes
+   issue #6's stated acceptance criteria.
 
    **Real-device acceptance of the v0.1 core loop passed** on a physical
    iPhone: selected a Files folder, tapped Start Server, and a second
@@ -196,7 +200,8 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
 
 PHP, WebDAV, archives and public-reachability tooling stay in their agreed later
 milestones. The real-second-LAN-device-loads-the-site half of the v0.1
-acceptance gate has now passed on physical hardware; do not close the gate
-itself until traversal and large-file streaming are also re-confirmed on a
-real device (they already pass in CI) and issue #6's request log/counters
-land.
+acceptance gate has now passed on physical hardware, and issue #6's stated
+scope (dashboard, endpoint, request log/counters, actionable failure states)
+is now implemented end to end; do not close the gate itself until traversal
+and large-file streaming are also re-confirmed on a real device (they
+already pass in CI).
