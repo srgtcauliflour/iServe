@@ -206,7 +206,7 @@ is now implemented end to end; do not close the gate itself until traversal
 and large-file streaming are also re-confirmed on a real device (they
 already pass in CI).
 
-## v0.2 progress
+## v0.2 progress (merged to `main`, `MARKETING_VERSION` 0.2.0)
 
 1. Directory browsing (`docs/ROADMAP.md`'s "Embedded responsive browser file
    manager" / "Directory browsing" deliverables, started): a folder with no
@@ -284,7 +284,13 @@ already pass in CI).
    capability is never implied just by selecting a folder. See
    `ServerCore/README.md`, `Handlers/README.md`, `Transfer/README.md`.
 
-v0.2's remaining piece is the public-address-vs-reachability distinction.
+v0.2 is closed out as of `MARKETING_VERSION` 0.2.0: the core Shu-parity
+loop (network discovery, Bonjour/QR, directory browsing, download +
+upload) is done and merged. `docs/ROADMAP.md`'s remaining v0.2 line items —
+the public-address-vs-reachability distinction, large-file reliability
+improvements, and transfer/request/client statistics beyond the existing
+request log — were deliberately not blocking; pick them up under v0.3 if
+they turn out to matter there rather than reopening v0.2.
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation
