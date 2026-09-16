@@ -68,6 +68,14 @@ struct HTTPResponse: Sendable {
         .plainText(status: 431, reason: "Request Header Fields Too Large", message: "Request Header Fields Too Large")
     }
 
+    static func lengthRequired() -> HTTPResponse {
+        .plainText(status: 411, reason: "Length Required", message: "Length Required")
+    }
+
+    static func payloadTooLarge() -> HTTPResponse {
+        .plainText(status: 413, reason: "Payload Too Large", message: "Payload Too Large")
+    }
+
     static func internalServerError() -> HTTPResponse {
         .plainText(status: 500, reason: "Internal Server Error", message: "Internal Server Error")
     }

@@ -26,7 +26,7 @@ final class LiveServerServiceTests: XCTestCase {
         let service = LiveServerService(folders: folders)
         XCTAssertNil(service.requestLog)
 
-        let port = try await service.start()
+        let port = try await service.start(allowUploads: false)
         XCTAssertEqual(access.events, ["start"])
         XCTAssertNotNil(service.requestLog)
 
@@ -51,7 +51,7 @@ final class LiveServerServiceTests: XCTestCase {
         let folders = FolderRootManager(access: StubFolderAccess(), store: MemoryBookmarkStore())
         let service = LiveServerService(folders: folders)
         do {
-            _ = try await service.start()
+            _ = try await service.start(allowUploads: false)
             XCTFail("expected start() to throw with no folder selected")
         } catch {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .noFolderSelected)
@@ -70,7 +70,7 @@ final class LiveServerServiceTests: XCTestCase {
 
         let service = LiveServerService(folders: folders)
         do {
-            _ = try await service.start()
+            _ = try await service.start(allowUploads: false)
             XCTFail("expected start() to throw when scope cannot be acquired")
         } catch {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .accessDenied)

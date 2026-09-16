@@ -67,4 +67,19 @@ final class DirectoryListingRendererTests: XCTestCase {
         let page = html()
         XCTAssertTrue(page.contains("href=\"sub/\">sub/</a></li>"))
     }
+
+    func testOmitsTheUploadFormByDefault() {
+        XCTAssertFalse(html().contains("<form"))
+    }
+
+    func testIncludesAMultipartUploadFormWhenAllowUploadsIsTrue() {
+        let page = String(
+            decoding: DirectoryListingRenderer.render(directoryURL: root, requestPath: "/", allowUploads: true),
+            as: UTF8.self
+        )
+        XCTAssertTrue(page.contains("<form"))
+        XCTAssertTrue(page.contains("method=\"POST\""))
+        XCTAssertTrue(page.contains("enctype=\"multipart/form-data\""))
+        XCTAssertTrue(page.contains("type=\"file\""))
+    }
 }

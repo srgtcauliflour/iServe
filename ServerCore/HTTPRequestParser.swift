@@ -47,6 +47,20 @@ struct HTTPRequestParser {
         self.limits = limits
     }
 
+    /// Removes and returns whatever is left in the internal buffer once
+    /// `feed(_:)` has returned a completed request. A client's write of
+    /// "headers immediately followed by body" (routine for a POST) can
+    /// land in the very same network read as the header-terminating blank
+    /// line, so those leading body bytes are already sitting here — the
+    /// caller must recover them before reading any more from the
+    /// connection, or silently lose the start of the body. Only meaningful
+    /// immediately after `feed(_:)` returns non-`nil`; the parser isn't
+    /// reused afterward regardless.
+    mutating func drainRemainder() -> Data {
+        defer { buffer.removeAll() }
+        return buffer
+    }
+
     /// Appends newly received bytes and parses as many complete lines as are
     /// available. Returns the completed request once the blank line terminating
     /// the header section has been seen, or `nil` if more data is required.

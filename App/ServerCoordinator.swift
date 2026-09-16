@@ -14,17 +14,40 @@ final class ServerCoordinator {
         case unavailable
     }
 
+    /// One `alternateEndpoints` entry - everything the primary `state`
+    /// endpoint doesn't surface (other interfaces, IPv6).
+    struct DiscoveredEndpoint: Identifiable, Equatable {
+        let address: NetworkInterfaceAddress
+        /// What copying this row should copy: a full `http://` URL for
+        /// IPv4, matching the primary endpoint's format - but just the raw
+        /// address for IPv6, since a zone-id link-local address
+        /// (`fe80::1%en0`) isn't reliably usable as a URL host across HTTP
+        /// clients, so building one here isn't worth the risk of it being
+        /// silently wrong.
+        let copyValue: String
+        var id: String { address.id }
+    }
+
     private(set) var state: State
+    /// Off by default: per `docs/SECURITY.md`, uploads are an explicit write
+    /// capability, never implied just by selecting a folder and starting
+    /// the server. Changing it while running has no effect on the current
+    /// session — only the next `start()` reads it; `ServerDashboard`
+    /// disables the toggle while running to avoid that confusion.
+    var uploadsEnabled = false
     let folders: FolderRootManager
     private let service: any ServerService
     private let ipAddressProvider: @Sendable () -> String?
+    private let networkAddressProvider: @Sendable () -> [NetworkInterfaceAddress]
     private let deviceNameProvider: @MainActor @Sendable () -> String
     private let bonjourAdvertiser: BonjourAdvertiser
+    private(set) var runningPort: UInt16?
 
     init(
         service: any ServerService = UnconfiguredServerService(),
         folders: FolderRootManager = FolderRootManager(),
         ipAddressProvider: @escaping @Sendable () -> String? = LocalNetworkAddress.preferredIPv4Address,
+        networkAddressProvider: @escaping @Sendable () -> [NetworkInterfaceAddress] = LocalNetworkAddress.allAddresses,
         // @MainActor, unlike ipAddressProvider above: UIDevice.current is
         // itself main-actor-isolated, so a plain @Sendable closure wrapping
         // it can't reference it at all. Calling it stays synchronous since
@@ -36,6 +59,7 @@ final class ServerCoordinator {
         self.service = service
         self.folders = folders
         self.ipAddressProvider = ipAddressProvider
+        self.networkAddressProvider = networkAddressProvider
         self.deviceNameProvider = deviceNameProvider
         self.bonjourAdvertiser = bonjourAdvertiser
         self.state = folders.selectedURL == nil ? .noFolder : .ready
@@ -49,6 +73,26 @@ final class ServerCoordinator {
     /// never required for it: a `.failed` advertisement never affects
     /// whether the server itself is reachable by address.
     var bonjourState: BonjourAdvertiser.State { bonjourAdvertiser.state }
+
+    /// Every other LAN-reachable address sharing `state`'s running port -
+    /// alternates worth trying if the primary endpoint isn't reachable from
+    /// a particular device (a secondary interface, an IPv6-only peer).
+    /// `HTTPServer` binds to `.any` (every interface), so all of these
+    /// reach the same running server. Excludes whichever address `state`'s
+    /// own endpoint is already built from. Empty when not running.
+    var alternateEndpoints: [DiscoveredEndpoint] {
+        guard let runningPort, case .running(let primaryEndpoint) = state else { return [] }
+        return networkAddressProvider().compactMap { candidate in
+            switch candidate.family {
+            case .ipv4:
+                let endpoint = "http://\(candidate.address):\(runningPort)/"
+                guard endpoint != primaryEndpoint else { return nil }
+                return DiscoveredEndpoint(address: candidate, copyValue: endpoint)
+            case .ipv6:
+                return DiscoveredEndpoint(address: candidate, copyValue: candidate.address)
+            }
+        }
+    }
 
     var statusTitle: String {
         switch state {
@@ -103,9 +147,10 @@ final class ServerCoordinator {
         state = .starting
         Task {
             do {
-                let port = try await service.start()
+                let port = try await service.start(allowUploads: uploadsEnabled)
                 let host = ipAddressProvider() ?? "localhost"
                 state = .running(endpoint: "http://\(host):\(port)/")
+                runningPort = port
                 bonjourAdvertiser.start(name: deviceNameProvider(), port: Int(port))
             } catch {
                 state = .error(Self.sanitizedStartFailureMessage(for: error))
@@ -121,6 +166,7 @@ final class ServerCoordinator {
     private func stopServing() {
         service.stop()
         bonjourAdvertiser.stop()
+        runningPort = nil
     }
 
     private func folderState() -> State {

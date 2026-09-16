@@ -250,11 +250,41 @@ already pass in CI).
    `NSAppTransportSecurity` → `NSAllowsLocalNetworking: true` in Info.plist
    (also likely needs `project.yml`'s `info:`/`properties:` block, per the
    same reasoning as the Bonjour services array).
+4. Network interface discovery: `Networking/LocalNetworkAddress.allAddresses()`
+   walks every active, non-loopback interface (IPv4 and IPv6, not just the
+   one `preferredIPv4Address()` picks) as `[NetworkInterfaceAddress]`.
+   `App/ServerCoordinator.swift` combines this with the new `runningPort`
+   (captured alongside `state` on a successful `start()`) into
+   `alternateEndpoints`, filtering out whichever address `state`'s own
+   endpoint already uses; `ServerDashboard`'s new "Other Addresses" section
+   lists the rest. A link-local IPv6 address gets `%<interface>` appended
+   (needed to actually route to it — the same address can exist on several
+   interfaces), but is shown as a raw address rather than wrapped into a
+   `http://[...]/` URL, since a zone-id URL isn't reliably usable across
+   HTTP clients. See `Networking/README.md`.
+5. Browser uploads, the last major v0.2 piece: a plain HTML
+   `<input type="file" multiple>` form (no JavaScript) in
+   `Handlers/DirectoryListingRenderer.swift`'s listing posts
+   `multipart/form-data` back to the same directory. New pieces:
+   `Transfer/MultipartFormDataParser.swift` (a bounded, incremental
+   multipart parser mirroring `HTTPRequestParser`'s feed-bytes-as-they-arrive
+   design) and `Transfer/FileChunkWriter.swift` (the write-side mirror of
+   `FileChunkReader`), both driven directly by
+   `ServerCore/HTTPConnection.swift`, which authorizes an upload's target
+   directory, `Content-Type`/boundary, and `Content-Length` (against a new
+   `HTTPServerLimits.maxUploadBytes`) before reading a single body byte, and
+   deletes any partial file on a malformed/truncated body or an early
+   disconnect. `ServerCore/HTTPRouter.swift` gained two upload-authorization
+   requirements (default: refuse everything) that
+   `Handlers/StaticFileHandler.swift` implements — including refusing to
+   ever silently overwrite an existing file. Off by default end to end: a
+   new `ServerCoordinator.uploadsEnabled` (surfaced as an "Allow Uploads"
+   toggle in `ServerDashboard`, disabled while running) flows through
+   `ServerService.start(allowUploads:)` — per `docs/SECURITY.md`, a write
+   capability is never implied just by selecting a folder. See
+   `ServerCore/README.md`, `Handlers/README.md`, `Transfer/README.md`.
 
-Not yet done from v0.2's list: network interface discovery/IPv4+IPv6
-presentation beyond the single preferred address
-`Networking/LocalNetworkAddress.swift` already finds, browser uploads, and
-the public-address-vs-reachability distinction.
+v0.2's remaining piece is the public-address-vs-reachability distinction.
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

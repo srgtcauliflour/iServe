@@ -122,4 +122,71 @@ final class StaticFileHandlerTests: XCTestCase {
         XCTAssertEqual(response.headers["Content-Type"], "text/css; charset=utf-8")
         XCTAssertEqual(response.headers["Content-Length"], "20")
     }
+
+    // MARK: - Uploads
+
+    func testDirectoryListingOmitsTheUploadFormWhenUploadsAreDisabled() throws {
+        let response = makeHandler().route(request("/"))
+        guard case .data(let data) = response.body else { return XCTFail("expected an in-memory HTML body") }
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("enctype=\"multipart/form-data\""))
+    }
+
+    func testDirectoryListingIncludesTheUploadFormWhenUploadsAreEnabled() throws {
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        let response = handler.route(request("/"))
+        guard case .data(let data) = response.body else { return XCTFail("expected an in-memory HTML body") }
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("enctype=\"multipart/form-data\""))
+    }
+
+    func testAuthorizeUploadRefusesWhenUploadsAreDisabledEvenForARealDirectory() {
+        XCTAssertFalse(makeHandler().authorizeUpload(directoryPath: "/"))
+    }
+
+    func testAuthorizeUploadAcceptsAnExistingDirectoryWhenEnabled() throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("uploads"), withIntermediateDirectories: true)
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        XCTAssertTrue(handler.authorizeUpload(directoryPath: "/uploads/"))
+    }
+
+    func testAuthorizeUploadRefusesAPathThatIsNotADirectory() throws {
+        try "x".write(to: root.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        XCTAssertFalse(handler.authorizeUpload(directoryPath: "/file.txt/"))
+    }
+
+    func testAuthorizeUploadRefusesAMissingDirectory() {
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        XCTAssertFalse(handler.authorizeUpload(directoryPath: "/missing/"))
+    }
+
+    func testAuthorizeUploadedFileResolvesAPlainFilenameInsideTheDirectory() {
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        let url = handler.authorizeUploadedFile(directoryPath: "/", filename: "photo.jpg")
+        XCTAssertEqual(url?.lastPathComponent, "photo.jpg")
+    }
+
+    func testAuthorizeUploadedFileRefusesWhenUploadsAreDisabled() {
+        XCTAssertNil(makeHandler().authorizeUploadedFile(directoryPath: "/", filename: "photo.jpg"))
+    }
+
+    func testAuthorizeUploadedFileRefusesToOverwriteAnExistingFile() throws {
+        try "existing".write(to: root.appendingPathComponent("photo.jpg"), atomically: true, encoding: .utf8)
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        XCTAssertNil(handler.authorizeUploadedFile(directoryPath: "/", filename: "photo.jpg"))
+    }
+
+    func testAuthorizeUploadedFileRejectsATraversalFilename() {
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        XCTAssertNil(handler.authorizeUploadedFile(directoryPath: "/", filename: "../escape.txt"))
+    }
+
+    func testAuthorizeUploadedFileRejectsAFilenameContainingASlash() {
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        XCTAssertNil(handler.authorizeUploadedFile(directoryPath: "/", filename: "a/b.txt"))
+    }
+
+    func testAuthorizeUploadedFileRejectsAnEmptyFilename() {
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowUploads: true)
+        XCTAssertNil(handler.authorizeUploadedFile(directoryPath: "/", filename: ""))
+    }
 }

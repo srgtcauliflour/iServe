@@ -10,7 +10,11 @@ struct ServerDashboard: View {
     @State private var requestCount = 0
     @State private var bytesTransferred = 0
     @State private var recentEntries: [RequestLogEntry] = []
-    let coordinator: ServerCoordinator
+    // @Bindable, not `let`: the "Allow Uploads" toggle needs a Binding into
+    // coordinator.uploadsEnabled. Plain @Observable property access (as
+    // every other property here already uses) still tracks changes for
+    // re-rendering either way - this only adds the $-projection.
+    @Bindable var coordinator: ServerCoordinator
 
     private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -63,6 +67,7 @@ struct ServerDashboard: View {
                 serverSection
                 connectionsSection
                 if isRunning {
+                    alternateAddressesSection
                     recentRequestsSection
                 }
             }
@@ -164,7 +169,9 @@ struct ServerDashboard: View {
     @ViewBuilder
     private var serverSection: some View {
         Section {
-            LabeledContent("Profile", value: "Website / Read Only")
+            LabeledContent("Profile", value: coordinator.uploadsEnabled ? "Website / Uploads Allowed" : "Website / Read Only")
+            Toggle("Allow Uploads", isOn: $coordinator.uploadsEnabled)
+                .disabled(isBusy || isRunning)
             LabeledContent("Status", value: serverStatusText)
             if isRunning {
                 Button("Stop Server", systemImage: "stop.fill", role: .destructive) {
@@ -184,7 +191,11 @@ struct ServerDashboard: View {
         } header: {
             Text("Server")
         } footer: {
-            Text("Keep iServe open while sharing. Serving stops when the app is no longer active.")
+            Text(
+                coordinator.uploadsEnabled
+                ? "Keep iServe open while sharing. Anyone who can reach this address can add files to the selected folder."
+                : "Keep iServe open while sharing. Serving stops when the app is no longer active."
+            )
         }
     }
 
@@ -223,6 +234,24 @@ struct ServerDashboard: View {
                 Text("Local addresses will appear here when the server is ready. Public connectivity depends on your network.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var alternateAddressesSection: some View {
+        let entries = coordinator.alternateEndpoints
+        if !entries.isEmpty {
+            Section {
+                ForEach(entries) { entry in
+                    Label(entry.copyValue, systemImage: entry.address.family == .ipv4 ? "wifi" : "wifi.circle")
+                        .textSelection(.enabled)
+                        .accessibilityLabel("\(entry.address.interfaceName): \(entry.copyValue)")
+                }
+            } header: {
+                Text("Other Addresses")
+            } footer: {
+                Text("Other network interfaces this device has. Use one of these if the main address above isn't reachable.")
             }
         }
     }

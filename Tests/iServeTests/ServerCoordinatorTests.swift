@@ -96,6 +96,33 @@ final class ServerCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testUploadsAreDisabledByDefaultAndFlowThroughToStart() async throws {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+        XCTAssertEqual(service.lastAllowUploads, false)
+    }
+
+    @MainActor
+    func testEnablingUploadsBeforeStartingPassesThatChoiceToTheService() async throws {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+        coordinator.uploadsEnabled = true
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+        XCTAssertEqual(service.lastAllowUploads, true)
+    }
+
+    @MainActor
     func testCallingStartAgainWhileRunningDoesNotRestartTheService() async throws {
         let service = RecordingServerService()
         let access = StubFolderAccess()
@@ -224,6 +251,62 @@ final class ServerCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testAlternateEndpointsIsEmptyWhenNotRunning() {
+        let service = RecordingServerService()
+        let coordinator = ServerCoordinator(
+            service: service,
+            networkAddressProvider: {
+                [NetworkInterfaceAddress(interfaceName: "en1", family: .ipv4, address: "192.0.2.9")]
+            }
+        )
+        XCTAssertEqual(coordinator.alternateEndpoints, [])
+    }
+
+    @MainActor
+    func testAlternateEndpointsExcludesThePrimaryAddressAndBuildsURLsForIPv4() async throws {
+        let service = RecordingServerService()
+        service.startResult = .success(4321)
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(
+            service: service, folders: folders, ipAddressProvider: { "192.0.2.1" },
+            networkAddressProvider: {
+                [
+                    NetworkInterfaceAddress(interfaceName: "en0", family: .ipv4, address: "192.0.2.1"),
+                    NetworkInterfaceAddress(interfaceName: "en1", family: .ipv4, address: "192.0.2.9"),
+                ]
+            }
+        )
+        coordinator.selectFolder(access.url)
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+
+        let alternates = coordinator.alternateEndpoints
+        XCTAssertEqual(alternates.count, 1)
+        XCTAssertEqual(alternates.first?.address.interfaceName, "en1")
+        XCTAssertEqual(alternates.first?.copyValue, "http://192.0.2.9:4321/")
+    }
+
+    @MainActor
+    func testAlternateEndpointsUsesTheRawAddressForIPv6() async throws {
+        let service = RecordingServerService()
+        service.startResult = .success(4321)
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(
+            service: service, folders: folders, ipAddressProvider: { "192.0.2.1" },
+            networkAddressProvider: {
+                [NetworkInterfaceAddress(interfaceName: "en0", family: .ipv6, address: "fe80::1%en0")]
+            }
+        )
+        coordinator.selectFolder(access.url)
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+
+        XCTAssertEqual(coordinator.alternateEndpoints.map(\.copyValue), ["fe80::1%en0"])
+    }
+
+    @MainActor
     private func waitUntil(
         timeout: TimeInterval = 2,
         _ condition: @escaping () -> Bool,
@@ -247,9 +330,11 @@ private final class RecordingServerService: ServerService {
     var startCallCount = 0
     var startResult: Result<UInt16, Error> = .success(8080)
     var requestLog: RequestLog?
+    private(set) var lastAllowUploads: Bool?
 
-    func start() async throws -> UInt16 {
+    func start(allowUploads: Bool) async throws -> UInt16 {
         startCallCount += 1
+        lastAllowUploads = allowUploads
         return try startResult.get()
     }
 
