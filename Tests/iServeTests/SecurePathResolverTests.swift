@@ -82,13 +82,12 @@ final class SecurePathResolverTests: XCTestCase {
         assertRejected("/%2e%2e%2f%2e%2e%2fetc%2fpasswd", as: .forbiddenComponent)
     }
 
-    func testDoubleEncodedTraversalDoesNotEscapeRoot() throws {
-        // Decoding exactly once turns this into the literal, nonexistent file name
-        // "%2e%2e", never into "..", so it cannot traverse.
-        let resolver = SecurePathResolver(root: rootURL)
-        let resolved = try resolver.resolve(requestPath: "/%252e%252e/etc/passwd")
-        let rootPrefix = rootURL.resolvingSymlinksInPath().path
-        XCTAssertTrue(resolved.path.hasPrefix(rootPrefix + "/"))
+    func testDoubleEncodedTraversalDoesNotEscapeRoot() {
+        // Decoding exactly once turns the first segment into the literal,
+        // nonexistent directory name "%2e%2e", never into "..". It therefore
+        // fails closed as an ordinary missing intermediate component (.notFound)
+        // rather than escaping the root or resolving to anything at all.
+        assertRejected("/%252e%252e/etc/passwd", as: .notFound)
     }
 
     func testRejectsMalformedPercentEncodingTruncated() {
