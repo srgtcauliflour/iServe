@@ -130,7 +130,7 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
 5. Issue #6 (partial): `ServerCore/LiveServerService.swift` replaces
    `UnconfiguredServerService` — it acquires scoped access to the selected
    folder for the whole server session via
-   `FolderRootManager.beginServingAccess()`/`endServingAccess(_:)`, builds a
+   `FolderRootManager.beginAccess()`/`endAccess(_:)`, builds a
    real `HTTPServer(router: StaticFileHandler(...))` over that root, and
    releases scope only after the listener/connections have cancelled.
    `ServerCore/ServerService.swift`'s protocol now includes `start()`.
@@ -313,11 +313,35 @@ they turn out to matter there rather than reopening v0.2.
    `Transfer/README.md`. See also `ServerCore/README.md`,
    `Handlers/README.md`.
 
-Not yet started from v0.3: multi-selection + streaming ZIP downloads, the
+2. Native in-app file manager, first increment (browse, preview,
+   zip/unzip — rename/move/copy/delete deliberately deferred): adds
+   [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) via Swift
+   Package Manager, this project's first third-party dependency, since
+   Apple has no first-party ZIP archive API and shelling out is ruled out
+   by `AGENTS.md`/the sandbox. `Transfer/ArchiveManager.swift` wraps it —
+   `createArchive(containing:at:)`/`extractArchive(at:to:)` — with its own
+   Zip-Slip containment check on every extracted entry (mirroring
+   `FileSystem/SecurePathResolver.swift`) and an outright refusal of
+   symlink entries, independent of whatever protection ZIPFoundation
+   itself provides. `App/FileManagerScreen.swift`/`FileManagerViewModel.swift`
+   are a new native screen (opened from `ServerDashboard`, independent of
+   whether the server is running) holding its own scoped access via the
+   now-renamed `FolderRootManager.beginAccess()`/`endAccess(_:)` — reentrant
+   with a running server's own access, since both rely on security-scoped
+   access being reference-counted. Browsing is a plain recursive
+   `NavigationStack`; preview wraps `QLPreviewController` via
+   `UIViewControllerRepresentable` (SwiftUI's own `quickLookPreview(_:)`
+   modifier turned out not to resolve as a member on this toolchain, so
+   this uses the older, well-established UIKit path instead); zip is a
+   multi-select "Compress" action, unzip a swipe action on `.zip` entries.
+   See `Transfer/README.md`, `FileSystem/README.md`.
+
+Not yet started from v0.3: streaming ZIP *downloads* over HTTP (as
+opposed to the in-app zip/unzip above), rename/move/copy/delete and other
+file-manager operations beyond this first increment, the
 authentication/session layer and capability-based permissions/profiles,
-WebDAV, optional multiple mounted folders, rate/connection/request limits,
-and the in-app sandboxed file manager (see `docs/ROADMAP.md` for all of
-these).
+WebDAV, optional multiple mounted folders, and rate/connection/request
+limits (see `docs/ROADMAP.md` for all of these).
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

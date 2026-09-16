@@ -49,17 +49,22 @@ Deliverables:
 - WebDAV read operations, then authorized write operations.
 - Optional multiple mounted folders after secure namespace design.
 - Rate/connection/request limits and advanced logs.
-- Feature-rich in-app sandboxed file manager: open/preview files in place
-  (text, images, video, PDF), edit text-based files, and archive support
-  beyond zip/unzip — 7z, RAR and other common compression formats — plus
-  whatever else a proper on-device file manager benefits from (rename,
-  move, copy, delete within capability limits, multi-select actions,
-  search), all still bounded to the selected root the same way serving
-  already is. Materially bigger than "download/upload a file" — needs its
-  own scoping pass and likely its own ADR once v0.3's transport/auth layer
-  lands, especially for in-place editing and third-party archive-format
-  libraries (RAR support in particular has licensing considerations to
-  check before picking a library).
+- Feature-rich in-app sandboxed file manager. First increment shipped:
+  a native browse screen (`App/FileManagerScreen.swift`), file preview via
+  `QLPreviewController` (text, images, video, PDF — whatever QuickLook
+  itself supports), and zip/unzip via a new `Transfer/ArchiveManager.swift`
+  wrapping [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (this
+  project's first third-party dependency), with its own Zip-Slip
+  containment check independent of ZIPFoundation's. Still remaining, all
+  deliberately deferred out of that first increment: edit text-based files
+  in place, archive support beyond zip/unzip — 7z, RAR and other common
+  compression formats — rename/move/copy/delete, multi-select actions
+  beyond "select to compress", and search — all still bounded to the
+  selected root the same way serving already is. Materially bigger than
+  the first increment — needs its own scoping pass and likely its own ADR
+  once v0.3's transport/auth layer lands, especially for in-place editing
+  and third-party archive-format libraries (RAR support in particular has
+  licensing considerations to check before picking a library).
 
 Exit gate: large transfers resume correctly, archives remain bounded-memory, and WebDAV operations cannot escape authorized roots/capabilities.
 

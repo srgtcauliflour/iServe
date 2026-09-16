@@ -27,7 +27,7 @@ final class LiveServerService: ServerService {
         guard httpServer == nil else {
             throw ServiceError.accessDenied
         }
-        guard let scopedURL = folders.beginServingAccess() else {
+        guard let scopedURL = folders.beginAccess() else {
             throw folders.selectedURL == nil ? ServiceError.noFolderSelected : ServiceError.accessDenied
         }
 
@@ -42,7 +42,7 @@ final class LiveServerService: ServerService {
             self.requestLog = log
             return port
         } catch {
-            folders.endServingAccess(scopedURL)
+            folders.endAccess(scopedURL)
             throw error
         }
     }
@@ -56,7 +56,7 @@ final class LiveServerService: ServerService {
         Task { @MainActor in
             await server.stop()
             if let urlToRelease {
-                self.folders.endServingAccess(urlToRelease)
+                self.folders.endAccess(urlToRelease)
             }
         }
     }

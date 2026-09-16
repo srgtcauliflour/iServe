@@ -161,47 +161,68 @@ final class FolderRootManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testBeginServingAccessReturnsSelectedURLAndAcquiresScope() {
+    func testBeginAccessReturnsSelectedURLAndAcquiresScope() {
         let access = StubFolderAccess()
         let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
         manager.select(access.url)
         access.events = []
 
-        let scoped = manager.beginServingAccess()
+        let scoped = manager.beginAccess()
         XCTAssertEqual(scoped, access.url)
         XCTAssertEqual(access.events, ["start"])
     }
 
     @MainActor
-    func testBeginServingAccessReturnsNilWithoutASelectedFolder() {
+    func testBeginAccessReturnsNilWithoutASelectedFolder() {
         let access = StubFolderAccess()
         let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
-        XCTAssertNil(manager.beginServingAccess())
+        XCTAssertNil(manager.beginAccess())
         XCTAssertTrue(access.events.isEmpty)
     }
 
     @MainActor
-    func testBeginServingAccessReturnsNilWhenScopeIsDenied() {
+    func testBeginAccessReturnsNilWhenScopeIsDenied() {
         let access = StubFolderAccess()
         let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
         manager.select(access.url)
         access.events = []
         access.grantsScope = false
 
-        XCTAssertNil(manager.beginServingAccess())
+        XCTAssertNil(manager.beginAccess())
         XCTAssertEqual(access.events, ["start"])
     }
 
     @MainActor
-    func testEndServingAccessStopsScopeForTheGivenURL() {
+    func testEndAccessStopsScopeForTheGivenURL() {
         let access = StubFolderAccess()
         let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
         manager.select(access.url)
         access.events = []
 
-        let scoped = manager.beginServingAccess()!
-        manager.endServingAccess(scoped)
+        let scoped = manager.beginAccess()!
+        manager.endAccess(scoped)
         XCTAssertEqual(access.events, ["start", "stop"])
+    }
+
+    @MainActor
+    func testBeginAccessIsReentrantForConcurrentIndependentCallers() {
+        // A server session and the file manager screen can both hold
+        // access to the same root at once; each must be released
+        // independently by its own matching endAccess(_:) call.
+        let access = StubFolderAccess()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        manager.select(access.url)
+        access.events = []
+
+        let first = manager.beginAccess()
+        let second = manager.beginAccess()
+        XCTAssertEqual(first, access.url)
+        XCTAssertEqual(second, access.url)
+        XCTAssertEqual(access.events, ["start", "start"])
+
+        manager.endAccess(first!)
+        manager.endAccess(second!)
+        XCTAssertEqual(access.events, ["start", "start", "stop", "stop"])
     }
 
     @MainActor
