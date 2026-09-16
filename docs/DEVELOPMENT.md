@@ -56,6 +56,25 @@ listener must cancel connections before releasing scoped folder access and must
 report asynchronous readiness before publishing a running state or endpoint.
 The bootstrap intentionally does not invent a synchronous network-start contract.
 
+## Physical device builds
+
+The project owner has a physical iPhone 17 Pro Max on the latest iOS and can sign
+and install an `.ipa` themselves at any time — they do not need their own Mac to
+get a build onto the device. Whenever a physical-device build is useful (closing
+an issue's real-device acceptance criteria, or any point progress is worth
+seeing on-device), an agent working in an environment without a local Swift/Xcode
+toolchain must not treat that as a blocker: produce a compiled `.ipa` via GitHub
+Actions (or another available CI/build service) rather than only offering
+simulator/CI validation. `CODE_SIGN_STYLE` is `Automatic` with a blank
+`DEVELOPMENT_TEAM` in `project.yml`, and no developer identity or provisioning
+profile is committed, so a CI-produced archive/IPA is expected to be unsigned (or
+signed with a throwaway identity) — the owner re-signs it with their own
+certificate/team before installing. Building this (e.g. `xcodebuild archive` plus
+`-exportArchive`, or exporting an unsigned `.xcarchive` payload as an `.ipa`
+directly) is not yet wired into `.github/workflows/ios.yml`, which currently only
+runs simulator tests; add a build/export job or workflow when a device build is
+actually requested rather than speculatively now.
+
 ## Manual acceptance (macOS/iOS required)
 
 1. Generate the project and launch on both iPhone and iPad simulators.
