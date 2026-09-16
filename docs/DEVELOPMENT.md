@@ -142,9 +142,21 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
    in `ServerDashboard` are wired to real state, with a Copy button for the
    endpoint.
    Remaining for issue #6: a real request log and request/byte counters
-   (`Logging/` is still just a placeholder), and the real-device acceptance
-   pass itself — this has not been validated against an actual Files provider
-   root or a second physical LAN device, only CI simulators.
+   (`Logging/` is still just a placeholder).
+
+   **Real-device acceptance of the v0.1 core loop passed** on a physical
+   iPhone: selected a Files folder, tapped Start Server, and a second
+   physical device on the same LAN loaded the served site at the displayed
+   endpoint. No Local Network permission prompt appeared — either the
+   permission was already granted for this bundle id from an earlier test
+   install, or a plain `NWListener` with no Bonjour advertisement doesn't
+   trigger that prompt the way anticipated; either way, the fix that actually
+   mattered was the `iServeApp` wiring below, not the privacy-string addition
+   (kept anyway; it's correct regardless of whether iOS ends up requiring it
+   for this exact code path). Not yet separately re-verified on this specific
+   device: traversal rejection and large-file bounded streaming — both are
+   covered by automated tests already, but not manually re-confirmed against
+   real hardware.
 
    Real-device testing found three bugs simulators didn't catch:
    - Folder selection silently failed to complete (the system picker never
@@ -183,5 +195,8 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
      dashboard alone.
 
 PHP, WebDAV, archives and public-reachability tooling stay in their agreed later
-milestones. Do not close the v0.1 acceptance gate until a real second LAN device
-loads the selected site and traversal/large-file checks pass.
+milestones. The real-second-LAN-device-loads-the-site half of the v0.1
+acceptance gate has now passed on physical hardware; do not close the gate
+itself until traversal and large-file streaming are also re-confirmed on a
+real device (they already pass in CI) and issue #6's request log/counters
+land.
