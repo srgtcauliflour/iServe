@@ -20,7 +20,7 @@ final class FileChunkReaderTests: XCTestCase {
 
     func testReadsFileInBoundedChunksAndReconstructsExactContent() throws {
         let (url, original) = try makeFile(byteCount: 1000)
-        let reader = try XCTUnwrap(FileChunkReader(url: url, chunkSize: 64))
+        let reader = try XCTUnwrap(FileChunkReader(url: url, length: 1000, chunkSize: 64))
         var collected = Data()
         var chunkCount = 0
         while let chunk = try reader.nextChunk() {
@@ -35,7 +35,7 @@ final class FileChunkReaderTests: XCTestCase {
 
     func testEveryChunkExceptPossiblyTheLastIsExactlyChunkSized() throws {
         let (url, _) = try makeFile(byteCount: 1000)
-        let reader = try XCTUnwrap(FileChunkReader(url: url, chunkSize: 64))
+        let reader = try XCTUnwrap(FileChunkReader(url: url, length: 1000, chunkSize: 64))
         var chunks: [Data] = []
         while let chunk = try reader.nextChunk() { chunks.append(chunk) }
         reader.close()
@@ -47,7 +47,7 @@ final class FileChunkReaderTests: XCTestCase {
 
     func testEmptyFileYieldsNoChunks() throws {
         let (url, _) = try makeFile(byteCount: 0)
-        let reader = try XCTUnwrap(FileChunkReader(url: url, chunkSize: 64))
+        let reader = try XCTUnwrap(FileChunkReader(url: url, length: 0, chunkSize: 64))
         XCTAssertNil(try reader.nextChunk())
         reader.close()
     }
@@ -55,6 +55,35 @@ final class FileChunkReaderTests: XCTestCase {
     func testInitReturnsNilForMissingFile() {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("iServeChunkReaderTests-missing-\(UUID().uuidString)")
-        XCTAssertNil(FileChunkReader(url: missing, chunkSize: 64))
+        XCTAssertNil(FileChunkReader(url: missing, length: 64, chunkSize: 64))
+    }
+
+    // MARK: - offset/length (v0.3, HTTP Range support)
+
+    func testReadsOnlyTheRequestedLengthEvenWhenMoreFileRemains() throws {
+        let (url, original) = try makeFile(byteCount: 1000)
+        let reader = try XCTUnwrap(FileChunkReader(url: url, length: 100, chunkSize: 64))
+        var collected = Data()
+        while let chunk = try reader.nextChunk() { collected.append(chunk) }
+        reader.close()
+        XCTAssertEqual(collected, original.prefix(100))
+    }
+
+    func testStartsAtTheGivenOffset() throws {
+        let (url, original) = try makeFile(byteCount: 1000)
+        let reader = try XCTUnwrap(FileChunkReader(url: url, offset: 500, length: 100, chunkSize: 64))
+        var collected = Data()
+        while let chunk = try reader.nextChunk() { collected.append(chunk) }
+        reader.close()
+        XCTAssertEqual(collected, original[500..<600])
+    }
+
+    func testOffsetDefaultsToZero() throws {
+        let (url, original) = try makeFile(byteCount: 200)
+        let reader = try XCTUnwrap(FileChunkReader(url: url, length: 50, chunkSize: 64))
+        var collected = Data()
+        while let chunk = try reader.nextChunk() { collected.append(chunk) }
+        reader.close()
+        XCTAssertEqual(collected, original.prefix(50))
     }
 }

@@ -11,11 +11,17 @@ enum HTTPResponseBody: Sendable, Equatable {
     case file(HTTPFileBody)
 }
 
-/// A resolved, already-authorized local file. Only `SecurePathResolver`-validated
-/// URLs may become one of these; `HTTPConnection` opens and reads it through
-/// `Transfer/FileChunkReader.swift` rather than loading it whole.
+/// A resolved, already-authorized local file, or a byte span of one. Only
+/// `SecurePathResolver`-validated URLs may become one of these;
+/// `HTTPConnection` opens and reads it through `Transfer/FileChunkReader.swift`
+/// rather than loading it whole. `offset` is 0 and `length` is the whole
+/// file's size for a normal `200` response; a `206 Partial Content` response
+/// (v0.3 HTTP Range support — see `HTTPResponse.partialContent`) sets both
+/// to the requested range instead, so `HTTPConnection` streams only that
+/// span, never the whole file.
 struct HTTPFileBody: Sendable, Equatable {
     let url: URL
+    let offset: Int
     let length: Int
 }
 
@@ -36,12 +42,48 @@ struct HTTPResponse: Sendable {
 
     /// `url`/`length` must already come from a successful `SecurePathResolver`
     /// resolution; this initializer does not itself validate or open the file.
+    /// Always advertises `Accept-Ranges: bytes` — even this full-file response
+    /// is what tells a client a later `Range` request (a resume, a video
+    /// seek) will work; see `.partialContent`.
     static func file(url: URL, length: Int, contentType: String, status: Int = 200, reason: String = "OK") -> HTTPResponse {
         var headers = HTTPHeaders()
         headers.add(name: "Content-Type", value: contentType)
         headers.add(name: "Content-Length", value: String(length))
+        headers.add(name: "Accept-Ranges", value: "bytes")
         headers.add(name: "Connection", value: "close")
-        return HTTPResponse(status: status, reason: reason, headers: headers, body: .file(HTTPFileBody(url: url, length: length)))
+        return HTTPResponse(
+            status: status, reason: reason, headers: headers,
+            body: .file(HTTPFileBody(url: url, offset: 0, length: length))
+        )
+    }
+
+    /// A single-range `206 Partial Content` response (v0.3 HTTP Range
+    /// support, RFC 7233) for `range` — already validated by
+    /// `Transfer/ByteRangeParser.swift` against the file's actual size,
+    /// `fileSize`. `HTTPConnection` streams only `range`'s span of the file,
+    /// via `HTTPFileBody.offset`/`.length`, never the whole thing.
+    static func partialContent(url: URL, fileSize: Int, range: ByteRangeParser.Range, contentType: String) -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Type", value: contentType)
+        headers.add(name: "Content-Length", value: String(range.length))
+        headers.add(name: "Content-Range", value: "bytes \(range.start)-\(range.end)/\(fileSize)")
+        headers.add(name: "Accept-Ranges", value: "bytes")
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(
+            status: 206, reason: "Partial Content", headers: headers,
+            body: .file(HTTPFileBody(url: url, offset: range.start, length: range.length))
+        )
+    }
+
+    /// A `416 Range Not Satisfiable` response naming the resource's actual
+    /// `fileSize` (RFC 7233 §4.4), so a well-behaved client can retry
+    /// without it rather than repeat the same unsatisfiable range.
+    static func rangeNotSatisfiable(fileSize: Int) -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Range", value: "bytes */\(fileSize)")
+        headers.add(name: "Content-Length", value: "0")
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(status: 416, reason: "Range Not Satisfiable", headers: headers, body: .empty)
     }
 
     static func notImplemented(method: String) -> HTTPResponse {

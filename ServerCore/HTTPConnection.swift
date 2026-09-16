@@ -207,7 +207,7 @@ actor HTTPConnection {
 
     private func beginStreaming(_ file: HTTPFileBody) {
         guard !didClose else { return }
-        guard let reader = FileChunkReader(url: file.url, chunkSize: limits.writeChunkSize) else {
+        guard let reader = FileChunkReader(url: file.url, offset: file.offset, length: file.length, chunkSize: limits.writeChunkSize) else {
             close()
             return
         }
