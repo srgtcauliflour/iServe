@@ -16,9 +16,15 @@ targets:
     type: application
     platform: iOS
     sources:
-      - App
-      - ServerCore
-      - FileSystem
+      - path: App
+        excludes:
+          - "*.md"
+      - path: ServerCore
+        excludes:
+          - "*.md"
+      - path: FileSystem
+        excludes:
+          - "*.md"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.srgtcauliflour.iServe
