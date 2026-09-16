@@ -53,122 +53,12 @@ struct ServerDashboard: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Label {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(coordinator.statusTitle)
-                                .font(.headline)
-                            Text("Choose a folder, start serving, then connect from another device.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "externaldrive.badge.wifi")
-                            .font(.title)
-                            .foregroundStyle(.tint)
-                            .accessibilityHidden(true)
-                    }
-                    .padding(.vertical, 8)
-                }
-
-                Section {
-                    Label(coordinator.folders.folderName ?? "No folder selected", systemImage: "folder")
-                    Button("Choose Folder", systemImage: "folder.badge.plus") {
-                        isChoosingFolder = true
-                    }
-                    .disabled(isBusy || isRunning)
-                    if coordinator.folders.hasSavedFolder {
-                        Button("Retry Saved Folder", systemImage: "arrow.clockwise") {
-                            coordinator.restoreFolder()
-                        }
-                        .disabled(isBusy || isRunning)
-                        Button("Forget Folder", role: .destructive) {
-                            coordinator.forgetFolder()
-                        }
-                        .disabled(isBusy || isRunning)
-                    }
-                    if let message = coordinator.folders.errorMessage {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                            .accessibilityLabel("Folder error: \(message)")
-                    }
-                } header: {
-                    Text("Shared folder")
-                } footer: {
-                    Text("The selected folder is remembered on this device. You can change or forget it at any time.")
-                }
-
-                Section {
-                    LabeledContent("Profile", value: "Website / Read Only")
-                    LabeledContent("Status", value: serverStatusText)
-                    if isRunning {
-                        Button("Stop Server", systemImage: "stop.fill", role: .destructive) {
-                            coordinator.stop()
-                        }
-                    } else {
-                        Button("Start Server", systemImage: "play.fill") {
-                            coordinator.start()
-                        }
-                        .disabled(!canStart)
-                        .accessibilityHint(
-                            canStart
-                            ? "Starts serving the selected folder to your local network."
-                            : "Choose a folder before starting the server."
-                        )
-                    }
-                } header: {
-                    Text("Server")
-                } footer: {
-                    Text("Keep iServe open while sharing. Serving stops when the app is no longer active.")
-                }
-
-                Section("Connections") {
-                    if let endpoint {
-                        Label(endpoint, systemImage: "network")
-                            .textSelection(.enabled)
-                        Button(didCopyEndpoint ? "Copied" : "Copy Address", systemImage: "doc.on.doc") {
-                            UIPasteboard.general.string = endpoint
-                            didCopyEndpoint = true
-                        }
-                        Text("Open this address from another device on the same network.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        LabeledContent("Requests", value: "\(requestCount)")
-                        LabeledContent("Transferred", value: Self.byteFormatter.string(fromByteCount: Int64(bytesTransferred)))
-                    } else {
-                        Text("No listening endpoint")
-                            .foregroundStyle(.secondary)
-                        Text("Local addresses will appear here when the server is ready. Public connectivity depends on your network.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
+                overviewSection
+                folderSection
+                serverSection
+                connectionsSection
                 if isRunning {
-                    Section("Recent requests") {
-                        if recentEntries.isEmpty {
-                            Text("No requests yet")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(recentEntries.prefix(10)) { entry in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack {
-                                        Text("\(entry.method) \(entry.path)")
-                                            .font(.callout)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                        Spacer()
-                                        Text("\(entry.status)")
-                                            .font(.callout.monospacedDigit())
-                                            .foregroundStyle(entry.status < 400 ? .secondary : .orange)
-                                    }
-                                    Text(entry.date, style: .time)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
+                    recentRequestsSection
                 }
             }
             .navigationTitle("iServe")
@@ -179,19 +69,7 @@ struct ServerDashboard: View {
                 coordinator.restoreFolder()
             }
             .task(id: isRunning) {
-                guard isRunning, let log = coordinator.requestLog else {
-                    requestCount = 0
-                    bytesTransferred = 0
-                    recentEntries = []
-                    return
-                }
-                while !Task.isCancelled {
-                    let snapshot = await log.snapshot()
-                    requestCount = snapshot.totalRequests
-                    bytesTransferred = snapshot.totalBytes
-                    recentEntries = snapshot.entries
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                }
+                await pollRequestLog()
             }
             .fileImporter(isPresented: $isChoosingFolder,
                           allowedContentTypes: [.folder],
@@ -203,6 +81,161 @@ struct ServerDashboard: View {
                     coordinator.folders.reportPickerFailure(error)
                 }
             }
+        }
+    }
+
+    private func pollRequestLog() async {
+        guard isRunning, let log = coordinator.requestLog else {
+            requestCount = 0
+            bytesTransferred = 0
+            recentEntries = []
+            return
+        }
+        while !Task.isCancelled {
+            let snapshot = await log.snapshot()
+            requestCount = snapshot.totalRequests
+            bytesTransferred = snapshot.totalBytes
+            recentEntries = snapshot.entries
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+    }
+
+    @ViewBuilder
+    private var overviewSection: some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(coordinator.statusTitle)
+                        .font(.headline)
+                    Text("Choose a folder, start serving, then connect from another device.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "externaldrive.badge.wifi")
+                    .font(.title)
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+            }
+            .padding(.vertical, 8)
+        }
+    }
+
+    @ViewBuilder
+    private var folderSection: some View {
+        Section {
+            Label(coordinator.folders.folderName ?? "No folder selected", systemImage: "folder")
+            Button("Choose Folder", systemImage: "folder.badge.plus") {
+                isChoosingFolder = true
+            }
+            .disabled(isBusy || isRunning)
+            if coordinator.folders.hasSavedFolder {
+                Button("Retry Saved Folder", systemImage: "arrow.clockwise") {
+                    coordinator.restoreFolder()
+                }
+                .disabled(isBusy || isRunning)
+                Button("Forget Folder", role: .destructive) {
+                    coordinator.forgetFolder()
+                }
+                .disabled(isBusy || isRunning)
+            }
+            if let message = coordinator.folders.errorMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Folder error: \(message)")
+            }
+        } header: {
+            Text("Shared folder")
+        } footer: {
+            Text("The selected folder is remembered on this device. You can change or forget it at any time.")
+        }
+    }
+
+    @ViewBuilder
+    private var serverSection: some View {
+        Section {
+            LabeledContent("Profile", value: "Website / Read Only")
+            LabeledContent("Status", value: serverStatusText)
+            if isRunning {
+                Button("Stop Server", systemImage: "stop.fill", role: .destructive) {
+                    coordinator.stop()
+                }
+            } else {
+                Button("Start Server", systemImage: "play.fill") {
+                    coordinator.start()
+                }
+                .disabled(!canStart)
+                .accessibilityHint(
+                    canStart
+                    ? "Starts serving the selected folder to your local network."
+                    : "Choose a folder before starting the server."
+                )
+            }
+        } header: {
+            Text("Server")
+        } footer: {
+            Text("Keep iServe open while sharing. Serving stops when the app is no longer active.")
+        }
+    }
+
+    @ViewBuilder
+    private var connectionsSection: some View {
+        Section("Connections") {
+            if let endpoint {
+                Label(endpoint, systemImage: "network")
+                    .textSelection(.enabled)
+                Button(didCopyEndpoint ? "Copied" : "Copy Address", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = endpoint
+                    didCopyEndpoint = true
+                }
+                Text("Open this address from another device on the same network.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                LabeledContent("Requests", value: "\(requestCount)")
+                LabeledContent("Transferred", value: Self.byteFormatter.string(fromByteCount: Int64(bytesTransferred)))
+            } else {
+                Text("No listening endpoint")
+                    .foregroundStyle(.secondary)
+                Text("Local addresses will appear here when the server is ready. Public connectivity depends on your network.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var recentRequestsSection: some View {
+        Section("Recent requests") {
+            if recentEntries.isEmpty {
+                Text("No requests yet")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(recentEntries.prefix(10)) { entry in
+                    RequestLogEntryRow(entry: entry)
+                }
+            }
+        }
+    }
+}
+
+private struct RequestLogEntryRow: View {
+    let entry: RequestLogEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("\(entry.method) \(entry.path)")
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Text("\(entry.status)")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(entry.status < 400 ? .secondary : .orange)
+            }
+            Text(entry.date, style: .time)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 }
