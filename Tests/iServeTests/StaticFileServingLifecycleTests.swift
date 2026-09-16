@@ -85,6 +85,29 @@ final class StaticFileServingLifecycleTests: XCTestCase {
         await server.stop()
     }
 
+    func testDirectoryListingIsReachableAfterTrailingSlashRedirect() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let assets = root.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try "body".write(to: assets.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+
+        let server = HTTPServer(router: StaticFileHandler(resolver: SecurePathResolver(root: root)))
+        let port = try await server.start()
+
+        // No trailing slash in the request: URLSession follows the 301
+        // automatically, proving the whole redirect round trip works, not
+        // just that the router computes the right Location header.
+        let (data, response) = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/assets"))
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200)
+        XCTAssertEqual(http.url?.path, "/assets/")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Type"), "text/html; charset=utf-8")
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("notes.txt"))
+
+        await server.stop()
+    }
+
     func testRequestLogRecordsRealRequestsThroughTheFullPipeline() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

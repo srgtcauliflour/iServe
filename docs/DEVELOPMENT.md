@@ -205,3 +205,28 @@ scope (dashboard, endpoint, request log/counters, actionable failure states)
 is now implemented end to end; do not close the gate itself until traversal
 and large-file streaming are also re-confirmed on a real device (they
 already pass in CI).
+
+## v0.2 progress
+
+1. Directory browsing (`docs/ROADMAP.md`'s "Embedded responsive browser file
+   manager" / "Directory browsing" deliverables, started): a folder with no
+   `index.html`/`index.htm` now gets a generated HTML listing
+   (`Handlers/DirectoryListingRenderer.swift`) instead of `404`, and
+   `Handlers/StaticFileHandler.swift` redirects (`301`) a directory request
+   without a trailing slash first, so relative links resolve correctly.
+   `ServerCore/HTTPResponse.swift` gained `.redirect(to:)` and `.html(_:)`
+   constructors for this. See `Handlers/README.md`. Not yet done from v0.2's
+   list: network interface discovery/IPv4+IPv6 presentation beyond the
+   single preferred address `Networking/LocalNetworkAddress.swift` already
+   finds, Bonjour/mDNS advertisement, QR/copy/share connection helpers
+   beyond the existing Copy button, browser uploads, and the public-address-
+   vs-reachability distinction.
+
+Each build-error round on the request-log/dashboard work (issue #6) surfaced
+independently only once the prior one was fixed — a Swift 6 actor-isolation
+annotation, a SwiftUI type-checker timeout from a body expression grown too
+large, and a `Color`/`HierarchicalShapeStyle` ternary-type ambiguity. None of
+this is compiler-verified locally in this environment (no Swift/Xcode
+toolchain here — see "Build" above); CI is the only real signal, so expect
+more than one round trip on non-trivial SwiftUI/concurrency changes pushed
+without local compilation.

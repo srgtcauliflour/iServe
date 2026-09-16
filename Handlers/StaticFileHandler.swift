@@ -5,6 +5,13 @@ import Foundation
 /// including for `index.html`/`index.htm` lookups, which are re-resolved through
 /// the same resolver rather than appended and opened directly, so an index file
 /// that happens to be a symlink is still subject to the root-containment check.
+///
+/// A directory with no index file gets a generated `DirectoryListingRenderer`
+/// listing instead of `404`, matching Shu-parity directory browsing. A
+/// directory request whose path doesn't already end in "/" is redirected to
+/// the slash-terminated form first — required so the browser's relative links
+/// (both the listing's own entries and any served page's own relative
+/// asset/href URLs) resolve against the directory rather than its parent.
 struct StaticFileHandler: HTTPRouter {
     private static let indexCandidates = ["index.html", "index.htm"]
 
@@ -27,21 +34,25 @@ struct StaticFileHandler: HTTPRouter {
             return .notFound()
         }
         if isDirectory.boolValue {
-            return respondToDirectory(path: path)
+            guard path.hasSuffix("/") else {
+                return .redirect(to: path + "/")
+            }
+            return respondToDirectory(path: path, directoryURL: resolved)
         }
         return fileResponse(for: resolved)
     }
 
-    private func respondToDirectory(path: String) -> HTTPResponse {
-        let base = path.hasSuffix("/") ? path : path + "/"
+    /// `path` is guaranteed to end in "/" here: `route(_:)` redirects
+    /// otherwise before this is ever called.
+    private func respondToDirectory(path: String, directoryURL: URL) -> HTTPResponse {
         for candidate in Self.indexCandidates {
-            guard let indexURL = try? resolver.resolve(requestPath: base + candidate) else { continue }
+            guard let indexURL = try? resolver.resolve(requestPath: path + candidate) else { continue }
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: indexURL.path, isDirectory: &isDirectory), !isDirectory.boolValue {
                 return fileResponse(for: indexURL)
             }
         }
-        return .notFound()
+        return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path))
     }
 
     private func fileResponse(for url: URL) -> HTTPResponse {

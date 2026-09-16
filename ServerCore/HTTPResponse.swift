@@ -72,6 +72,25 @@ struct HTTPResponse: Sendable {
         .plainText(status: 500, reason: "Internal Server Error", message: "Internal Server Error")
     }
 
+    /// `location` must be a path relative to the server root (e.g. one this
+    /// core generated itself, such as a directory request with an appended
+    /// trailing slash) — never a value derived from unvalidated remote input.
+    static func redirect(to location: String, status: Int = 301, reason: String = "Moved Permanently") -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Location", value: location)
+        headers.add(name: "Content-Length", value: "0")
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(status: status, reason: reason, headers: headers, body: .empty)
+    }
+
+    static func html(_ body: Data, status: Int = 200, reason: String = "OK") -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Type", value: "text/html; charset=utf-8")
+        headers.add(name: "Content-Length", value: String(body.count))
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(status: status, reason: reason, headers: headers, body: .data(body))
+    }
+
     /// Renders the status line and header block, ending with the blank line that
     /// separates headers from the body. `HEAD` responses and the body's own bytes
     /// are handled by `HTTPConnection`; this method never encodes the body itself.

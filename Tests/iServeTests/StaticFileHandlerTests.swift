@@ -39,12 +39,35 @@ final class StaticFileHandlerTests: XCTestCase {
         XCTAssertEqual(file.url.lastPathComponent, "index.htm")
     }
 
-    func testDirectoryWithoutIndexReturns404() throws {
+    func testDirectoryWithoutIndexReturnsAGeneratedListing() throws {
+        let dir = root.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "body".write(to: dir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+
+        let response = makeHandler().route(request("/empty/"))
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.headers["Content-Type"], "text/html; charset=utf-8")
+        guard case .data(let data) = response.body else { return XCTFail("expected an in-memory HTML body") }
+        let page = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(page.contains("notes.txt"))
+    }
+
+    func testDirectoryRequestWithoutTrailingSlashRedirects() throws {
         try FileManager.default.createDirectory(
-            at: root.appendingPathComponent("empty"), withIntermediateDirectories: true
+            at: root.appendingPathComponent("assets"), withIntermediateDirectories: true
         )
-        let response = makeHandler().route(request("/empty"))
-        XCTAssertEqual(response.status, 404)
+        let response = makeHandler().route(request("/assets"))
+        XCTAssertEqual(response.status, 301)
+        XCTAssertEqual(response.headers["Location"], "/assets/")
+        XCTAssertEqual(response.body, .empty)
+    }
+
+    func testRootDirectoryDoesNotRedirect() throws {
+        let response = makeHandler().route(request("/"))
+        // Root has no index either in this test, so it should list rather
+        // than redirect (it's already slash-terminated) or 404.
+        XCTAssertEqual(response.status, 200)
+        XCTAssertNil(response.headers["Location"])
     }
 
     func testMissingFileReturns404() {
