@@ -49,6 +49,17 @@ Deliverables:
 - WebDAV read operations, then authorized write operations.
 - Optional multiple mounted folders after secure namespace design.
 - Rate/connection/request limits and advanced logs.
+- Feature-rich in-app sandboxed file manager: open/preview files in place
+  (text, images, video, PDF), edit text-based files, and archive support
+  beyond zip/unzip — 7z, RAR and other common compression formats — plus
+  whatever else a proper on-device file manager benefits from (rename,
+  move, copy, delete within capability limits, multi-select actions,
+  search), all still bounded to the selected root the same way serving
+  already is. Materially bigger than "download/upload a file" — needs its
+  own scoping pass and likely its own ADR once v0.3's transport/auth layer
+  lands, especially for in-place editing and third-party archive-format
+  libraries (RAR support in particular has licensing considerations to
+  check before picking a library).
 
 Exit gate: large transfers resume correctly, archives remain bounded-memory, and WebDAV operations cannot escape authorized roots/capabilities.
 
@@ -88,3 +99,14 @@ Deliverables:
 - TLS certificate workflow improvements.
 - Additional server-side runtimes only through separate feasibility/security ADRs.
 - Share-sheet/Shortcuts integrations where they preserve the foreground-only product model.
+- Background operation, plus a Home Screen/Lock Screen widget to start and
+  stop the server without opening the app. This directly conflicts with
+  the current foreground-only design decision (`AGENTS.md`: "Do not
+  implement background-server workarounds") and with iOS's own
+  background-execution limits on a long-running network listener, so it
+  is a candidate to revisit, not a queued feature: it needs its own
+  feasibility ADR first, covering which background mode/entitlement (if
+  any) could apply, what "running" can actually mean while backgrounded
+  under those constraints, and an App Intent for the widget's start/stop
+  action. Do not implement any part of this without that ADR being
+  approved first.
