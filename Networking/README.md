@@ -34,3 +34,19 @@ Its `state` only covers the deterministic `start()`/`stop()` transitions in
 CI (`Tests/iServeTests/BonjourAdvertiserTests.swift`); whether a real
 `.published`/`.failed` transition happens depends on actual mDNS behavior,
 which isn't reliable to assert on a CI runner.
+
+`LocalNetworkAddress.allAddresses()` (v0.2) walks the same interface list as
+`preferredIPv4Address()` but returns every active, non-loopback address —
+IPv4 and IPv6, across every interface — as `[NetworkInterfaceAddress]`,
+rather than picking just one. `HTTPServer` binds to `.any` (every
+interface), so any of these reaches the running server on the same port.
+`ServerCoordinator.alternateEndpoints` combines this with `runningPort` to
+list addresses other than the primary one `state`'s endpoint already uses,
+shown in the dashboard's "Other Addresses" section. A link-local IPv6
+address (`fe80::/10`) is ambiguous without its zone, so
+`ipv6String(from:interfaceName:)` appends `%<interface>` to it — but
+`ServerCoordinator.DiscoveredEndpoint.copyValue` deliberately doesn't wrap
+an IPv6 address into a full `http://[...]/` URL the way it does for IPv4:
+a zone-id URL isn't reliably usable across HTTP clients, so this only
+copies the raw address rather than risk producing a URL that's silently
+wrong.

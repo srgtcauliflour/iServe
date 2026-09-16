@@ -63,6 +63,7 @@ struct ServerDashboard: View {
                 serverSection
                 connectionsSection
                 if isRunning {
+                    alternateAddressesSection
                     recentRequestsSection
                 }
             }
@@ -223,6 +224,24 @@ struct ServerDashboard: View {
                 Text("Local addresses will appear here when the server is ready. Public connectivity depends on your network.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var alternateAddressesSection: some View {
+        let entries = coordinator.alternateEndpoints
+        if !entries.isEmpty {
+            Section {
+                ForEach(entries) { entry in
+                    Label(entry.copyValue, systemImage: entry.address.family == .ipv4 ? "wifi" : "wifi.circle")
+                        .textSelection(.enabled)
+                        .accessibilityLabel("\(entry.address.interfaceName): \(entry.copyValue)")
+                }
+            } header: {
+                Text("Other Addresses")
+            } footer: {
+                Text("Other network interfaces this device has. Use one of these if the main address above isn't reachable.")
             }
         }
     }

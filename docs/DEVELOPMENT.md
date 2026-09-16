@@ -250,11 +250,21 @@ already pass in CI).
    `NSAppTransportSecurity` → `NSAllowsLocalNetworking: true` in Info.plist
    (also likely needs `project.yml`'s `info:`/`properties:` block, per the
    same reasoning as the Bonjour services array).
+4. Network interface discovery: `Networking/LocalNetworkAddress.allAddresses()`
+   walks every active, non-loopback interface (IPv4 and IPv6, not just the
+   one `preferredIPv4Address()` picks) as `[NetworkInterfaceAddress]`.
+   `App/ServerCoordinator.swift` combines this with the new `runningPort`
+   (captured alongside `state` on a successful `start()`) into
+   `alternateEndpoints`, filtering out whichever address `state`'s own
+   endpoint already uses; `ServerDashboard`'s new "Other Addresses" section
+   lists the rest. A link-local IPv6 address gets `%<interface>` appended
+   (needed to actually route to it — the same address can exist on several
+   interfaces), but is shown as a raw address rather than wrapped into a
+   `http://[...]/` URL, since a zone-id URL isn't reliably usable across
+   HTTP clients. See `Networking/README.md`.
 
-Not yet done from v0.2's list: network interface discovery/IPv4+IPv6
-presentation beyond the single preferred address
-`Networking/LocalNetworkAddress.swift` already finds, browser uploads, and
-the public-address-vs-reachability distinction.
+Not yet done from v0.2's list: browser uploads and the
+public-address-vs-reachability distinction.
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation
