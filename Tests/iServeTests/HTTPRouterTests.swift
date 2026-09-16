@@ -19,7 +19,7 @@ final class HTTPRouterTests: XCTestCase {
         XCTAssertEqual(response.headers["Content-Length"], "4")
         XCTAssertEqual(response.headers["Content-Type"], "text/plain; charset=utf-8")
         XCTAssertEqual(response.headers["Connection"], "close")
-        XCTAssertEqual(response.body, Data("nope".utf8))
+        XCTAssertEqual(response.body, .data(Data("nope".utf8)))
     }
 
     func testHeadEncodedProducesAStatusLineHeadersAndBlankLineTerminator() {

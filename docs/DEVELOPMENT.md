@@ -115,14 +115,23 @@ Xcode; iOS compilation and XCTest require the accompanying macOS CI or a Mac.
    pipelining yet (documented v0.1 simplification); a specific requested port that
    never becomes available can leave `start()` pending indefinitely since only `.any`
    is exercised by the test suite.
-4. Issue #5: static routing, MIME, GET/HEAD and bounded streaming/backpressure, routed
-   exclusively through `SecurePathResolver.resolve(requestPath:)`. Replaces
-   `NotFoundRouter` with a real `HTTPRouter` and gives `HTTPResponse`/`HTTPConnection`
-   a chunked body path instead of a single in-memory `Data` body.
+4. Issue #5: `Handlers/StaticFileHandler.swift` (routes through
+   `SecurePathResolver.resolve(requestPath:)`, including re-resolving
+   `index.html`/`index.htm` rather than opening them directly) and
+   `Handlers/MIMEType.swift` are added, replacing `NotFoundRouter`.
+   `HTTPResponse.body` is now `HTTPResponseBody` (`.empty` / `.data` / `.file`);
+   `HTTPConnection` streams a `.file` body through the new
+   `Transfer/FileChunkReader.swift` one bounded chunk at a time, gated on each
+   chunk's network-send completion. Oversized request lines/headers now get
+   `414`/`431` instead of a generic `400`. See `Handlers/README.md`,
+   `Transfer/README.md`, `ServerCore/README.md`. Still not wired to
+   `ServerCoordinator`/the dashboard, and still no real filesystem-provider
+   security-scoped session — issue #6 owns both.
 5. Issue #6: real local endpoints, sanitized bounded logs and dashboard integration —
-   replace `UnconfiguredServerService` with an `HTTPServer`-backed `ServerService` and
-   surface `HTTPServer.state`/the bound port in `ServerDashboard`. Replace the disabled
-   start action.
+   replace `UnconfiguredServerService` with an `HTTPServer`-backed `ServerService`
+   constructed with a `StaticFileHandler`/`SecurePathResolver` over the session's
+   security-scoped root, and surface `HTTPServer.state`/the bound port in
+   `ServerDashboard`. Replace the disabled start action.
 
 PHP, WebDAV, archives and public-reachability tooling stay in their agreed later
 milestones. Do not close the v0.1 acceptance gate until a real second LAN device

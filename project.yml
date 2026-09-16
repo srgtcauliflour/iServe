@@ -25,6 +25,12 @@ targets:
       - path: FileSystem
         excludes:
           - "*.md"
+      - path: Handlers
+        excludes:
+          - "*.md"
+      - path: Transfer
+        excludes:
+          - "*.md"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.srgtcauliflour.iServe

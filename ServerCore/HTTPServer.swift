@@ -9,13 +9,21 @@ struct HTTPServerLimits: Sendable {
     var idleTimeout: TimeInterval
     var maxConnectionLifetime: TimeInterval
     var readChunkSize: Int
+    /// Bound on each chunk read from a static file and handed to the network
+    /// send; keeps memory use roughly constant regardless of file size.
+    var writeChunkSize: Int
     var parserLimits: HTTPRequestParser.Limits
 
     static let `default` = HTTPServerLimits(
         maxConcurrentConnections: 32,
         idleTimeout: 15,
-        maxConnectionLifetime: 60,
+        // Generous enough for a real file transfer to finish: the idle timeout
+        // (reset on every read, cancelled once a response begins) is what
+        // guards the request-reading phase, not this. This only bounds a
+        // connection that never makes progress at all.
+        maxConnectionLifetime: 600,
         readChunkSize: 8 * 1024,
+        writeChunkSize: 64 * 1024,
         parserLimits: .default
     )
 }
