@@ -38,6 +38,18 @@ struct HTTPServerLimits: Sendable {
     /// `PUT` and a browser upload are authorized by different
     /// `ServerProfile` capabilities and could reasonably diverge later.
     var maxWebDAVPutBytes: Int
+    /// Upper bound on concurrent connections from a single remote address
+    /// (v0.3, `docs/adr/0006-connection-and-rate-limits.md`) — independent
+    /// of `maxConcurrentConnections`, so one client can never consume every
+    /// connection slot and starve every other device on the same network.
+    var maxConnectionsPerAddress: Int
+    /// Upper bound on how many connections a single remote address may
+    /// *open* within `addressRateWindow`, regardless of how quickly each
+    /// finishes. Since v0.1 has no keep-alive (one connection serves
+    /// exactly one request), this is also this server's per-address
+    /// request-rate limit — see the ADR for why the two collapse into one.
+    var maxConnectionsPerAddressPerWindow: Int
+    var addressRateWindow: TimeInterval
     var parserLimits: HTTPRequestParser.Limits
 
     static let `default` = HTTPServerLimits(
@@ -55,6 +67,9 @@ struct HTTPServerLimits: Sendable {
         maxZipEntryCount: 500,
         maxZipUncompressedBytes: 4 * 1024 * 1024 * 1024,
         maxWebDAVPutBytes: 4 * 1024 * 1024 * 1024,
+        maxConnectionsPerAddress: 16,
+        maxConnectionsPerAddressPerWindow: 120,
+        addressRateWindow: 10,
         parserLimits: .default
     )
 }
@@ -64,8 +79,11 @@ struct HTTPServerLimits: Sendable {
 /// `start()`/`stop()` are deterministic and repeatable: `stop()` always cancels the
 /// listener and awaits every live connection's cancellation before returning, so a
 /// subsequent `start()` begins from a clean, empty state. A connection beyond
-/// `limits.maxConcurrentConnections` is cancelled immediately rather than queued,
-/// so accepted-connection memory stays bounded regardless of load.
+/// `limits.maxConcurrentConnections`, or beyond one remote address's own
+/// `maxConnectionsPerAddress`/`maxConnectionsPerAddressPerWindow` (v0.3,
+/// `docs/adr/0006-connection-and-rate-limits.md`), is cancelled immediately
+/// rather than queued, so accepted-connection memory stays bounded
+/// regardless of load and no single client can starve every other one.
 actor HTTPServer {
     enum State: Equatable, Sendable {
         case idle
@@ -83,6 +101,16 @@ actor HTTPServer {
     private var listener: NWListener?
     private var connections: [UUID: HTTPConnection] = [:]
     private var startContinuation: CheckedContinuation<UInt16, Error>?
+    /// Per-remote-address tracking for `docs/adr/0006-connection-and-rate-limits.md`'s
+    /// two additional limits. Keyed by `Self.remoteAddress(for:)`, never by
+    /// port, so every socket from the same client collapses to one entry.
+    /// Only ever holds addresses with a connection currently open or a
+    /// connection accepted within the last `limits.addressRateWindow` —
+    /// pruned lazily on each `accept(_:)`/`remove(_:)` — so a long session
+    /// doesn't accumulate state for every address that has ever connected.
+    private var connectionIDsByAddress: [String: Set<UUID>] = [:]
+    private var addressByConnectionID: [UUID: String] = [:]
+    private var recentConnectionTimestampsByAddress: [String: [Date]] = [:]
 
     private let router: any HTTPRouter
     private let limits: HTTPServerLimits
@@ -147,6 +175,9 @@ actor HTTPServer {
             await connection.close()
         }
         connections.removeAll()
+        connectionIDsByAddress.removeAll()
+        addressByConnectionID.removeAll()
+        recentConnectionTimestampsByAddress.removeAll()
         if let startContinuation {
             self.startContinuation = nil
             startContinuation.resume(throwing: ServerError.listenerFailed("stopped before ready"))
@@ -154,11 +185,34 @@ actor HTTPServer {
         state = .idle
     }
 
-    private func accept(_ connection: NWConnection) {
+    /// Three independent caps, checked in order, before an `HTTPConnection`
+    /// is ever constructed: the existing global `maxConcurrentConnections`,
+    /// then (v0.3, `docs/adr/0006-connection-and-rate-limits.md`) a
+    /// per-address concurrent cap and a per-address rolling-window rate
+    /// limit. Any rejection is silent — `connection.cancel()`, no response
+    /// — consistent with how the global cap has always been enforced; only
+    /// `requestLog` records that it happened.
+    private func accept(_ connection: NWConnection) async {
         guard connections.count < limits.maxConcurrentConnections else {
             connection.cancel()
+            await requestLog?.recordRejectedConnection()
             return
         }
+
+        let address = Self.remoteAddress(for: connection)
+        if let address {
+            pruneExpiredTimestamps(for: address)
+            let concurrentCount = connectionIDsByAddress[address]?.count ?? 0
+            let recentCount = recentConnectionTimestampsByAddress[address]?.count ?? 0
+            guard concurrentCount < limits.maxConnectionsPerAddress,
+                  recentCount < limits.maxConnectionsPerAddressPerWindow else {
+                connection.cancel()
+                await requestLog?.recordRejectedConnection()
+                return
+            }
+            recentConnectionTimestampsByAddress[address, default: []].append(Date())
+        }
+
         let httpConnection = HTTPConnection(
             connection: connection,
             router: router,
@@ -170,11 +224,46 @@ actor HTTPServer {
             Task { await self.remove(id) }
         }
         connections[httpConnection.id] = httpConnection
+        if let address {
+            connectionIDsByAddress[address, default: []].insert(httpConnection.id)
+            addressByConnectionID[httpConnection.id] = address
+        }
         Task { await httpConnection.start() }
     }
 
     private func remove(_ id: UUID) {
         connections.removeValue(forKey: id)
+        guard let address = addressByConnectionID.removeValue(forKey: id) else { return }
+        connectionIDsByAddress[address]?.remove(id)
+        if connectionIDsByAddress[address]?.isEmpty ?? false {
+            connectionIDsByAddress.removeValue(forKey: address)
+        }
+    }
+
+    /// Drops timestamps older than `limits.addressRateWindow`, and the
+    /// address's own dictionary entry entirely once none remain — keeping
+    /// `recentConnectionTimestampsByAddress` bounded to addresses actually
+    /// active within the window, not every address ever seen.
+    private func pruneExpiredTimestamps(for address: String) {
+        guard let timestamps = recentConnectionTimestampsByAddress[address] else { return }
+        let cutoff = Date().addingTimeInterval(-limits.addressRateWindow)
+        let kept = timestamps.filter { $0 >= cutoff }
+        if kept.isEmpty {
+            recentConnectionTimestampsByAddress.removeValue(forKey: address)
+        } else {
+            recentConnectionTimestampsByAddress[address] = kept
+        }
+    }
+
+    /// The remote peer's host, ignoring port, so every socket from the same
+    /// client address collapses to one key. `nil` only for an endpoint
+    /// shape an accepted inbound TCP connection should never actually have
+    /// (`NWListener` always hands `accept(_:)` a `.hostPort` endpoint) —
+    /// callers treat that as "skip per-address limiting," never as a reason
+    /// to refuse the connection outright.
+    private static func remoteAddress(for connection: NWConnection) -> String? {
+        guard case let .hostPort(host, _) = connection.endpoint else { return nil }
+        return "\(host)"
     }
 
     private func handleListenerState(_ newState: NWListener.State) {

@@ -476,11 +476,33 @@ they turn out to matter there rather than reopening v0.2.
    deliberate, documented non-goal — see the ADR for why. See
    `ServerCore/README.md`, `Handlers/README.md`.
 
+9. Rate/connection/request limits and advanced logs —
+   `docs/adr/0006-connection-and-rate-limits.md`. `HTTPServerLimits` gained
+   `maxConnectionsPerAddress` (default 16) and
+   `maxConnectionsPerAddressPerWindow`/`addressRateWindow` (default 120 per
+   10s); `ServerCore/HTTPServer.swift`'s `accept(_:)` now checks both,
+   keyed by the connecting client's address (host only, ignoring port),
+   right after the existing global `maxConcurrentConnections` check and
+   before an `HTTPConnection` is ever constructed. Because v0.1 has no
+   keep-alive (one connection serves exactly one request), the
+   rolling-window cap is simultaneously a connection limit and a request
+   rate limit — one mechanism for both halves of this deliverable, not two.
+   Per-address tracking is pruned back to nothing once an address has no
+   open connection and nothing within the window, so a long session
+   doesn't accumulate state for every client ever seen; `stop()` clears it
+   entirely so a restarted session gets a fresh budget. Every rejection is
+   silent (`connection.cancel()`, no response, matching the pre-existing
+   global-cap behavior) but now increments a new
+   `Logging/RequestLog.swift` `rejectedConnectionCount`, surfaced on
+   `App/ServerDashboard.swift` once it's non-zero — the "advanced logs"
+   half of this deliverable. See `ServerCore/README.md`,
+   `Logging/README.md`.
+
 Not yet started from v0.3: archive formats beyond zip/7z, multi-select
 "search across the whole tree" (current search only filters the current
 directory's listing), WebDAV `LOCK`/`UNLOCK` (deliberately out of scope,
-see ADR-0005), optional multiple mounted folders, and rate/connection/request
-limits (see `docs/ROADMAP.md` for all of these).
+see ADR-0005), and optional multiple mounted folders (see `docs/ROADMAP.md`
+for all of these).
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

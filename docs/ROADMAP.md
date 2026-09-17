@@ -94,7 +94,18 @@ Deliverables:
   own subtree. `LOCK`/`UNLOCK` are a deliberate, documented non-goal for
   now — see `docs/adr/0005-webdav-write-operations.md`.
 - Optional multiple mounted folders after secure namespace design.
-- Rate/connection/request limits and advanced logs.
+- Rate/connection/request limits and advanced logs. Shipped:
+  `HTTPServer.accept(_:)` now enforces two further, per-remote-address
+  bounds beyond the existing global `maxConcurrentConnections` —
+  `maxConnectionsPerAddress` (concurrent) and
+  `maxConnectionsPerAddressPerWindow` over a rolling `addressRateWindow`.
+  Since v0.1 has no keep-alive (one connection is one request), the
+  rolling-window cap is both the connection limit and the request-rate
+  limit this bullet asks for, rather than two separate mechanisms. Every
+  rejection is silent (matching the existing global-cap behavior) but now
+  increments a new `RequestLog.rejectedConnectionCount`, surfaced on
+  `ServerDashboard` once it's non-zero — the "advanced logs" half of this
+  deliverable. See `docs/adr/0006-connection-and-rate-limits.md`.
 - Feature-rich in-app sandboxed file manager. Shipped: a native browse
   screen (`App/FileManagerScreen.swift`), file preview via
   `QLPreviewController` (text, images, video, PDF — whatever QuickLook

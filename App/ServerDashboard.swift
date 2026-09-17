@@ -10,6 +10,7 @@ struct ServerDashboard: View {
     @State private var isShowingFileManager = false
     @State private var requestCount = 0
     @State private var bytesTransferred = 0
+    @State private var rejectedConnectionCount = 0
     @State private var recentEntries: [RequestLogEntry] = []
     // @Bindable, not `let`: the profile picker and password field need a
     // Binding into coordinator's properties. Plain @Observable property
@@ -107,6 +108,7 @@ struct ServerDashboard: View {
         guard isRunning, let log = coordinator.requestLog else {
             requestCount = 0
             bytesTransferred = 0
+            rejectedConnectionCount = 0
             recentEntries = []
             return
         }
@@ -114,6 +116,7 @@ struct ServerDashboard: View {
             let snapshot = await log.snapshot()
             requestCount = snapshot.totalRequests
             bytesTransferred = snapshot.totalBytes
+            rejectedConnectionCount = snapshot.rejectedConnections
             recentEntries = snapshot.entries
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
@@ -265,6 +268,12 @@ struct ServerDashboard: View {
                     .foregroundStyle(.secondary)
                 LabeledContent("Requests", value: "\(requestCount)")
                 LabeledContent("Transferred", value: Self.byteFormatter.string(fromByteCount: Int64(bytesTransferred)))
+                if rejectedConnectionCount > 0 {
+                    Label("\(rejectedConnectionCount) connection(s) turned away by server limits", systemImage: "exclamationmark.shield")
+                        .foregroundStyle(.orange)
+                        .font(.footnote)
+                        .accessibilityLabel("\(rejectedConnectionCount) connections turned away by server limits this session")
+                }
             } else {
                 Text("No listening endpoint")
                     .foregroundStyle(.secondary)

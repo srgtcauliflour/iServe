@@ -35,5 +35,18 @@ final class RequestLogTests: XCTestCase {
         XCTAssertTrue(snapshot.entries.isEmpty)
         XCTAssertEqual(snapshot.totalRequests, 0)
         XCTAssertEqual(snapshot.totalBytes, 0)
+        XCTAssertEqual(snapshot.rejectedConnections, 0)
+    }
+
+    func testRecordRejectedConnectionIncrementsTheCounterWithoutAffectingRequestTotals() async {
+        let log = RequestLog()
+        await log.record(method: "GET", path: "/", status: 200, bytes: 10)
+        await log.recordRejectedConnection()
+        await log.recordRejectedConnection()
+
+        let snapshot = await log.snapshot()
+        XCTAssertEqual(snapshot.rejectedConnections, 2)
+        XCTAssertEqual(snapshot.totalRequests, 1)
+        XCTAssertEqual(snapshot.entries.count, 1)
     }
 }
