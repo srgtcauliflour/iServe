@@ -30,17 +30,23 @@ final class ConnectionLimitLifecycleTests: XCTestCase {
     }
 
     /// Ten simultaneous connection attempts against a concurrent cap of 2
-    /// for the one address they all share. Asserts only that *some* were
-    /// rejected (not an exact count), since real wall-clock timing among
-    /// truly concurrent connections isn't perfectly deterministic — but a
-    /// cap this far below the attempt count is a comfortable enough margin
-    /// to be reliable in practice.
+    /// for the one address they all share. The cap is enforced strictly at
+    /// accept time, so no more than 2 connections can ever be concurrently
+    /// counted for that address — but unless every attempt is actually
+    /// *in flight at once*, a connection that finishes and vacates its slot
+    /// before the next attempt is accepted lets more than 2 succeed overall
+    /// (this is what made the test flaky: a fast 404 response can complete
+    /// before later attempts even connect). `SlowNotFoundRouter` holds every
+    /// connection open long enough that all 10 accept() calls — themselves
+    /// near-instant, pure bookkeeping — land while the earlier ones are
+    /// still occupying their slot, so the cap is guaranteed to bind and the
+    /// outcome is deterministic.
     func testPerAddressConnectionLimitRejectsSomeConnectionsUnderConcurrentLoad() async throws {
         var limits = HTTPServerLimits.default
         limits.maxConnectionsPerAddress = 2
         limits.maxConnectionsPerAddressPerWindow = 1000 // large enough not to interfere
 
-        let server = HTTPServer(limits: limits)
+        let server = HTTPServer(router: SlowNotFoundRouter(delay: 0.3), limits: limits)
         let port = try await server.start()
 
         let successCount = await withTaskGroup(of: Bool.self) { group -> Int in
@@ -53,7 +59,7 @@ final class ConnectionLimitLifecycleTests: XCTestCase {
             }
             return count
         }
-        XCTAssertLessThan(successCount, 10, "expected at least one connection to be rejected under the per-address concurrent cap")
+        XCTAssertEqual(successCount, limits.maxConnectionsPerAddress)
 
         await server.stop()
     }
@@ -120,6 +126,22 @@ private func attemptRequest(port: UInt16) async -> Bool {
 
 private func loopbackURL(port: UInt16, path: String) -> URL {
     URL(string: "http://127.0.0.1:\(port)\(path)")!
+}
+
+/// Responds `404` like `NotFoundRouter`, but only after blocking for
+/// `delay` — long enough that a batch of near-simultaneous connections all
+/// land while earlier ones are still being held open, making concurrent-load
+/// tests deterministic instead of a race against how fast a real response
+/// completes. `Thread.sleep` (not `Task.sleep`), so it blocks only the one
+/// connection's own dispatched task, never the server actor accepting the
+/// others.
+private struct SlowNotFoundRouter: HTTPRouter {
+    let delay: TimeInterval
+
+    func route(_ request: HTTPRequest) -> HTTPResponse {
+        Thread.sleep(forTimeInterval: delay)
+        return .notFound()
+    }
 }
 
 /// A handful of quick retries for a request expected to succeed, to
