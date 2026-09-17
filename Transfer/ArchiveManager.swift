@@ -33,6 +33,11 @@ import ZIPFoundation
 /// request path, and symlink (or other non-regular-file) entries are
 /// refused outright rather than trusted.
 enum ArchiveManager {
+    /// SWCompression also declares a public `Archive` protocol
+    /// (`Sources/Common/Archive.swift`), so ZIPFoundation's `Archive` class
+    /// needs disambiguating wherever both modules are imported together.
+    private typealias ZipArchive = ZIPFoundation.Archive
+
     enum ArchiveError: Error, Equatable {
         /// The archive could not be opened for reading.
         case cannotOpenArchive
@@ -57,9 +62,9 @@ enum ArchiveManager {
     /// already exist; `items` may mix files and directories from the same
     /// parent folder.
     static func createArchive(containing items: [URL], at destination: URL) throws {
-        let archive: Archive
+        let archive: ZipArchive
         do {
-            archive = try Archive(url: destination, accessMode: .create)
+            archive = try ZipArchive(url: destination, accessMode: .create)
         } catch {
             throw ArchiveError.cannotCreateArchive
         }
@@ -73,9 +78,9 @@ enum ArchiveManager {
     /// — without writing any file — if any entry is a symlink or would
     /// resolve outside `destination`.
     static func extractArchive(at source: URL, to destination: URL) throws {
-        let archive: Archive
+        let archive: ZipArchive
         do {
-            archive = try Archive(url: source, accessMode: .read)
+            archive = try ZipArchive(url: source, accessMode: .read)
         } catch {
             throw ArchiveError.cannotOpenArchive
         }
@@ -133,7 +138,7 @@ enum ArchiveManager {
 
     // MARK: - Compression
 
-    private static func addEntryRecursively(for url: URL, relativeTo base: URL, in archive: Archive) throws {
+    private static func addEntryRecursively(for url: URL, relativeTo base: URL, in archive: ZipArchive) throws {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw ArchiveError.sourceItemMissing
