@@ -405,11 +405,27 @@ they turn out to matter there rather than reopening v0.2.
    sit in front of is the next, separate roadmap item. See
    `ServerCore/README.md`.
 
+6. Capability-based server permissions/profiles —
+   `docs/adr/0003-capability-based-server-profiles.md`. A new
+   `ServerCore/ServerProfile.swift` enum replaces the old lone
+   `ServerCoordinator.uploadsEnabled` boolean with a `profile` property
+   (`ServerService.start(allowUploads:credentials:)` is now
+   `start(profile:credentials:)`) bundling two capabilities per profile:
+   `allowsDirectoryListing`/`allowsUploads`. Website/Read Only turns off
+   the generated directory listing too (a `404` for a no-index directory
+   instead), so it's now meaningfully distinct from File Sharing rather
+   than differing only in the upload toggle; File Drop adds uploads on top
+   of File Sharing. `App/ServerDashboard.swift`'s old "Allow Uploads"
+   toggle is now a `Picker` over `ServerProfile.selectable`, with a summary
+   line under it. `.fullAccess` exists in the enum but is deliberately kept
+   out of `ServerProfile.selectable` until WebDAV write operations (next)
+   give it something distinct to do — see the ADR for why. See
+   `ServerCore/README.md`, `Handlers/README.md`.
+
 Not yet started from v0.3: archive formats beyond zip/7z, multi-select
 "search across the whole tree" (current search only filters the current
-directory's listing), capability-based permissions/profiles, WebDAV,
-optional multiple mounted folders, and rate/connection/request limits
-(see `docs/ROADMAP.md` for all of these).
+directory's listing), WebDAV, optional multiple mounted folders, and
+rate/connection/request limits (see `docs/ROADMAP.md` for all of these).
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

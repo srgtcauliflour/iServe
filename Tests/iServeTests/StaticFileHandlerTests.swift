@@ -129,6 +129,28 @@ final class StaticFileHandlerTests: XCTestCase {
         XCTAssertEqual(response.headers["Content-Length"], "20")
     }
 
+    // MARK: - Directory listing (ServerProfile, v0.3)
+
+    func testDirectoryWithNoIndexReturns404WhenDirectoryListingIsDisabled() throws {
+        let dir = root.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "body".write(to: dir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/empty/"))
+        XCTAssertEqual(response.status, 404)
+    }
+
+    func testIndexFileIsStillServedWhenDirectoryListingIsDisabled() throws {
+        try "html".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/"))
+        XCTAssertEqual(response.status, 200)
+        guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.url.lastPathComponent, "index.html")
+    }
+
     // MARK: - Uploads
 
     func testDirectoryListingOmitsTheUploadFormWhenUploadsAreDisabled() throws {

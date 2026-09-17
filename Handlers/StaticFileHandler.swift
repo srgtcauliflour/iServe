@@ -19,6 +19,14 @@ struct StaticFileHandler: HTTPRouter {
     /// Off by default: per `docs/SECURITY.md`, writes are an explicit
     /// capability, never implied just by selecting a folder to serve.
     var allowUploads: Bool = false
+    /// On by default, matching every pre-v0.3-profiles behavior. Set to
+    /// `false` for `ServerProfile.websiteReadOnly`: a directory with no
+    /// index file gets a plain `404` instead of a generated listing, since
+    /// Website mode is for serving a site's own pages, not for browsing
+    /// whatever else is in the selected folder. Never gates a direct GET of
+    /// a file whose name the client already knows, nor ZIP downloads — both
+    /// stay bounded by what a client can already resolve, exactly as before.
+    var allowDirectoryListing: Bool = true
 
     func route(_ request: HTTPRequest) -> HTTPResponse {
         guard let path = Self.path(fromTarget: request.target) else { return .badRequest() }
@@ -55,6 +63,7 @@ struct StaticFileHandler: HTTPRouter {
                 return fileResponse(for: indexURL, request: request)
             }
         }
+        guard allowDirectoryListing else { return .notFound() }
         return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path, allowUploads: allowUploads))
     }
 

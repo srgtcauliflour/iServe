@@ -96,7 +96,7 @@ final class ServerCoordinatorTests: XCTestCase {
     }
 
     @MainActor
-    func testUploadsAreDisabledByDefaultAndFlowThroughToStart() async throws {
+    func testProfileDefaultsToFileSharingAndFlowsThroughToStart() async throws {
         let service = RecordingServerService()
         let access = StubFolderAccess()
         let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
@@ -105,21 +105,21 @@ final class ServerCoordinatorTests: XCTestCase {
 
         coordinator.start()
         try await waitUntil { coordinator.state != .starting }
-        XCTAssertEqual(service.lastAllowUploads, false)
+        XCTAssertEqual(service.lastProfile, .fileSharing)
     }
 
     @MainActor
-    func testEnablingUploadsBeforeStartingPassesThatChoiceToTheService() async throws {
+    func testSelectingAProfileBeforeStartingPassesThatChoiceToTheService() async throws {
         let service = RecordingServerService()
         let access = StubFolderAccess()
         let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
         let coordinator = ServerCoordinator(service: service, folders: folders)
         coordinator.selectFolder(access.url)
-        coordinator.uploadsEnabled = true
+        coordinator.profile = .fileDrop
 
         coordinator.start()
         try await waitUntil { coordinator.state != .starting }
-        XCTAssertEqual(service.lastAllowUploads, true)
+        XCTAssertEqual(service.lastProfile, .fileDrop)
     }
 
     @MainActor
@@ -374,12 +374,12 @@ private final class RecordingServerService: ServerService {
     var startCallCount = 0
     var startResult: Result<UInt16, Error> = .success(8080)
     var requestLog: RequestLog?
-    private(set) var lastAllowUploads: Bool?
+    private(set) var lastProfile: ServerProfile?
     private(set) var lastCredentials: ServerCredentials?
 
-    func start(allowUploads: Bool, credentials: ServerCredentials?) async throws -> UInt16 {
+    func start(profile: ServerProfile, credentials: ServerCredentials?) async throws -> UInt16 {
         startCallCount += 1
-        lastAllowUploads = allowUploads
+        lastProfile = profile
         lastCredentials = credentials
         return try startResult.get()
     }

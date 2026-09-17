@@ -29,18 +29,21 @@ final class ServerCoordinator {
     }
 
     private(set) var state: State
-    /// Off by default: per `docs/SECURITY.md`, uploads are an explicit write
-    /// capability, never implied just by selecting a folder and starting
-    /// the server. Changing it while running has no effect on the current
-    /// session — only the next `start()` reads it; `ServerDashboard`
-    /// disables the toggle while running to avoid that confusion.
-    var uploadsEnabled = false
-    /// Off by default, and — unlike `uploadsEnabled` — never persisted:
-    /// per `docs/adr/0002-http-basic-authentication.md`, a plaintext
-    /// passphrase isn't something this app keeps at rest, so both this and
-    /// `password` reset each launch and must be re-entered to re-enable
-    /// protection. Changing either while running has no effect on the
-    /// current session, same as `uploadsEnabled`.
+    /// Defaults to `.fileSharing` — browsing and downloads, no uploads —
+    /// matching this app's behavior before server profiles existed. Per
+    /// `docs/SECURITY.md`, a write capability is never implied just by
+    /// selecting a folder and starting the server, so this must never
+    /// default to `.fileDrop`/`.fullAccess` on its own. Changing it while
+    /// running has no effect on the current session — only the next
+    /// `start()` reads it; `ServerDashboard` disables the picker while
+    /// running to avoid that confusion. See `ServerCore/ServerProfile.swift`.
+    var profile: ServerProfile = .fileSharing
+    /// Off by default, and — unlike `profile` — never persisted: per
+    /// `docs/adr/0002-http-basic-authentication.md`, a plaintext passphrase
+    /// isn't something this app keeps at rest, so both this and `password`
+    /// reset each launch and must be re-entered to re-enable protection.
+    /// Changing either while running has no effect on the current session,
+    /// same as `profile`.
     var requiresPassword = false
     var password = ""
     let folders: FolderRootManager
@@ -160,7 +163,7 @@ final class ServerCoordinator {
         let credentials = requiresPassword ? ServerCredentials(password: password) : nil
         Task {
             do {
-                let port = try await service.start(allowUploads: uploadsEnabled, credentials: credentials)
+                let port = try await service.start(profile: profile, credentials: credentials)
                 let host = ipAddressProvider() ?? "localhost"
                 state = .running(endpoint: "http://\(host):\(port)/")
                 runningPort = port

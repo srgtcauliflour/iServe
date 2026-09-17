@@ -23,7 +23,7 @@ final class LiveServerService: ServerService {
         self.limits = limits
     }
 
-    func start(allowUploads: Bool, credentials: ServerCredentials?) async throws -> UInt16 {
+    func start(profile: ServerProfile, credentials: ServerCredentials?) async throws -> UInt16 {
         guard httpServer == nil else {
             throw ServiceError.accessDenied
         }
@@ -33,7 +33,11 @@ final class LiveServerService: ServerService {
 
         let resolver = SecurePathResolver(root: scopedURL)
         let log = RequestLog()
-        let router = StaticFileHandler(resolver: resolver, allowUploads: allowUploads)
+        let router = StaticFileHandler(
+            resolver: resolver,
+            allowUploads: profile.allowsUploads,
+            allowDirectoryListing: profile.allowsDirectoryListing
+        )
         let server = HTTPServer(router: router, limits: limits, requestLog: log, credentials: credentials)
         do {
             let port = try await server.start()

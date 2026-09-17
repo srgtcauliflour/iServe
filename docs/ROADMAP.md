@@ -61,8 +61,19 @@ Deliverables:
   prompt. See `docs/adr/0002-http-basic-authentication.md` and
   `ServerCore/README.md`. This is the gate only, not yet the
   capability-based system below.
-- Capability-based server permissions.
-- File Sharing, File Drop and Full Access profiles.
+- Capability-based server permissions. Shipped: a `ServerProfile` enum
+  (`ServerCore/ServerProfile.swift`) bundles directory-listing and upload
+  capabilities together per profile, chosen once per session (before
+  `Start Server`) rather than left to combine freely. Website/Read Only
+  additionally disables the generated directory listing for a folder with
+  no index (`404` instead), so a "website" session never exposes browsing
+  whatever else is in the selected folder — File Sharing and File Drop
+  differ only in whether uploads are allowed. See
+  `docs/adr/0003-capability-based-server-profiles.md`.
+- File Sharing, File Drop and Full Access profiles. File Sharing and File
+  Drop shipped as above; Full Access is defined in `ServerProfile` but
+  deliberately kept out of the picker until WebDAV write operations (next)
+  give it something that actually distinguishes it from File Drop.
 - WebDAV read operations, then authorized write operations.
 - Optional multiple mounted folders after secure namespace design.
 - Rate/connection/request limits and advanced logs.
