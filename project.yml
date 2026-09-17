@@ -51,6 +51,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.srgtcauliflour.iServe
         TARGETED_DEVICE_FAMILY: '1,2'
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: iServe
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: iServe needs local network access so other devices on your Wi-Fi can connect to the server you start.

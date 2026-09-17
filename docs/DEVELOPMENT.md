@@ -388,3 +388,31 @@ filename all still passed, which only happens if the request that produced
 that response really did land on `/assets/`, so this was a client-side
 `HTTPURLResponse.url` reporting quirk, not a server bug — the assertion was
 dropped rather than chased further.
+
+## App icon
+
+`App/Assets.xcassets/AppIcon.appiconset` holds the app's first real icon —
+a single 1024×1024 "universal" master (`ASSETCATALOG_COMPILER_APPICON_NAME:
+AppIcon` in `project.yml`; Xcode 14+'s single-size app icon support
+generates every smaller size from it, so no legacy 20pt/29pt/40pt/60pt set
+is needed). The mark: a five-node network hub in white, radiating from a
+folder glyph at the center, on a coral-to-amber gradient — chosen from
+three concepts (a literal folder+Wi-Fi mark, this hub mark, and a
+high-contrast dark/neon mark) explored as an artifact, then refined by
+adding the folder once the hub-only version was picked, so the icon reads
+as "network" at a glance and "local file server" up close.
+
+`docs/app-icon-source.svg` is the editable vector source (plain shapes —
+a gradient rect, stroke lines, circles, two rounded rects for the folder —
+no hand-authored path data). The shipped PNG was produced from it with
+headless Chromium (`--screenshot` at a 1024×1024 window size) and then
+had ImageMagick strip any alpha channel (`-alpha remove -alpha off`),
+since an App Store icon must not carry transparency; regenerate the same
+way if the source SVG ever changes.
+
+Not yet done: iOS 18's dark-appearance and tinted-appearance icon
+variants (`Assets.xcassets` supports per-appearance app icons via
+`"appearances"` in `Contents.json`) — worth a fast follow if/when it
+matters, but a real design decision (how the mark simplifies to a
+single-color glyph for the tinted case) rather than pure asset generation,
+so it wasn't bundled into this pass.
