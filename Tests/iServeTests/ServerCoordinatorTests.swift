@@ -123,6 +123,50 @@ final class ServerCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testPasswordProtectionIsDisabledByDefaultAndFlowsThroughToStart() async throws {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+        XCTAssertNil(service.lastCredentials)
+    }
+
+    @MainActor
+    func testEnablingPasswordProtectionBeforeStartingPassesCredentialsToTheService() async throws {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+        coordinator.requiresPassword = true
+        coordinator.password = "secret"
+
+        coordinator.start()
+        try await waitUntil { coordinator.state != .starting }
+        XCTAssertEqual(service.lastCredentials, ServerCredentials(password: "secret"))
+    }
+
+    @MainActor
+    func testStartingWithPasswordProtectionEnabledButNoPasswordFailsWithoutCallingTheService() {
+        let service = RecordingServerService()
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        let coordinator = ServerCoordinator(service: service, folders: folders)
+        coordinator.selectFolder(access.url)
+        coordinator.requiresPassword = true
+
+        coordinator.start()
+        XCTAssertEqual(service.startCallCount, 0)
+        guard case .error = coordinator.state else {
+            return XCTFail("expected .error, got \(coordinator.state)")
+        }
+    }
+
+    @MainActor
     func testCallingStartAgainWhileRunningDoesNotRestartTheService() async throws {
         let service = RecordingServerService()
         let access = StubFolderAccess()
@@ -331,10 +375,12 @@ private final class RecordingServerService: ServerService {
     var startResult: Result<UInt16, Error> = .success(8080)
     var requestLog: RequestLog?
     private(set) var lastAllowUploads: Bool?
+    private(set) var lastCredentials: ServerCredentials?
 
-    func start(allowUploads: Bool) async throws -> UInt16 {
+    func start(allowUploads: Bool, credentials: ServerCredentials?) async throws -> UInt16 {
         startCallCount += 1
         lastAllowUploads = allowUploads
+        lastCredentials = credentials
         return try startResult.get()
     }
 

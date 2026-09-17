@@ -53,7 +53,14 @@ Deliverables:
   `maxZipUncompressedBytes`) and needs no capability opt-in, since
   packaging already-servable files exposes nothing a plain GET of each
   wouldn't. See `ServerCore/README.md`, `Handlers/README.md`.
-- Authentication/session layer.
+- Authentication/session layer. Shipped: optional, password-only HTTP
+  Basic Authentication (RFC 7617) — off by default, never persisted to
+  disk, checked on every request before it reaches the router or a body
+  byte is read, with a constant-time comparison and a `401`/
+  `WWW-Authenticate` response that triggers the browser's own native login
+  prompt. See `docs/adr/0002-http-basic-authentication.md` and
+  `ServerCore/README.md`. This is the gate only, not yet the
+  capability-based system below.
 - Capability-based server permissions.
 - File Sharing, File Drop and Full Access profiles.
 - WebDAV read operations, then authorized write operations.

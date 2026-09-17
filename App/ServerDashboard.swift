@@ -181,6 +181,13 @@ struct ServerDashboard: View {
             LabeledContent("Profile", value: coordinator.uploadsEnabled ? "Website / Uploads Allowed" : "Website / Read Only")
             Toggle("Allow Uploads", isOn: $coordinator.uploadsEnabled)
                 .disabled(isBusy || isRunning)
+            Toggle("Require Password", isOn: $coordinator.requiresPassword)
+                .disabled(isBusy || isRunning)
+            if coordinator.requiresPassword {
+                SecureField("Password", text: $coordinator.password)
+                    .disabled(isBusy || isRunning)
+                    .textContentType(.password)
+            }
             LabeledContent("Status", value: serverStatusText)
             if isRunning {
                 Button("Stop Server", systemImage: "stop.fill", role: .destructive) {
@@ -200,12 +207,22 @@ struct ServerDashboard: View {
         } header: {
             Text("Server")
         } footer: {
-            Text(
-                coordinator.uploadsEnabled
-                ? "Keep iServe open while sharing. Anyone who can reach this address can add files to the selected folder."
-                : "Keep iServe open while sharing. Serving stops when the app is no longer active."
+            Text(serverSectionFooterText)
+        }
+    }
+
+    private var serverSectionFooterText: String {
+        var lines = [
+            coordinator.uploadsEnabled
+            ? "Keep iServe open while sharing. Anyone who can reach this address can add files to the selected folder."
+            : "Keep iServe open while sharing. Serving stops when the app is no longer active."
+        ]
+        if coordinator.requiresPassword {
+            lines.append(
+                "A password prompt will appear before anyone can connect. iServe has no encryption, so only rely on this on networks you trust — not open/public Wi-Fi."
             )
         }
+        return lines.joined(separator: " ")
     }
 
     @ViewBuilder

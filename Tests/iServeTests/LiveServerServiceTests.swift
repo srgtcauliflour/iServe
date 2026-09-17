@@ -26,7 +26,7 @@ final class LiveServerServiceTests: XCTestCase {
         let service = LiveServerService(folders: folders)
         XCTAssertNil(service.requestLog)
 
-        let port = try await service.start(allowUploads: false)
+        let port = try await service.start(allowUploads: false, credentials: nil)
         XCTAssertEqual(access.events, ["start"])
         XCTAssertNotNil(service.requestLog)
 
@@ -51,11 +51,35 @@ final class LiveServerServiceTests: XCTestCase {
         let folders = FolderRootManager(access: StubFolderAccess(), store: MemoryBookmarkStore())
         let service = LiveServerService(folders: folders)
         do {
-            _ = try await service.start(allowUploads: false)
+            _ = try await service.start(allowUploads: false, credentials: nil)
             XCTFail("expected start() to throw with no folder selected")
         } catch {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .noFolderSelected)
         }
+    }
+
+    @MainActor
+    func testStartWithCredentialsRequiresAMatchingPasswordOverLoopback() async throws {
+        try "<html>secret</html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        folders.select(root)
+
+        let service = LiveServerService(folders: folders)
+        let port = try await service.start(allowUploads: false, credentials: ServerCredentials(password: "letmein"))
+
+        let (_, unauthorizedResponse) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
+        XCTAssertEqual((unauthorizedResponse as? HTTPURLResponse)?.statusCode, 401)
+
+        var authorizedRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!)
+        let encodedCredentials = Data(":letmein".utf8).base64EncodedString()
+        authorizedRequest.setValue("Basic \(encodedCredentials)", forHTTPHeaderField: "Authorization")
+        let (data, authorizedResponse) = try await URLSession.shared.data(for: authorizedRequest)
+        XCTAssertEqual((authorizedResponse as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "<html>secret</html>")
+
+        service.stop()
     }
 
     @MainActor
@@ -70,7 +94,7 @@ final class LiveServerServiceTests: XCTestCase {
 
         let service = LiveServerService(folders: folders)
         do {
-            _ = try await service.start(allowUploads: false)
+            _ = try await service.start(allowUploads: false, credentials: nil)
             XCTFail("expected start() to throw when scope cannot be acquired")
         } catch {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .accessDenied)

@@ -16,7 +16,11 @@ protocol ServerService: AnyObject {
     /// — per `docs/SECURITY.md`, a write capability is never implied just
     /// by selecting a folder, so a service must not default this to `true`
     /// on its own.
-    func start(allowUploads: Bool) async throws -> UInt16
+    ///
+    /// `credentials` (v0.3) is `nil` unless the caller has opted into
+    /// password protection for this session (`ServerCoordinator.requiresPassword`);
+    /// see `ServerCore/ServerCredentials.swift`.
+    func start(allowUploads: Bool, credentials: ServerCredentials?) async throws -> UInt16
 
     /// Must synchronously initiate cancellation of every owned network
     /// resource and release any security-scoped access this service acquired
@@ -36,7 +40,7 @@ final class UnconfiguredServerService: ServerService {
 
     var requestLog: RequestLog? { nil }
 
-    func start(allowUploads: Bool) async throws -> UInt16 {
+    func start(allowUploads: Bool, credentials: ServerCredentials?) async throws -> UInt16 {
         throw ServiceError.unavailable
     }
 

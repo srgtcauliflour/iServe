@@ -114,6 +114,18 @@ struct HTTPResponse: Sendable {
             .replacingOccurrences(of: "\n", with: "")
     }
 
+    /// A `401 Unauthorized` response with `WWW-Authenticate: Basic`, so a
+    /// browser shows its own native username/password prompt rather than
+    /// the request just silently failing (v0.3, optional password
+    /// protection — `ServerCore/ServerCredentials.swift`).
+    static func unauthorized() -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "WWW-Authenticate", value: "Basic realm=\"iServe\", charset=\"UTF-8\"")
+        headers.add(name: "Content-Length", value: "0")
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(status: 401, reason: "Unauthorized", headers: headers, body: .empty)
+    }
+
     static func notImplemented(method: String) -> HTTPResponse {
         .plainText(status: 501, reason: "Not Implemented", message: "Unsupported method: \(method)")
     }
