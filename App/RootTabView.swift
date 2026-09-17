@@ -21,10 +21,11 @@ struct RootTabView: View {
 
     @Bindable var coordinator: ServerCoordinator
     @State private var selection: Tab = .files
-    @State private var fileManagerModel = FileManagerViewModel()
+    @State private var fileManagerModel: FileManagerViewModel
 
     init(coordinator: ServerCoordinator) {
         self.coordinator = coordinator
+        _fileManagerModel = State(initialValue: FileManagerViewModel())
     }
 
     var body: some View {

@@ -25,13 +25,18 @@ import UniformTypeIdentifiers
 final class FileManagerViewModel {
     /// Overridable only for tests, which need an isolated temporary
     /// directory rather than the real app container's Documents folder.
-    private let rootProvider: () -> URL
+    /// Explicitly `@MainActor`, not a plain `() -> URL`: every member of
+    /// this class is implicitly `@MainActor`-isolated already (the class
+    /// itself is), so `documentsDirectory` below is too — a plain
+    /// non-isolated closure type can't hold it without silently dropping
+    /// that isolation, which the compiler correctly refuses.
+    private let rootProvider: @MainActor () -> URL
     private(set) var rootURL: URL?
     var previewURL: URL?
     var editingTextURL: URL?
     var errorMessage: String?
 
-    init(rootProvider: @escaping () -> URL = FileManagerViewModel.documentsDirectory) {
+    init(rootProvider: @escaping @MainActor () -> URL = FileManagerViewModel.documentsDirectory) {
         self.rootProvider = rootProvider
     }
 
