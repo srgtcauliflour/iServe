@@ -157,21 +157,44 @@ final class FileManagerViewModel {
     /// alphabetical. Never throws: a listing failure clears to empty and
     /// surfaces through `errorMessage` instead, since a folder view has no
     /// other sensible fallback content.
+    ///
+    /// Goes through `NSFileCoordinator` rather than calling
+    /// `FileManager.contentsOfDirectory` directly: a directory reached via
+    /// an external `chooseLocation(_:)` pick (especially anything under "On
+    /// My iPhone/iPad") is backed by a `NSFileProviderExtension`, and a
+    /// plain, uncoordinated read can race that provider's own
+    /// materialization of its contents — observed on-device as the file
+    /// manager reporting a folder empty immediately after picking it, only
+    /// to show its real contents once something else (even an unrelated
+    /// document-picker interaction elsewhere in the app) happened to let
+    /// the provider finish syncing. A coordinated read is Apple's own
+    /// documented mechanism for making sure that sync has actually
+    /// happened before the listing is trusted; the app's own sandboxed
+    /// Documents directory needs no such coordination, but going through
+    /// it there too costs nothing.
     func entries(in directory: URL) -> [FileManagerEntry] {
-        do {
-            let contents = try FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            )
-            return contents.map(FileManagerEntry.init).sorted { lhs, rhs in
-                if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
-                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        var result: [FileManagerEntry] = []
+        var coordinatorError: NSError?
+        let coordinator = NSFileCoordinator()
+        coordinator.coordinate(readingItemAt: directory, options: [], error: &coordinatorError) { coordinatedURL in
+            do {
+                let contents = try FileManager.default.contentsOfDirectory(
+                    at: coordinatedURL,
+                    includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+                    options: [.skipsHiddenFiles]
+                )
+                result = contents.map(FileManagerEntry.init).sorted { lhs, rhs in
+                    if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+            } catch {
+                errorMessage = "This folder could not be read."
             }
-        } catch {
-            errorMessage = "This folder could not be read."
-            return []
         }
+        if coordinatorError != nil {
+            errorMessage = "This folder could not be read."
+        }
+        return result
     }
 
     // MARK: - Archives

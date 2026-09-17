@@ -754,3 +754,22 @@ that remembered bookmark first and only falls back to the Documents
 directory if none is saved or it no longer resolves — so the one-time
 picker grant is the only manual step, and every later launch resumes
 automatically.
+
+**"On My iPhone" folder reads racing FileProvider materialization**
+(`App/FileManagerViewModel.swift`): a screen recording (not reproducible
+from code review alone — the wiring genuinely had no coupling between the
+two tabs) showed the file manager reporting an externally-chosen "On My
+iPhone" folder as empty immediately after picking it, then correctly
+listing its real contents only after something else — in the recording,
+an unrelated pick in the File Sharing tab's own folder picker — happened
+to let iOS finish syncing it. Root cause: a folder reached via
+`chooseLocation(_:)` is backed by a `NSFileProviderExtension`
+(`NSFileProvider` articles call this out explicitly), and a plain,
+uncoordinated `FileManager.contentsOfDirectory` call can race that
+provider's own materialization of its contents — it isn't guaranteed to
+block until the provider is actually ready the way a local read is.
+`entries(in:)` now goes through `NSFileCoordinator.coordinate(readingItemAt:options:error:byAccessor:)`
+first, which is Apple's documented mechanism for forcing that
+materialization to finish before the read happens; the app's own sandboxed
+Documents directory needs no such coordination, but routing it through the
+same call costs nothing and keeps the two paths identical.
