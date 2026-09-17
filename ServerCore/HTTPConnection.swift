@@ -183,8 +183,47 @@ actor HTTPConnection {
             } else {
                 beginUpload(for: request, leftoverBodyBytes: leftoverBodyBytes)
             }
+        case "OPTIONS":
+            respond(with: .webDAVOptions(), request: request)
+        case "PROPFIND":
+            respondToPropfind(request)
         default:
             respond(with: .notImplemented(method: request.method), request: request)
+        }
+    }
+
+    // MARK: - WebDAV (v0.3 read operations)
+
+    /// Unlike an upload or ZIP selection, `PROPFIND`'s own request body (if
+    /// any) is never read — this server doesn't parse it
+    /// (`docs/adr/0004-webdav-read-operations.md`), so there's nothing to
+    /// buffer: this responds synchronously from headers alone, exactly like
+    /// GET/HEAD.
+    private func respondToPropfind(_ request: HTTPRequest) {
+        guard let path = Self.pathIgnoringQuery(request.target) else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+        guard let depth = Self.webDAVDepth(from: request.headers["Depth"]) else {
+            respond(with: .badRequest("Depth must be 0 or 1"), request: request)
+            return
+        }
+        guard let response = router.routeWebDAVPropfind(path: path, depth: depth) else {
+            respond(with: .notImplemented(method: request.method), request: request)
+            return
+        }
+        respond(with: response, request: request)
+    }
+
+    /// Only `0` and `1` are accepted — a missing header, `infinity`, or
+    /// anything else is `nil`, which the caller turns into `400`. See
+    /// `ServerCore/HTTPRouter.swift`'s `WebDAVDepth` and
+    /// `docs/adr/0004-webdav-read-operations.md`.
+    private static func webDAVDepth(from header: String?) -> WebDAVDepth? {
+        switch header {
+        case "0": return .zero
+        case "1": return .one
+        default: return nil
         }
     }
 

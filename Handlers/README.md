@@ -109,21 +109,47 @@ select, and the total uncompressed size the resulting archive may reach —
 independent of `docs/SECURITY.md`'s upload-specific `allowUploads` gate,
 since this is a read/export operation, not a write.
 
+`StaticFileHandler.routeWebDAVPropfind(path:depth:)` (v0.3 WebDAV read
+operations, `docs/adr/0004-webdav-read-operations.md`) is the fourth
+`HTTPRouter` requirement that owns a complete response rather than just an
+authorization decision — same shape as `route(_:)` itself, since a
+`PROPFIND` response is just path resolution plus metadata, nothing a
+streaming body needs to gate mid-request. It resolves `path` exactly like
+`route(_:)` (the same `SecurePathResolver.ResolutionError` -> status
+mapping), requires `allowDirectoryListing` for a directory target
+regardless of whether an index file exists there — WebDAV enumeration is
+the same "browsing" capability as the HTML listing, just via a different
+protocol — and, for `depth: .one` on a directory, lists immediate children
+only (never recursing), omitting hidden entries the same way
+`DirectoryListingRenderer` does. `ServerCore/HTTPConnection.swift` builds
+the `Depth` header into a `WebDAVDepth` (`0`/`1` only — anything else,
+including a missing header or `infinity`, is `400` before this method is
+ever called) and hands the router's response straight back; `nil` becomes
+`501`. See `Handlers/WebDAVResponseBuilder.swift` for the `multistatus` XML
+this produces, and the ADR for why request-body parsing and
+`Depth: infinity` are both out of scope.
+
 Covered by `Tests/iServeTests/StaticFileHandlerTests.swift` (router behavior:
 index preference, status mapping, MIME types, the trailing-slash redirect,
 `allowDirectoryListing` gating a no-index directory to `404` while still
 serving an index file when disabled, the upload-authorization methods, the
-ZIP-download-authorization methods, and Range routing — no networking),
+ZIP-download-authorization methods, `routeWebDAVPropfind`'s resolution-error
+mapping, and Range routing — no networking),
 `Tests/iServeTests/DirectoryListingRendererTests.swift`
 (sorting, escaping, hidden-entry omission, the upload form's presence/absence
-— no filesystem-authorization concerns, pure rendering), and
+— no filesystem-authorization concerns, pure rendering),
+`Tests/iServeTests/WebDAVResponseBuilderTests.swift` (pure `multistatus` XML
+rendering — collection vs. file properties, escaping, one `<D:response>`
+per entry — no filesystem/networking), and
 `Tests/iServeTests/StaticFileServingLifecycleTests.swift`/
 `Tests/iServeTests/UploadLifecycleTests.swift`/
 `Tests/iServeTests/RangeLifecycleTests.swift`/
-`Tests/iServeTests/ZipDownloadLifecycleTests.swift` (the same handler driven
+`Tests/iServeTests/ZipDownloadLifecycleTests.swift`/
+`Tests/iServeTests/WebDAVLifecycleTests.swift` (the same handler driven
 by a real `HTTPServer` over loopback, including following a real redirect to
 a real listing, a real multipart upload landing on disk byte-exact, two
-Range requests together reconstructing a file exactly, and a real selection
+Range requests together reconstructing a file exactly, a real selection
 POST producing a real ZIP whose extracted contents match, including a
 selected subdirectory's nested files, a rejected traversal-name selection,
-and the temporary archive actually being deleted afterward).
+the temporary archive actually being deleted afterward, and a real
+`OPTIONS`/`PROPFIND` round trip at both depths).

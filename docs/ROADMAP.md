@@ -74,7 +74,19 @@ Deliverables:
   Drop shipped as above; Full Access is defined in `ServerProfile` but
   deliberately kept out of the picker until WebDAV write operations (next)
   give it something that actually distinguishes it from File Drop.
-- WebDAV read operations, then authorized write operations.
+- WebDAV read operations, then authorized write operations. Read operations
+  shipped: `OPTIONS` (capability discovery — `DAV: 1`, `Allow` naming every
+  supported method) and `PROPFIND` (`Depth: 0`/`1` only; a missing header or
+  `Depth: infinity` is refused with `400`, and the response always describes
+  a fixed property set rather than parsing the client's request body — see
+  `docs/adr/0004-webdav-read-operations.md` for why both are deliberate,
+  documented simplifications rather than full RFC 4918 conformance). Gated
+  by the same directory-listing capability as the HTML listing
+  (`docs/adr/0003-capability-based-server-profiles.md`) for a directory
+  target; a known file path is never gated, same as a plain GET. Authorized
+  write operations (`MKCOL`, `PUT`/`DELETE`/`MOVE`/`COPY` via WebDAV,
+  `LOCK`/`UNLOCK`) remain the next, separate increment, once
+  `ServerProfile.fullAccess` has something real to do.
 - Optional multiple mounted folders after secure namespace design.
 - Rate/connection/request limits and advanced logs.
 - Feature-rich in-app sandboxed file manager. Shipped: a native browse

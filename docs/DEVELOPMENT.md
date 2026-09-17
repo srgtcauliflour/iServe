@@ -422,10 +422,35 @@ they turn out to matter there rather than reopening v0.2.
    give it something distinct to do — see the ADR for why. See
    `ServerCore/README.md`, `Handlers/README.md`.
 
+7. WebDAV read operations — `docs/adr/0004-webdav-read-operations.md`.
+   `ServerCore/HTTPConnection.swift` now dispatches `OPTIONS` (pure
+   capability discovery: `200`, `DAV: 1`, `Allow: GET, HEAD, POST, OPTIONS,
+   PROPFIND`, the same for every path) and `PROPFIND` alongside GET/HEAD/
+   POST. Two deliberate simplifications, both documented in the ADR rather
+   than left as silent gaps: the `Depth` header must be exactly `0` or `1`
+   (a missing header or `Depth: infinity` is `400`, never an unbounded
+   recursive walk), and a `PROPFIND` request body is never read/parsed —
+   every response describes the same fixed property set
+   (`resourcetype`/`getcontentlength`/`getcontenttype`/`getlastmodified`/
+   `displayname`) regardless of what the client's `<prop>` list actually
+   asked for. `ServerCore/HTTPRouter.swift` gained
+   `routeWebDAVPropfind(path:depth:) -> HTTPResponse?`, shaped like
+   `route(_:)` itself (the router owns the whole response, `nil` meaning
+   unsupported -> `501`) rather than like the upload/ZIP authorization
+   methods, since there's no streaming body to gate mid-request.
+   `Handlers/StaticFileHandler.swift`'s implementation requires
+   `allowDirectoryListing` for a directory target (`docs/adr/
+   0003-capability-based-server-profiles.md`, independent of whether an
+   index file exists there) and omits hidden entries from a `Depth: 1`
+   directory's children, same as `DirectoryListingRenderer`. New
+   `Handlers/WebDAVResponseBuilder.swift` renders the `multistatus` XML
+   body. See `ServerCore/README.md`, `Handlers/README.md`.
+
 Not yet started from v0.3: archive formats beyond zip/7z, multi-select
 "search across the whole tree" (current search only filters the current
-directory's listing), WebDAV, optional multiple mounted folders, and
-rate/connection/request limits (see `docs/ROADMAP.md` for all of these).
+directory's listing), authorized WebDAV write operations, optional multiple
+mounted folders, and rate/connection/request limits (see `docs/ROADMAP.md`
+for all of these).
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

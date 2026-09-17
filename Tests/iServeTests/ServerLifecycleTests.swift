@@ -44,6 +44,38 @@ final class ServerLifecycleTests: XCTestCase {
         await server.stop()
     }
 
+    /// `OPTIONS` is capability discovery only (v0.3 WebDAV) and never
+    /// depends on the router, so even the bootstrap `NotFoundRouter`
+    /// answers it.
+    func testOptionsAdvertisesWebDAVSupportEvenAgainstTheBootstrapRouter() async throws {
+        let server = HTTPServer()
+        let port = try await server.start()
+
+        var request = URLRequest(url: loopbackURL(port: port, path: "/"))
+        request.httpMethod = "OPTIONS"
+        let (_, response) = try await URLSession.shared.data(for: request)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200)
+        XCTAssertEqual(http.value(forHTTPHeaderField: "DAV"), "1")
+
+        await server.stop()
+    }
+
+    /// `NotFoundRouter` doesn't override `routeWebDAVPropfind`, so it stays
+    /// WebDAV-incapable for free, same as it's upload-incapable today.
+    func testPropfindAgainstTheBootstrapRouterReturnsNotImplemented() async throws {
+        let server = HTTPServer()
+        let port = try await server.start()
+
+        var request = URLRequest(url: loopbackURL(port: port, path: "/"))
+        request.httpMethod = "PROPFIND"
+        request.setValue("0", forHTTPHeaderField: "Depth")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 501)
+
+        await server.stop()
+    }
+
     func testConcurrentRequestsAreAllServedWithoutHanging() async throws {
         let server = HTTPServer()
         let port = try await server.start()

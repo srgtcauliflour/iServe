@@ -37,7 +37,12 @@ now uses in place of `UnconfiguredServerService`.
   `route(_:)`, `HTTPConnection` can't get one synchronous `HTTPResponse`
   back for an upload. Default implementations refuse every upload, so
   `NotFoundRouter` and any future router that doesn't override them stay
-  upload-incapable for free.
+  upload-incapable for free. `routeWebDAVPropfind(path:depth:)` (v0.3,
+  see below) follows `route(_:)`'s own shape instead — the router builds
+  and owns the *complete* response, `nil` meaning "unsupported" — since a
+  WebDAV `PROPFIND` response is decided entirely by path resolution the
+  same way a GET's is, with no streaming-body concern an authorization bit
+  alone wouldn't cover.
 - `ServerProfile` (v0.3, `ServerCore/ServerProfile.swift`) bundles the
   capabilities `docs/MASTER-SPEC.md` section 4's four server profiles grant
   together — `allowsDirectoryListing`/`allowsUploads` — rather than letting
@@ -57,9 +62,10 @@ now uses in place of `UnconfiguredServerService`.
   `HTTPServerLimits.maxConcurrentConnections` is cancelled immediately rather
   than queued.
 - `HTTPConnection` (an actor) owns exactly one accepted `NWConnection`: it
-  reads bounded chunks into the parser, dispatches GET/HEAD/POST through the
-  router (anything else gets `501 Not Implemented`; oversized request
-  lines/headers get `414`/`431` instead of a generic `400`), writes one
+  reads bounded chunks into the parser, dispatches GET/HEAD/POST/OPTIONS/
+  PROPFIND through the router (anything else gets `501 Not Implemented`;
+  oversized request lines/headers get `414`/`431` instead of a generic
+  `400`), writes one
   response — streaming a `.file` body one `FileChunkReader` chunk at a time,
   only requesting the next chunk once the previous one's network send has
   completed — and closes. v0.1 does not support keep-alive/pipelining —
@@ -131,6 +137,25 @@ now uses in place of `UnconfiguredServerService`.
   through, so cleanup happens exactly once regardless of how the
   connection ends.
 
+  **WebDAV read operations (v0.3, `Handlers/WebDAVResponseBuilder.swift`,
+  `docs/adr/0004-webdav-read-operations.md`):** `OPTIONS` is pure capability
+  discovery — the same `200`/`Allow: GET, HEAD, POST, OPTIONS, PROPFIND`/
+  `DAV: 1` response for every path, never touching the router. `PROPFIND`'s
+  own request body is never read (this server doesn't parse WebDAV request
+  XML at all — see the ADR), so unlike an upload or ZIP selection it
+  responds synchronously from headers alone: the `Depth` header must be
+  exactly `0` or `1` (anything else, including a missing header or `Depth:
+  infinity`, is `400` before the request ever reaches `router
+  .routeWebDAVPropfind(path:depth:)`), and the router's response — `207
+  Multi-Status` with a fixed property set (`resourcetype`,
+  `getcontentlength`/`getcontenttype` for files, `getlastmodified`,
+  `displayname`) per entry — is sent back exactly as returned, `nil`
+  becoming `501 Not Implemented`. `StaticFileHandler`'s implementation
+  requires `allowDirectoryListing` for a directory target (independent of
+  whether an index file exists there, unlike the HTML listing path) and
+  omits hidden entries from a `Depth: 1` directory's children, same as
+  `DirectoryListingRenderer`.
+
 - `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
   `start(profile:credentials:)` acquires scoped access to the
   currently selected folder via `FolderRootManager.beginAccess()` — for
@@ -196,7 +221,15 @@ rejected, the right one accepted, the username ignored, a malformed
 `Authorization` header rejected rather than crashing, `HEAD` and an
 upload `POST` gated the same way as `GET` — including that the upload
 never touches the filesystem when rejected — and that omitting
-credentials entirely still serves every request unchecked), and
+credentials entirely still serves every request unchecked),
+`WebDAVLifecycleTests.swift` (a real `OPTIONS`/`PROPFIND` round trip over
+loopback — capability discovery, `Depth: 0` on a file and on a directory,
+`Depth: 1` listing immediate children only and omitting hidden entries, a
+missing/`infinity` `Depth` header rejected with `400`, a missing path
+`404`, and `allowDirectoryListing: false` refusing a directory the same
+way the HTML listing already does) and `WebDAVResponseBuilderTests.swift`
+(pure XML rendering — collection vs. file properties, escaping, one
+`<D:response>` per entry), and
 `LiveServerServiceTests.swift` (a real folder served through the full
 scoped-access + `HTTPServer` session lifecycle, including the session's
 `requestLog` going from `nil` to populated to `nil` again across

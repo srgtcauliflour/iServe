@@ -1,8 +1,24 @@
 import Foundation
 
-/// Dispatches a parsed, method-supported request (GET/HEAD/POST;
-/// `HTTPConnection` rejects everything else with 501 before a router ever
-/// sees it) to a response.
+/// The two `Depth` header values this server accepts for a WebDAV `PROPFIND`
+/// request (v0.3, RFC 4918 §9.1, `docs/adr/0004-webdav-read-operations.md`).
+/// `HTTPConnection` maps a missing/malformed header, or the RFC's own
+/// "infinity" value, to `400` before a router ever sees the request: an
+/// unbounded recursive tree walk has no place in this server's
+/// bounded-operations design, and every `PROPFIND` client this server
+/// targets already sends an explicit `Depth: 0`/`Depth: 1` to list one
+/// directory at a time.
+enum WebDAVDepth: Sendable, Equatable {
+    /// Describe only the resource at the request path.
+    case zero
+    /// Describe the resource at the request path plus, if it's a directory,
+    /// its immediate (non-hidden) children — never their own children.
+    case one
+}
+
+/// Dispatches a parsed, method-supported request (GET/HEAD/POST/OPTIONS/
+/// PROPFIND; `HTTPConnection` rejects everything else with 501 before a
+/// router ever sees it) to a response.
 ///
 /// Issue #5 supplies the real implementation: strip any query string from
 /// `request.target`, resolve the remaining path through `SecurePathResolver`,
@@ -46,6 +62,14 @@ protocol HTTPRouter: Sendable {
     /// to resolve — a traversal attempt, a name that no longer exists —
     /// rather than silently building an archive missing just that entry.
     func resolveZipEntries(directoryPath: String, names: [String]) -> [URL]?
+
+    /// WebDAV `PROPFIND` (v0.3 read support, RFC 4918 §9.1,
+    /// `docs/adr/0004-webdav-read-operations.md`). Unlike every other
+    /// requirement here, the router builds and owns the *complete*
+    /// response itself — status/error mapping included — exactly like
+    /// `route(_:)`; `nil` means this router doesn't support WebDAV at all,
+    /// which `HTTPConnection` maps to `501 Not Implemented`.
+    func routeWebDAVPropfind(path: String, depth: WebDAVDepth) -> HTTPResponse?
 }
 
 extension HTTPRouter {
@@ -53,6 +77,7 @@ extension HTTPRouter {
     func authorizeUploadedFile(directoryPath: String, filename: String) -> URL? { nil }
     func authorizeZipDownload(directoryPath: String) -> Bool { false }
     func resolveZipEntries(directoryPath: String, names: [String]) -> [URL]? { nil }
+    func routeWebDAVPropfind(path: String, depth: WebDAVDepth) -> HTTPResponse? { nil }
 }
 
 /// The v0.1 bootstrap router: no static handler exists yet, so every request
