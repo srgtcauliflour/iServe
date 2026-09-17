@@ -181,6 +181,30 @@ struct HTTPResponse: Sendable {
         return HTTPResponse(status: status, reason: reason, headers: headers, body: .data(body))
     }
 
+    /// A `207 Multi-Status` response for a successful WebDAV `PROPFIND`
+    /// (v0.3, RFC 4918 §9.1 — see `Handlers/WebDAVResponseBuilder.swift` and
+    /// `docs/adr/0004-webdav-read-operations.md`).
+    static func webDAVMultiStatus(_ body: Data) -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Type", value: "application/xml; charset=utf-8")
+        headers.add(name: "Content-Length", value: String(body.count))
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(status: 207, reason: "Multi-Status", headers: headers, body: .data(body))
+    }
+
+    /// `OPTIONS` capability discovery (v0.3, WebDAV) — the same response for
+    /// every path, since it never resolves or authorizes anything; a client
+    /// uses this only to learn the server understands WebDAV before it
+    /// tries `PROPFIND`.
+    static func webDAVOptions() -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Allow", value: "GET, HEAD, POST, OPTIONS, PROPFIND")
+        headers.add(name: "DAV", value: "1")
+        headers.add(name: "Content-Length", value: "0")
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(status: 200, reason: "OK", headers: headers, body: .empty)
+    }
+
     /// Renders the status line and header block, ending with the blank line that
     /// separates headers from the body. `HEAD` responses and the body's own bytes
     /// are handled by `HTTPConnection`; this method never encodes the body itself.

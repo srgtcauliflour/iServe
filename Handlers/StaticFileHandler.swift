@@ -67,6 +67,97 @@ struct StaticFileHandler: HTTPRouter {
         return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path, allowUploads: allowUploads))
     }
 
+    // MARK: - WebDAV (v0.3 read operations)
+
+    /// `path` is already query-stripped and need not end in "/" — unlike
+    /// `route(_:)`, a WebDAV client `PROPFIND`s a path to *discover* whether
+    /// it's a collection, so there's no trailing-slash redirect here; the
+    /// response's own `href` supplies the canonical, slash-terminated form
+    /// for a directory. See `docs/adr/0004-webdav-read-operations.md`.
+    func routeWebDAVPropfind(path: String, depth: WebDAVDepth) -> HTTPResponse? {
+        let resolved: URL
+        do {
+            resolved = try resolver.resolve(requestPath: path)
+        } catch let error as SecurePathResolver.ResolutionError {
+            return Self.response(for: error)
+        } catch {
+            return .internalServerError()
+        }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory) else {
+            return .notFound()
+        }
+
+        if isDirectory.boolValue {
+            // Same "no browsing" rule as the HTML listing (ADR-0003):
+            // PROPFIND on a directory is fundamentally an enumeration
+            // operation, so it's refused the same way regardless of
+            // whether an index file happens to live there.
+            guard allowDirectoryListing else { return .notFound() }
+            let href = path.hasSuffix("/") ? path : path + "/"
+            var entries = [Self.webDAVCollectionEntry(at: resolved, href: href)]
+            if depth == .one {
+                entries += Self.webDAVChildEntries(of: resolved, parentHref: href)
+            }
+            return .webDAVMultiStatus(WebDAVResponseBuilder.multiStatus(entries: entries))
+        }
+        return .webDAVMultiStatus(WebDAVResponseBuilder.multiStatus(entries: [Self.webDAVFileEntry(at: resolved, href: path)]))
+    }
+
+    private static func webDAVCollectionEntry(at url: URL, href: String) -> WebDAVResponseBuilder.Entry {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return WebDAVResponseBuilder.Entry(
+            href: href,
+            isCollection: true,
+            length: nil,
+            lastModified: attributes?[.modificationDate] as? Date,
+            contentType: nil,
+            displayName: url.lastPathComponent
+        )
+    }
+
+    private static func webDAVFileEntry(at url: URL, href: String) -> WebDAVResponseBuilder.Entry {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return WebDAVResponseBuilder.Entry(
+            href: href,
+            isCollection: false,
+            length: attributes?[.size] as? Int,
+            lastModified: attributes?[.modificationDate] as? Date,
+            contentType: MIMEType.forPathExtension(url.pathExtension),
+            displayName: url.lastPathComponent
+        )
+    }
+
+    /// Depth-1 children only — never recurses into a child directory's own
+    /// contents. Hidden entries (names starting with ".") are omitted, same
+    /// as `DirectoryListingRenderer` and for the same reason
+    /// (`docs/SECURITY.md`'s "no hidden/special metadata by default").
+    private static func webDAVChildEntries(of directoryURL: URL, parentHref: String) -> [WebDAVResponseBuilder.Entry] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        return contents.compactMap { url -> WebDAVResponseBuilder.Entry? in
+            let name = url.lastPathComponent
+            guard !name.hasPrefix("."), let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+                return nil
+            }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+            let isDirectory = values?.isDirectory ?? false
+            return WebDAVResponseBuilder.Entry(
+                href: parentHref + encodedName + (isDirectory ? "/" : ""),
+                isCollection: isDirectory,
+                length: isDirectory ? nil : values?.fileSize,
+                lastModified: values?.contentModificationDate,
+                contentType: isDirectory ? nil : MIMEType.forPathExtension(url.pathExtension),
+                displayName: name
+            )
+        }
+    }
+
     // MARK: - ZIP downloads
 
     func authorizeZipDownload(directoryPath: String) -> Bool {

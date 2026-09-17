@@ -47,4 +47,25 @@ final class HTTPRouterTests: XCTestCase {
         XCTAssertFalse(router.authorizeUpload(directoryPath: "/"))
         XCTAssertNil(router.authorizeUploadedFile(directoryPath: "/", filename: "anything.txt"))
     }
+
+    func testHTTPRouterDefaultImplementationDoesNotSupportWebDAV() {
+        let router = NotFoundRouter()
+        XCTAssertNil(router.routeWebDAVPropfind(path: "/", depth: .zero))
+    }
+
+    func testWebDAVOptionsAdvertisesPropfindAndDAVLevel1() {
+        let response = HTTPResponse.webDAVOptions()
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.headers["DAV"], "1")
+        XCTAssertEqual(response.headers["Allow"], "GET, HEAD, POST, OPTIONS, PROPFIND")
+    }
+
+    func testWebDAVMultiStatusSetsExpectedHeaders() {
+        let body = Data("<D:multistatus/>".utf8)
+        let response = HTTPResponse.webDAVMultiStatus(body)
+        XCTAssertEqual(response.status, 207)
+        XCTAssertEqual(response.headers["Content-Type"], "application/xml; charset=utf-8")
+        XCTAssertEqual(response.headers["Content-Length"], String(body.count))
+        XCTAssertEqual(response.body, .data(body))
+    }
 }

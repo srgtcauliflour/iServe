@@ -266,6 +266,32 @@ final class StaticFileHandlerTests: XCTestCase {
         XCTAssertNil(makeHandler().resolveZipEntries(directoryPath: "/", names: []))
     }
 
+    // MARK: - WebDAV (v0.3 read operations)
+
+    func testRouteWebDAVPropfindOnATraversalPathReturnsBadRequest() {
+        let response = makeHandler().routeWebDAVPropfind(path: "/../etc/passwd", depth: .zero)
+        XCTAssertEqual(response?.status, 400)
+    }
+
+    func testRouteWebDAVPropfindOnASymlinkEscapeReturnsForbidden() throws {
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iServeStaticHandlerWebDAVOutside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try "secret".write(to: outside.appendingPathComponent("secret.txt"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("escape"), withDestinationURL: outside
+        )
+
+        let response = makeHandler().routeWebDAVPropfind(path: "/escape/secret.txt", depth: .zero)
+        XCTAssertEqual(response?.status, 403)
+    }
+
+    func testRouteWebDAVPropfindOnAMissingPathReturnsNotFound() {
+        let response = makeHandler().routeWebDAVPropfind(path: "/missing.txt", depth: .zero)
+        XCTAssertEqual(response?.status, 404)
+    }
+
     // MARK: - HTTP Range (v0.3)
 
     func testPlainRequestAdvertisesAcceptRanges() throws {
