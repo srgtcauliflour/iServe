@@ -61,7 +61,19 @@ now uses in place of `UnconfiguredServerService`.
   deterministic and repeatable, and `stop()` cancels the listener and awaits
   every live connection's cancellation before returning. A connection beyond
   `HTTPServerLimits.maxConcurrentConnections` is cancelled immediately rather
-  than queued.
+  than queued. `accept(_:)` (v0.3, `docs/adr/0006-connection-and-rate-limits.md`)
+  applies two further, per-remote-address bounds after that global one:
+  `maxConnectionsPerAddress` (concurrent) and
+  `maxConnectionsPerAddressPerWindow` over `addressRateWindow` (a rolling
+  window) — tracked per address (host only, ignoring port) and pruned back
+  to nothing once an address has no open connection and nothing within the
+  window, so a long session doesn't accumulate state for every client ever
+  seen. Since v0.1 has no keep-alive, one connection is one request, so the
+  rolling-window cap doubles as this server's per-address request-rate
+  limit. Every rejection is silent (`connection.cancel()`, no response,
+  same as the existing global-cap behavior) but increments
+  `RequestLog.rejectedConnectionCount`. `stop()` clears all of this
+  tracking, so a restarted session begins with a fresh budget.
 - `HTTPConnection` (an actor) owns exactly one accepted `NWConnection`: it
   reads bounded chunks into the parser, dispatches GET/HEAD/POST/OPTIONS/
   PROPFIND/MKCOL/PUT/DELETE/MOVE/COPY through the router (anything else
@@ -208,6 +220,24 @@ now uses in place of `UnconfiguredServerService`.
   one of these; nothing else should construct an `HTTPServer` for the app's
   own serving session.
 
+  `start(profile:credentials:)` also acquires scoped access for every
+  currently-resolvable additional mount (v0.3, optional multiple mounted
+  folders, `docs/adr/0007-multiple-mounted-folders.md`) via
+  `FolderRootManager.beginAccess(forMountNamed:)` — a mount whose scope
+  can't be acquired right now is silently skipped for this session rather
+  than failing the whole server start over one bad mount. Each resolvable
+  mount gets its own `StaticFileHandler`/`SecurePathResolver`, constructed
+  with uploads and WebDAV writes forced off regardless of `profile` (only
+  `allowDirectoryListing` follows it, same as the primary) — additional
+  mounts are always read/download-only. The primary and every mount handler
+  are wrapped in a `MountRouter` (`Handlers/README.md`) unconditionally,
+  even with zero additional mounts, so every session exercises the same
+  dispatch path the "provable pass-through" guarantee depends on. `stop()`
+  releases every mount's scoped access alongside the primary's, in the same
+  order guarantee (after the listener/connections are cancelled, never
+  before) — and a start failure releases everything already acquired,
+  mounts included, before rethrowing.
+
   **`App/iServeApp.swift` is the only place that should construct a real
   `LiveServerService`.** It was missed entirely for one release cycle — the
   shipped app kept using the `UnconfiguredServerService` bootstrap by
@@ -261,7 +291,13 @@ directory, creating and overwriting a file, a `PUT` over
 `maxWebDAVPutBytes` writing nothing, deleting a file, renaming and copying
 via the `Destination` header including an absolute-URL form,
 `Overwrite: F` refusing an existing destination, and every write method
-refused with `404` when `allowWebDAVWrites` is off), and
+refused with `404` when `allowWebDAVWrites` is off),
+`ConnectionLimitLifecycleTests.swift` (a real `HTTPServer` over loopback —
+a low per-address rate-window budget rejecting requests deterministically
+once exhausted, a low per-address concurrent cap rejecting some of many
+simultaneous connections, rejections landing in
+`RequestLog.snapshot().rejectedConnections`, and `stop()`/`start()`
+resetting that budget for a fresh session), and
 `LiveServerServiceTests.swift` (a real folder served through the full
 scoped-access + `HTTPServer` session lifecycle, including the session's
 `requestLog` going from `nil` to populated to `nil` again across

@@ -42,3 +42,20 @@ once; each just needs its own matching `beginAccess()`/`endAccess(_:)` pair.
 Do not use a remembered `selectedURL` alone as proof that scope is currently
 held; only a caller holding a URL returned by `beginAccess()` may treat it as
 scoped.
+
+`additionalMounts` (v0.3, `docs/adr/0007-multiple-mounted-folders.md`) are
+any number of extra, named, read-only shared folders alongside the one
+primary root above — each with its own independent bookmark
+(`MountBookmarkStore`, a separate persisted `[MountBookmark]`, never mixed
+into the primary's single bookmark) and its own scope lifetime
+(`beginAccess(forMountNamed:)`/`endAccess(_:)`, the same pattern as the
+primary's). `addMount(_:)` derives a unique path-segment name from the
+folder's own last path component, disambiguating collisions with a numeric
+suffix; `removeMount(named:)` forgets one for good. `restoreMounts()` is the
+multi-mount equivalent of `restore()` — called alongside it at launch — and
+drops (without forgetting) any mount whose bookmark no longer resolves or
+validates, so one bad mount never blocks the others. Additional mounts are
+never validated or authorized for remote access here; that's `MountRouter`
+(`Handlers/README.md`) and `LiveServerService`, which construct each mount's
+own `StaticFileHandler` with uploads and WebDAV writes forced off
+regardless of the session's `ServerProfile`.

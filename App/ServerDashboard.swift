@@ -4,12 +4,14 @@ import UniformTypeIdentifiers
 
 struct ServerDashboard: View {
     @State private var isChoosingFolder = false
+    @State private var isChoosingAdditionalFolder = false
     @State private var didRestore = false
     @State private var didCopyEndpoint = false
     @State private var isShowingBrowser = false
     @State private var isShowingFileManager = false
     @State private var requestCount = 0
     @State private var bytesTransferred = 0
+    @State private var rejectedConnectionCount = 0
     @State private var recentEntries: [RequestLogEntry] = []
     // @Bindable, not `let`: the profile picker and password field need a
     // Binding into coordinator's properties. Plain @Observable property
@@ -65,6 +67,7 @@ struct ServerDashboard: View {
             List {
                 overviewSection
                 folderSection
+                additionalMountsSection
                 serverSection
                 connectionsSection
                 if isRunning {
@@ -78,6 +81,7 @@ struct ServerDashboard: View {
                 guard !didRestore else { return }
                 didRestore = true
                 coordinator.restoreFolder()
+                coordinator.folders.restoreMounts()
             }
             .task(id: isRunning) {
                 await pollRequestLog()
@@ -88,6 +92,16 @@ struct ServerDashboard: View {
                 switch result {
                 case .success(let urls):
                     if let url = urls.first { coordinator.selectFolder(url) }
+                case .failure(let error):
+                    coordinator.folders.reportPickerFailure(error)
+                }
+            }
+            .fileImporter(isPresented: $isChoosingAdditionalFolder,
+                          allowedContentTypes: [.folder],
+                          allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first { coordinator.folders.addMount(url) }
                 case .failure(let error):
                     coordinator.folders.reportPickerFailure(error)
                 }
@@ -107,6 +121,7 @@ struct ServerDashboard: View {
         guard isRunning, let log = coordinator.requestLog else {
             requestCount = 0
             bytesTransferred = 0
+            rejectedConnectionCount = 0
             recentEntries = []
             return
         }
@@ -114,6 +129,7 @@ struct ServerDashboard: View {
             let snapshot = await log.snapshot()
             requestCount = snapshot.totalRequests
             bytesTransferred = snapshot.totalBytes
+            rejectedConnectionCount = snapshot.rejectedConnections
             recentEntries = snapshot.entries
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
@@ -172,6 +188,33 @@ struct ServerDashboard: View {
             Text("Shared folder")
         } footer: {
             Text("The selected folder is remembered on this device. You can change or forget it at any time.")
+        }
+    }
+
+    /// Additional mounts (v0.3, `docs/adr/0007-multiple-mounted-folders.md`)
+    /// are always read/download only, regardless of the chosen profile —
+    /// the footer says so plainly, since the "Full Access" warning above
+    /// only ever applies to the shared folder.
+    @ViewBuilder
+    private var additionalMountsSection: some View {
+        Section {
+            ForEach(coordinator.folders.additionalMounts) { mount in
+                Label(mount.name, systemImage: "folder.badge.plus")
+                    .swipeActions {
+                        Button("Remove", systemImage: "trash", role: .destructive) {
+                            coordinator.folders.removeMount(named: mount.name)
+                        }
+                        .disabled(isBusy || isRunning)
+                    }
+            }
+            Button("Add Another Folder", systemImage: "plus") {
+                isChoosingAdditionalFolder = true
+            }
+            .disabled(isBusy || isRunning)
+        } header: {
+            Text("Additional folders")
+        } footer: {
+            Text("Each additional folder is served at its own address, browse/download only — never writable, regardless of the server profile above. Adding or removing one only takes effect the next time the server starts.")
         }
     }
 
@@ -265,6 +308,18 @@ struct ServerDashboard: View {
                     .foregroundStyle(.secondary)
                 LabeledContent("Requests", value: "\(requestCount)")
                 LabeledContent("Transferred", value: Self.byteFormatter.string(fromByteCount: Int64(bytesTransferred)))
+                if rejectedConnectionCount > 0 {
+                    Label("\(rejectedConnectionCount) connection(s) turned away by server limits", systemImage: "exclamationmark.shield")
+                        .foregroundStyle(.orange)
+                        .font(.footnote)
+                        .accessibilityLabel("\(rejectedConnectionCount) connections turned away by server limits this session")
+                }
+                ForEach(coordinator.folders.additionalMounts) { mount in
+                    let mountEndpoint = endpoint + "\(mount.name)/"
+                    Label(mountEndpoint, systemImage: "folder.badge.plus")
+                        .textSelection(.enabled)
+                        .accessibilityLabel("\(mount.name): \(mountEndpoint)")
+                }
             } else {
                 Text("No listening endpoint")
                     .foregroundStyle(.secondary)

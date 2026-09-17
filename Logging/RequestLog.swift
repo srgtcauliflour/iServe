@@ -38,10 +38,12 @@ actor RequestLog {
         let entries: [RequestLogEntry]
         let totalRequests: Int
         let totalBytes: Int
+        let rejectedConnections: Int
     }
 
     private(set) var totalRequestCount = 0
     private(set) var totalBytesTransferred = 0
+    private(set) var rejectedConnectionCount = 0
     private var entries: [RequestLogEntry] = []
     private let capacity: Int
 
@@ -58,8 +60,23 @@ actor RequestLog {
         }
     }
 
+    /// One connection turned away by `HTTPServer.accept(_:)` before an
+    /// `HTTPConnection` was ever created — the global concurrent-connection
+    /// cap, a per-address connection cap, or a per-address rate limit
+    /// (v0.3, `docs/adr/0006-connection-and-rate-limits.md`). A single
+    /// total, not broken down by which limit fired: enough to notice
+    /// something is being turned away, not a diagnostic tool.
+    func recordRejectedConnection() {
+        rejectedConnectionCount += 1
+    }
+
     /// Most-recent-first, for display.
     func snapshot() -> Snapshot {
-        Snapshot(entries: Array(entries.reversed()), totalRequests: totalRequestCount, totalBytes: totalBytesTransferred)
+        Snapshot(
+            entries: Array(entries.reversed()),
+            totalRequests: totalRequestCount,
+            totalBytes: totalBytesTransferred,
+            rejectedConnections: rejectedConnectionCount
+        )
     }
 }

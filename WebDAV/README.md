@@ -1,3 +1,3 @@
 # WebDAV
 
-Reserved optional v0.3 module. No runtime dependency is added to v0.1.
+This folder is intentionally empty. `AGENTS.md`'s original module sketch reserved a standalone `WebDAV/` module, but v0.3's actual read (`docs/adr/0004-webdav-read-operations.md`) and write (`docs/adr/0005-webdav-write-operations.md`) support both live directly in `ServerCore/HTTPRouter.swift`/`HTTPConnection.swift`/`HTTPResponse.swift` and `Handlers/StaticFileHandler.swift`/`WebDAVResponseBuilder.swift` instead — see those ADRs for why a separate module wasn't worth splitting the two halves of one protocol pipeline across. No runtime dependency was added to the v0.1 static server core either way.

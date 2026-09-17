@@ -155,6 +155,49 @@ as either endpoint, refuse (`403`) to touch `resolver.root` itself;
 decode it) and refuse (`409`) moving/copying a directory into its own
 subtree.
 
+`MountRouter` (v0.3, optional multiple mounted folders,
+`docs/adr/0007-multiple-mounted-folders.md`) sits in front of the primary
+`StaticFileHandler` and dispatches by a request target's *first path
+component*: an unrecognized component (including "/" itself, which has
+none) always falls through to `primary` unchanged, so `/` never resolves to
+a mount regardless of how many exist. A recognized component's remainder is
+routed to that mount's own independent `StaticFileHandler` (its own
+`SecurePathResolver`, so one mount's containment check can never be
+satisfied by another mount's tree) with the name segment stripped — a bare
+mount reference with no trailing slash (`/Name`, not `/Name/`) gets the same
+`301` redirect `StaticFileHandler.route(_:)` already gives any directory
+request missing its trailing slash, so a mount's own relative links resolve
+correctly. With zero additional mounts every `HTTPRouter` requirement is a
+provable, unconditional pass-through to `primary` — the exact same
+`HTTPRequest`/path forwarded, never reconstructed — so a single-folder
+session behaves exactly as it always has; this is exercised by dedicated
+zero-mount tests rather than merely asserted. `MountRouter` does no
+capability-checking of its own: `ServerCore/LiveServerService.swift`
+constructs every additional mount's handler with uploads and WebDAV writes
+already forced off (regardless of `ServerProfile`), so this router only
+ever dispatches, never special-cases a mount. `MOVE`/`COPY` resolve both the
+source and the `Destination` header (via the same
+`WebDAVDestinationHeaderParser` `StaticFileHandler` uses) to their owning
+mount and refuse with `409` the moment they differ — a write can never
+smuggle a file across the boundary between two independently-scoped roots,
+primary included. A same-named top-level entry inside the primary is
+shadowed by a mount of the same name — a documented trade-off, not a
+security concern, since both still resolve to content the operator
+explicitly chose to share.
+
+Covered by `Tests/iServeTests/MountRouterTests.swift` (router-only unit
+tests against real `StaticFileHandler`s over real temp directories: the
+zero-mount pass-through, dispatch to a named mount, `/` always meaning the
+primary regardless of mount count, the same-named-entry shadowing rule, the
+bare-mount-reference redirect, an unrecognized component falling through to
+the primary, `authorize`/`resolve` dispatch rewriting the directory path for
+the target mount, PROPFIND answered by the right mount, and every
+`MOVE`/`COPY` cross-mount 409 case) and
+`Tests/iServeTests/MountLifecycleTests.swift` (the same router driven by a
+real `HTTPServer` over loopback: the primary and an additional mount both
+reachable at their own addresses, the bare-mount redirect over the wire, and
+a mount refusing WebDAV writes even when the primary allows them).
+
 Covered by `Tests/iServeTests/StaticFileHandlerTests.swift` (router behavior:
 index preference, status mapping, MIME types, the trailing-slash redirect,
 `allowDirectoryListing` gating a no-index directory to `404` while still

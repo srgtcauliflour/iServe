@@ -60,3 +60,40 @@ final class UserDefaultsFolderBookmarkStore: FolderBookmarkStore {
         }
     }
 }
+
+/// One additional mounted folder's persisted identity (v0.3,
+/// `docs/adr/0007-multiple-mounted-folders.md`): `name` is the validated,
+/// unique path segment it's served under (`/<name>/...`); `bookmark` is
+/// its own security-scoped bookmark, entirely independent of the primary
+/// folder's.
+struct MountBookmark: Codable, Equatable, Sendable {
+    let name: String
+    let bookmark: Data
+}
+
+@MainActor
+protocol MountBookmarkStore {
+    var mounts: [MountBookmark] { get set }
+}
+
+@MainActor
+final class UserDefaultsMountBookmarkStore: MountBookmarkStore {
+    private let defaults: UserDefaults
+    private let key = "iServe.additionalMountBookmarks"
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    var mounts: [MountBookmark] {
+        get {
+            guard let data = defaults.data(forKey: key),
+                  let decoded = try? JSONDecoder().decode([MountBookmark].self, from: data) else {
+                return []
+            }
+            return decoded
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            defaults.set(data, forKey: key)
+        }
+    }
+}

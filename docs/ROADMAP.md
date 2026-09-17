@@ -93,8 +93,38 @@ Deliverables:
   root itself; `MOVE`/`COPY` refuse moving/copying a directory into its
   own subtree. `LOCK`/`UNLOCK` are a deliberate, documented non-goal for
   now — see `docs/adr/0005-webdav-write-operations.md`.
-- Optional multiple mounted folders after secure namespace design.
-- Rate/connection/request limits and advanced logs.
+- Optional multiple mounted folders after secure namespace design. Shipped:
+  any number of additional, named, read/download-only folders alongside the
+  one primary root, each dispatched by the request target's first path
+  component (`MountRouter`) to its own independent `StaticFileHandler`/
+  `SecurePathResolver` — one mount's containment check can never be
+  satisfied by another mount's tree, primary included. `/` always means the
+  primary, unconditionally, regardless of how many mounts exist; there is no
+  generated mounts-index page, since mount discovery happens in the app's
+  own UI (`ServerDashboard`), not server-rendered HTML. With zero additional
+  mounts, `MountRouter` is a provable, unconditional pass-through to the
+  primary — the same `HTTPRequest` forwarded unchanged — so every
+  single-folder session behaves exactly as it always has. Additional mounts
+  are always read/download-only regardless of the session's `ServerProfile`
+  (uploads and WebDAV writes forced off when each mount's handler is
+  constructed); `MOVE`/`COPY` refuse (`409`) the moment source and
+  destination resolve to different mounts. Each mount has its own
+  independent security-scoped bookmark (`FileSystem/FolderAccess.swift`'s
+  `MountBookmarkStore`), added/removed from `ServerDashboard` and taking
+  effect on the next server start. See
+  `docs/adr/0007-multiple-mounted-folders.md`.
+- Rate/connection/request limits and advanced logs. Shipped:
+  `HTTPServer.accept(_:)` now enforces two further, per-remote-address
+  bounds beyond the existing global `maxConcurrentConnections` —
+  `maxConnectionsPerAddress` (concurrent) and
+  `maxConnectionsPerAddressPerWindow` over a rolling `addressRateWindow`.
+  Since v0.1 has no keep-alive (one connection is one request), the
+  rolling-window cap is both the connection limit and the request-rate
+  limit this bullet asks for, rather than two separate mechanisms. Every
+  rejection is silent (matching the existing global-cap behavior) but now
+  increments a new `RequestLog.rejectedConnectionCount`, surfaced on
+  `ServerDashboard` once it's non-zero — the "advanced logs" half of this
+  deliverable. See `docs/adr/0006-connection-and-rate-limits.md`.
 - Feature-rich in-app sandboxed file manager. Shipped: a native browse
   screen (`App/FileManagerScreen.swift`), file preview via
   `QLPreviewController` (text, images, video, PDF — whatever QuickLook
