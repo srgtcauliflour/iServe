@@ -755,21 +755,37 @@ directory if none is saved or it no longer resolves — so the one-time
 picker grant is the only manual step, and every later launch resumes
 automatically.
 
-**"On My iPhone" folder reads racing FileProvider materialization**
-(`App/FileManagerViewModel.swift`): a screen recording (not reproducible
-from code review alone — the wiring genuinely had no coupling between the
-two tabs) showed the file manager reporting an externally-chosen "On My
-iPhone" folder as empty immediately after picking it, then correctly
-listing its real contents only after something else — in the recording,
-an unrelated pick in the File Sharing tab's own folder picker — happened
-to let iOS finish syncing it. Root cause: a folder reached via
-`chooseLocation(_:)` is backed by a `NSFileProviderExtension`
-(`NSFileProvider` articles call this out explicitly), and a plain,
-uncoordinated `FileManager.contentsOfDirectory` call can race that
-provider's own materialization of its contents — it isn't guaranteed to
-block until the provider is actually ready the way a local read is.
-`entries(in:)` now goes through `NSFileCoordinator.coordinate(readingItemAt:options:error:byAccessor:)`
-first, which is Apple's documented mechanism for forcing that
-materialization to finish before the read happens; the app's own sandboxed
-Documents directory needs no such coordination, but routing it through the
-same call costs nothing and keeps the two paths identical.
+**A folder chosen via "Browse Other Location" appeared empty until the
+Files tab was fully remounted** (`App/FileManagerScreen.swift`): took three
+attempts to actually find. First suspected (and ruled out, since the
+wiring genuinely has no coupling between the two tabs) a dependency on the
+File Sharing tab's own folder; then suspected (and fixed, but didn't
+change the symptom) `entries(in:)` racing a FileProvider's own
+materialization of an "On My iPhone" folder's contents, addressed by
+reading through `NSFileCoordinator.coordinate(readingItemAt:options:error:byAccessor:)`
+instead of a plain `FileManager.contentsOfDirectory` call. Adding a
+one-line listing diagnostic to the screen (raw item count/real error,
+surfaced right under the location banner) is what finally exposed the
+actual bug: after picking a new location, the diagnostic line reported a
+completely different path than the banner's own "Browsing: ..." line
+above it — proof that `entries(in:)` had been called with a *stale*
+`directory` value.
+
+Root cause: `FileManagerFolderView`'s listing only ever refreshed from
+`.onAppear(perform: refresh)`, which fires once when a view first mounts.
+`chooseLocation(_:)`/`resetToAppStorage()` change `FileManagerViewModel.rootURL`
+while the *same* root `FileManagerFolderView` instance stays mounted (no
+navigation push/pop happens), so SwiftUI just updates its `directory`
+property in place — `onAppear` never fires again, and the file list
+silently keeps showing whatever was loaded for the *previous* directory
+(typically the empty Documents default). Switching to the File Sharing tab
+and back only ever appeared to fix it because that fully tears the Files
+tab down (`stop()` sets `rootURL = nil`) and rebuilds it from scratch
+(`start()` sets a fresh `rootURL`, which is a real "the view didn't exist,
+now it does" transition, correctly re-triggering `onAppear`) — coincidental
+lifecycle timing, never anything to do with the other tab's own folder.
+Fixed by replacing `.onAppear(perform: refresh)` with
+`.task(id: directory) { refresh() }`, which re-runs whenever `directory`
+itself changes, not just on first appearance — the general-purpose fix for
+this whole class of "a SwiftUI view's parameter changed but its cached
+`@State` didn't notice" bug.

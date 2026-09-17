@@ -293,7 +293,22 @@ struct FileManagerFolderView: View {
             } message: { entry in
                 Text("Enter a new name for \"\(entry.name)\".")
             }
-            .onAppear(perform: refresh)
+            // `.task(id: directory)`, not `.onAppear`: `onAppear` only fires
+            // the first time this view mounts. When the file manager's
+            // root screen stays mounted and `chooseLocation(_:)`/
+            // `resetToAppStorage()` just hands it a *new* `directory` value
+            // (the common case — switching location without ever leaving
+            // the Files tab), SwiftUI updates this same view's `directory`
+            // property in place without remounting it, so `onAppear` never
+            // fires again and `entries` silently keeps showing whatever
+            // was loaded for the *previous* directory. `.task(id:)` re-runs
+            // its body every time the id (here, `directory`) actually
+            // changes, in addition to on first appearance, which is the
+            // real fix — this was the actual cause of a folder chosen via
+            // "Browse Other Location" appearing empty until something
+            // unrelated (leaving and returning to the tab) happened to
+            // remount this view from scratch.
+            .task(id: directory) { refresh() }
             .refreshable { refresh() }
     }
 
