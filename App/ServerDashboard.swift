@@ -108,7 +108,7 @@ struct ServerDashboard: View {
             }
             .sheet(isPresented: $isShowingBrowser) {
                 if let endpointURL {
-                    InAppBrowserSheet(url: endpointURL)
+                    InAppBrowserSheet(url: endpointURL, password: coordinator.requiresPassword ? coordinator.password : nil)
                 }
             }
             .sheet(isPresented: $isShowingFileManager) {

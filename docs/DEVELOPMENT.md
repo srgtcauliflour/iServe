@@ -250,6 +250,24 @@ already pass in CI).
    `NSAppTransportSecurity` → `NSAllowsLocalNetworking: true` in Info.plist
    (also likely needs `project.yml`'s `info:`/`properties:` block, per the
    same reasoning as the Bonjour services array).
+
+   **Bug fixed post-v0.3 ship**: with password protection on, the preview
+   showed nothing but a blank white page — no native credential prompt, no
+   error. Unlike Safari, `WKWebView` never presents any UI of its own for
+   an HTTP Basic challenge; without a delegate answering it, the server's
+   `401`/`WWW-Authenticate` challenge just goes unanswered and the
+   navigation stalls blank. Fixed by threading the session's own password
+   (`ServerCoordinator.password`, only when `requiresPassword`) into
+   `InAppBrowserSheet` → `WebView` → `Coordinator`, and implementing
+   `webView(_:didReceive:completionHandler:)`: for an
+   `NSURLAuthenticationMethodHTTPBasic` challenge on the first attempt, it
+   answers with `.useCredential` using that password directly (the
+   username is a fixed placeholder — `ServerCredentials` never checks it)
+   rather than prompting the user to re-type a password they just typed
+   into this same app; any other challenge, or a second attempt after a
+   wrong credential, falls back to `.performDefaultHandling` (which fails
+   the navigation, surfaced through the existing `didFailProvisionalNavigation`
+   → `WebViewLoadState.failed` path) instead of retrying forever.
 4. Network interface discovery: `Networking/LocalNetworkAddress.allAddresses()`
    walks every active, non-loopback interface (IPv4 and IPv6, not just the
    one `preferredIPv4Address()` picks) as `[NetworkInterfaceAddress]`.
@@ -584,11 +602,22 @@ as "network" at a glance and "local file server" up close.
 
 `docs/app-icon-source.svg` is the editable vector source (plain shapes —
 a gradient rect, stroke lines, circles, two rounded rects for the folder —
-no hand-authored path data). The shipped PNG was produced from it with
-headless Chromium (`--screenshot` at a 1024×1024 window size) and then
-had ImageMagick strip any alpha channel (`-alpha remove -alpha off`),
-since an App Store icon must not carry transparency; regenerate the same
-way if the source SVG ever changes.
+no hand-authored path data). The shipped PNG is produced from it with
+`rsvg-convert -w 1024 -h 1024 docs/app-icon-source.svg -o Icon-1024.png`
+(librsvg — `apt install librsvg2-bin` — correctly renders the linear
+gradient background, unlike ImageMagick's own built-in MSVG delegate,
+which silently drops it and renders solid black instead); regenerate the
+same way if the source SVG ever changes. An earlier version of the
+shipped PNG was instead captured via headless Chromium
+(`--screenshot` at a 1024×1024 window size) — that page apparently
+triggered a browser scrollbar that got baked into the screenshot as a
+real (non-transparent) gray/white strip along the right and bottom
+edges, invisible at small icon sizes but visible at 1024×1024; switching
+to `rsvg-convert`, which renders the SVG directly with no browser chrome
+to accidentally capture, both fixes and prevents that class of bug.
+ImageMagick still strips any alpha channel afterward
+(`-alpha remove -alpha off`), since an App Store icon must not carry
+transparency, and `rsvg-convert`'s own output already has none.
 
 Not yet done: iOS 18's dark-appearance and tinted-appearance icon
 variants (`Assets.xcassets` supports per-appearance app icons via

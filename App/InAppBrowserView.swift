@@ -36,6 +36,17 @@ final class WebViewLoadState {
 /// always shows (and can only reload) exactly the URL it's given.
 struct InAppBrowserSheet: View {
     let url: URL
+    /// The session's own HTTP Basic Authentication password (v0.3,
+    /// `docs/adr/0002-http-basic-authentication.md`), if password
+    /// protection is on — `nil` otherwise. `WKWebView` never shows any
+    /// native credential prompt of its own for an HTTP Basic challenge
+    /// (unlike Safari), so without this the preview was just a blank
+    /// page: the server's own `401`/`WWW-Authenticate` challenge had
+    /// nothing responding to it. Since iServe already knows this
+    /// password — it's the same session that set it — the right fix is
+    /// answering the challenge automatically, not prompting the user to
+    /// re-type a password they just typed into this same app.
+    let password: String?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var loadState = WebViewLoadState()
@@ -44,7 +55,7 @@ struct InAppBrowserSheet: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                WebView(url: url, reloadToken: reloadToken, loadState: loadState)
+                WebView(url: url, password: password, reloadToken: reloadToken, loadState: loadState)
                 if let errorMessage = loadState.errorMessage {
                     ContentUnavailableView(
                         "Couldn't Load Page",
@@ -73,6 +84,7 @@ struct InAppBrowserSheet: View {
 
 private struct WebView: UIViewRepresentable {
     let url: URL
+    let password: String?
     let reloadToken: Int
     let loadState: WebViewLoadState
 
@@ -89,14 +101,38 @@ private struct WebView: UIViewRepresentable {
         webView.load(URLRequest(url: url))
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(loadState: loadState) }
+    func makeCoordinator() -> Coordinator { Coordinator(password: password, loadState: loadState) }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        private let password: String?
         private let loadState: WebViewLoadState
         var lastReloadToken = 0
 
-        init(loadState: WebViewLoadState) {
+        init(password: String?, loadState: WebViewLoadState) {
+            self.password = password
             self.loadState = loadState
+        }
+
+        /// Answers the server's own HTTP Basic challenge with its own
+        /// known password — see `InAppBrowserSheet.password`'s doc
+        /// comment for why this must happen here rather than relying on
+        /// `WKWebView` to prompt. The username is never checked
+        /// server-side (`ServerCredentials`), so any non-empty
+        /// placeholder is fine. Bails to default handling (which fails
+        /// the navigation) after a wrong-credential retry, rather than
+        /// re-sending the same password forever, and for any challenge
+        /// this server never issues (e.g. server trust).
+        nonisolated func webView(
+            _ webView: WKWebView,
+            didReceive challenge: URLAuthenticationChallenge,
+            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        ) {
+            guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodHTTPBasic,
+                  let password, challenge.previousFailureCount == 0 else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            completionHandler(.useCredential, URLCredential(user: "iserve", password: password, persistence: .forSession))
         }
 
         nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
