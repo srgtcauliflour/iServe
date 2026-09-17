@@ -32,11 +32,27 @@ protocol HTTPRouter: Sendable {
     /// would silently overwrite, or any other resolver rejection — without
     /// failing the rest of the request.
     func authorizeUploadedFile(directoryPath: String, filename: String) -> URL?
+
+    /// Whether `directoryPath` (always slash-terminated) can be packaged as
+    /// a ZIP right now — essentially just that it resolves to an existing
+    /// directory; unlike uploads this isn't a separate opt-in capability,
+    /// since it exposes nothing a plain GET of the same files wouldn't
+    /// already. Checked before any selection-body bytes are read.
+    func authorizeZipDownload(directoryPath: String) -> Bool
+
+    /// Resolves every selected name (as submitted by a directory listing's
+    /// "Download Selected" form) against `directoryPath` into a filesystem
+    /// URL, or `nil` to refuse the *whole* request if even one name fails
+    /// to resolve — a traversal attempt, a name that no longer exists —
+    /// rather than silently building an archive missing just that entry.
+    func resolveZipEntries(directoryPath: String, names: [String]) -> [URL]?
 }
 
 extension HTTPRouter {
     func authorizeUpload(directoryPath: String) -> Bool { false }
     func authorizeUploadedFile(directoryPath: String, filename: String) -> URL? { nil }
+    func authorizeZipDownload(directoryPath: String) -> Bool { false }
+    func resolveZipEntries(directoryPath: String, names: [String]) -> [URL]? { nil }
 }
 
 /// The v0.1 bootstrap router: no static handler exists yet, so every request

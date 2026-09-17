@@ -71,16 +71,50 @@ a later Range request will work. Applies uniformly to a direct file
 request and a directory's resolved `index.html`/`.htm` — both go through
 the same `fileResponse(for:request:)`.
 
+`DirectoryListingRenderer` (v0.3, multi-selection ZIP downloads) also wraps
+every non-empty listing in a second, plain `method="POST"` form (default
+`enctype`, so a browser sends `application/x-www-form-urlencoded`) with one
+checkbox per entry and a "Download Selected (.zip)" button — unconditional,
+unlike uploads, since packaging already-servable files as a ZIP exposes
+nothing a plain GET of each one wouldn't. `StaticFileHandler` implements the
+matching pair of `HTTPRouter` requirements:
+- `authorizeZipDownload(directoryPath:)` — resolves `directoryPath` and
+  confirms it's an existing directory, same shape as `authorizeUpload`.
+- `resolveZipEntries(directoryPath:names:)` — treats every selected name as
+  one atomic path component (the same rule as an uploaded filename), and
+  refuses the *whole* request (returns `nil`) if even one name fails to
+  resolve or no longer exists, rather than silently building an archive
+  missing just that entry.
+
+`ServerCore/HTTPConnection.swift` does the actual work once a selection is
+authorized and its body fully buffered: it calls `Transfer/ArchiveManager.swift`
+to build the ZIP in the app's own temporary directory (never inside the
+served root), then responds with `HTTPResponse.attachment(...)` — the same
+streamed-`.file` path as any other download, with a
+`Content-Disposition: attachment` header so a browser saves rather than
+navigates to it — and deletes the temporary archive once the connection
+closes, on every exit path (a clean finish, a client disconnect, a timeout).
+`HTTPServerLimits.maxZipSelectionBytes`/`maxZipEntryCount`/
+`maxZipUncompressedBytes` bound, respectively, the selection body itself
+(a small list of names, never file content), how many items one request may
+select, and the total uncompressed size the resulting archive may reach —
+independent of `docs/SECURITY.md`'s upload-specific `allowUploads` gate,
+since this is a read/export operation, not a write.
+
 Covered by `Tests/iServeTests/StaticFileHandlerTests.swift` (router behavior:
 index preference, status mapping, MIME types, the trailing-slash redirect,
-the upload-authorization methods, and Range routing — no networking),
+the upload-authorization methods, the ZIP-download-authorization methods,
+and Range routing — no networking),
 `Tests/iServeTests/DirectoryListingRendererTests.swift`
 (sorting, escaping, hidden-entry omission, the upload form's presence/absence
 — no filesystem-authorization concerns, pure rendering), and
 `Tests/iServeTests/StaticFileServingLifecycleTests.swift`/
 `Tests/iServeTests/UploadLifecycleTests.swift`/
-`Tests/iServeTests/RangeLifecycleTests.swift` (the same handler driven by a
-real `HTTPServer` over loopback, including following a real redirect to a
-real listing, a real multipart upload landing on disk byte-exact, and two
-Range requests together reconstructing a file exactly — the resumed-download
-case this all exists for).
+`Tests/iServeTests/RangeLifecycleTests.swift`/
+`Tests/iServeTests/ZipDownloadLifecycleTests.swift` (the same handler driven
+by a real `HTTPServer` over loopback, including following a real redirect to
+a real listing, a real multipart upload landing on disk byte-exact, two
+Range requests together reconstructing a file exactly, and a real selection
+POST producing a real ZIP whose extracted contents match, including a
+selected subdirectory's nested files, a rejected traversal-name selection,
+and the temporary archive actually being deleted afterward).

@@ -42,7 +42,17 @@ Goal: robust high-volume file service.
 
 Deliverables:
 - HTTP Range/206 and resumable downloads.
-- Multi-selection and streaming ZIP/archive downloads.
+- Multi-selection and streaming ZIP/archive downloads. Shipped: a browser
+  client can select several files/subdirectories in a directory listing
+  (a plain, no-JavaScript checkbox form) and download them as one `.zip`,
+  built in the app's own temporary directory via
+  `Transfer/ArchiveManager.swift` and streamed back with
+  `Content-Disposition: attachment`, then deleted once the connection
+  closes. Bounded independently of upload limits
+  (`HTTPServerLimits.maxZipSelectionBytes`/`maxZipEntryCount`/
+  `maxZipUncompressedBytes`) and needs no capability opt-in, since
+  packaging already-servable files exposes nothing a plain GET of each
+  wouldn't. See `ServerCore/README.md`, `Handlers/README.md`.
 - Authentication/session layer.
 - Capability-based server permissions.
 - File Sharing, File Drop and Full Access profiles.

@@ -23,6 +23,14 @@ actor HTTPConnection {
     private var lifetimeTimeoutTask: Task<Void, Never>?
     private var streamingFile: FileChunkReader?
     private var uploadState: UploadState?
+    private var zipDownloadState: ZipDownloadState?
+    /// A ZIP built for the *current* response, in the app's own temporary
+    /// directory rather than the served root. Set just before responding
+    /// with it, deleted in `close()` — the one place every termination
+    /// path (a clean finish, a client disconnect mid-stream, a timeout)
+    /// already funnels through — so it's cleaned up exactly once no matter
+    /// how the connection ends.
+    private var pendingZipCleanupURL: URL?
     private var didClose = false
     private var didRespond = false
 
@@ -39,6 +47,17 @@ actor HTTPConnection {
         var currentFileWriter: FileChunkWriter?
         var currentFileURL: URL?
         var uploadedFileNames: [String] = []
+    }
+
+    /// Everything tracked while accumulating a "download selected as ZIP"
+    /// POST body (v0.3) — just a small list of selected names, so unlike
+    /// `UploadState` this only ever buffers in memory, bounded by
+    /// `limits.maxZipSelectionBytes`.
+    private struct ZipDownloadState {
+        let request: HTTPRequest
+        let directoryPath: String
+        let contentLength: Int
+        var buffer = Data()
     }
 
     init(
@@ -79,6 +98,11 @@ actor HTTPConnection {
         streamingFile?.close()
         streamingFile = nil
         discardIncompleteUpload()
+        zipDownloadState = nil
+        if let pendingZipCleanupURL {
+            try? FileManager.default.removeItem(at: pendingZipCleanupURL)
+            self.pendingZipCleanupURL = nil
+        }
         connection.cancel()
         onClose(id)
     }
@@ -111,6 +135,9 @@ actor HTTPConnection {
             if uploadState != nil {
                 processUploadBytes(data)
                 guard !didRespond, !didClose else { return }
+            } else if zipDownloadState != nil {
+                processZipDownloadBytes(data)
+                guard !didRespond, !didClose else { return }
             } else {
                 do {
                     if let request = try parser.feed(data) {
@@ -136,7 +163,11 @@ actor HTTPConnection {
         case "GET", "HEAD":
             respond(with: router.route(request), suppressBody: request.method == "HEAD", request: request)
         case "POST":
-            beginUpload(for: request, leftoverBodyBytes: leftoverBodyBytes)
+            if Self.isFormURLEncoded(request.headers["Content-Type"]) {
+                beginZipDownload(for: request, leftoverBodyBytes: leftoverBodyBytes)
+            } else {
+                beginUpload(for: request, leftoverBodyBytes: leftoverBodyBytes)
+            }
         default:
             respond(with: .notImplemented(method: request.method), request: request)
         }
@@ -387,6 +418,149 @@ actor HTTPConnection {
             try? FileManager.default.removeItem(at: url)
         }
         uploadState = nil
+    }
+
+    // MARK: - ZIP downloads
+
+    /// Called once headers are parsed for a POST whose `Content-Type` is
+    /// `application/x-www-form-urlencoded` — a directory listing's
+    /// "Download Selected" form (`Handlers/DirectoryListingRenderer.swift`).
+    /// Authorized the same way an upload is: target is a directory,
+    /// `Content-Length` is present and within `limits.maxZipSelectionBytes`
+    /// (this body is just a list of names, never file content, so the cap
+    /// is small), and `router.authorizeZipDownload` accepts the directory —
+    /// all before reading a single body byte.
+    private func beginZipDownload(for request: HTTPRequest, leftoverBodyBytes: Data) {
+        guard let path = Self.pathIgnoringQuery(request.target), path.hasSuffix("/") else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+        guard let contentLengthText = request.headers["Content-Length"],
+              let contentLength = Int(contentLengthText), contentLength >= 0 else {
+            respond(with: .lengthRequired(), request: request)
+            return
+        }
+        guard contentLength > 0 else {
+            respond(with: .badRequest("No items selected"), request: request)
+            return
+        }
+        guard contentLength <= limits.maxZipSelectionBytes else {
+            respond(with: .payloadTooLarge(), request: request)
+            return
+        }
+        guard router.authorizeZipDownload(directoryPath: path) else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+
+        zipDownloadState = ZipDownloadState(request: request, directoryPath: path, contentLength: contentLength)
+        guard !leftoverBodyBytes.isEmpty else { return }
+        processZipDownloadBytes(leftoverBodyBytes)
+    }
+
+    /// Buffers newly received bytes for the active selection body, bounded
+    /// to at most its declared `Content-Length` regardless of how much more
+    /// the client actually sends — the same discipline as upload bytes,
+    /// just accumulated in memory since this body is always small.
+    private func processZipDownloadBytes(_ data: Data) {
+        guard var state = zipDownloadState else { return }
+        let remainingAllowed = max(0, state.contentLength - state.buffer.count)
+        state.buffer.append(data.prefix(remainingAllowed))
+        zipDownloadState = state
+        if state.buffer.count >= state.contentLength {
+            finishZipDownloadBody()
+        }
+    }
+
+    private func finishZipDownloadBody() {
+        guard let state = zipDownloadState else { return }
+        zipDownloadState = nil
+        let names = Self.parseSelectedNames(from: state.buffer)
+        guard !names.isEmpty else {
+            respond(with: .badRequest("No items selected"), request: state.request)
+            return
+        }
+        guard names.count <= limits.maxZipEntryCount else {
+            respond(with: .payloadTooLarge(), request: state.request)
+            return
+        }
+        guard let urls = router.resolveZipEntries(directoryPath: state.directoryPath, names: names) else {
+            respond(with: .notFound(), request: state.request)
+            return
+        }
+        Task { await self.buildAndStreamZip(urls, directoryPath: state.directoryPath, request: state.request) }
+    }
+
+    /// Builds the archive in the app's own temporary directory — never
+    /// inside the served root, since it isn't part of what the user chose
+    /// to share — then responds with it as a `.file` body exactly like any
+    /// other download. `close()` deletes the temp file once this response
+    /// (successful or not) is fully done with it.
+    private func buildAndStreamZip(_ urls: [URL], directoryPath: String, request: HTTPRequest) async {
+        guard !didClose, !didRespond else { return }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iserve-download-\(UUID().uuidString).zip")
+        do {
+            try ArchiveManager.createArchive(
+                containing: urls, at: tempURL, maxUncompressedBytes: limits.maxZipUncompressedBytes
+            )
+        } catch ArchiveManager.ArchiveError.selectionTooLarge {
+            try? FileManager.default.removeItem(at: tempURL)
+            respond(with: .payloadTooLarge(), request: request)
+            return
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            respond(with: .badRequest("Could not create the archive"), request: request)
+            return
+        }
+        guard !didClose, !didRespond else {
+            try? FileManager.default.removeItem(at: tempURL)
+            return
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
+              let size = attributes[.size] as? Int else {
+            try? FileManager.default.removeItem(at: tempURL)
+            respond(with: .internalServerError(), request: request)
+            return
+        }
+        pendingZipCleanupURL = tempURL
+        respond(with: .attachment(url: tempURL, length: size, filename: Self.zipFilename(for: directoryPath)), request: request)
+    }
+
+    /// Derives a human-readable download filename from the directory's
+    /// request path — "/Photos/" -> "Photos.zip", root "/" -> "Download.zip".
+    private static func zipFilename(for directoryPath: String) -> String {
+        let trimmed = directoryPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let lastComponent = trimmed.split(separator: "/").last.map(String.init) ?? ""
+        let decoded = lastComponent.removingPercentEncoding ?? lastComponent
+        return (decoded.isEmpty ? "Download" : decoded) + ".zip"
+    }
+
+    /// Parses an `application/x-www-form-urlencoded` body for every
+    /// `select=<name>` pair, form-urldecoding each value. Anything else in
+    /// the body (a different field, a malformed pair) is ignored rather
+    /// than rejecting the whole request.
+    private static func parseSelectedNames(from data: Data) -> [String] {
+        guard let bodyString = String(data: data, encoding: .utf8) else { return [] }
+        var names: [String] = []
+        for pair in bodyString.split(separator: "&", omittingEmptySubsequences: true) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0] == "select", let decoded = formURLDecode(String(parts[1])) else {
+                continue
+            }
+            names.append(decoded)
+        }
+        return names
+    }
+
+    private static func formURLDecode(_ value: String) -> String? {
+        value.replacingOccurrences(of: "+", with: " ").removingPercentEncoding
+    }
+
+    private static func isFormURLEncoded(_ contentType: String?) -> Bool {
+        guard let contentType else { return false }
+        let base = contentType.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return base.caseInsensitiveCompare("application/x-www-form-urlencoded") == .orderedSame
     }
 
     private static func pathIgnoringQuery(_ target: String) -> String? {

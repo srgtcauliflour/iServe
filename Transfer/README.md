@@ -32,8 +32,14 @@ both added via Swift Package Manager. RAR support was deliberately left
 out: every available RAR library wraps the non-commercial-licensed `unrar`
 code, which these two avoid entirely.
 
-`createArchive(containing:at:)` recursively zips files/directories,
-preserving structure. `extractArchive(at:to:)` (ZIP) and
+`createArchive(containing:at:maxUncompressedBytes:)` recursively zips
+files/directories, preserving structure; `maxUncompressedBytes` (default
+unbounded, for the in-app file manager's own deliberate selections) bounds
+the *sum* of every file's uncompressed size, checked while walking the
+selection so an oversized one aborts (`ArchiveError.selectionTooLarge`)
+without finishing. `ServerCore/HTTPConnection.swift`'s HTTP-triggered ZIP
+downloads (v0.3) pass a real limit here, since that selection is a remote
+client's, not the app's own user. `extractArchive(at:to:)` (ZIP) and
 `extractSevenZipArchive(at:to:)` (7z, extraction-only — SWCompression
 cannot create `.7z`, and no maintained permissively-licensed Swift library
 does either) both defend against "Zip Slip" independently of whatever

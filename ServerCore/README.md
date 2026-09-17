@@ -83,6 +83,24 @@ now uses in place of `UnconfiguredServerService`.
   responds `303 See Other` back to the directory so a browser's page
   refresh after the redirect doesn't resubmit the upload.
 
+  **POST ZIP downloads (v0.3):** a POST whose `Content-Type` is
+  `application/x-www-form-urlencoded` instead — a directory listing's
+  "Download Selected" form — takes a separate path: `HTTPConnection`
+  authorizes it the same way (directory target, `Content-Length` present
+  and within `HTTPServerLimits.maxZipSelectionBytes`, and
+  `router.authorizeZipDownload(directoryPath:)` accepts it), buffers the
+  small selection body in memory (never streamed to a parser — it's just a
+  list of names), parses out every `select=<name>` pair, and hands the
+  names to `router.resolveZipEntries(directoryPath:names:)`. Given a
+  resolved list, it builds a ZIP via `Transfer/ArchiveManager.swift` in the
+  app's own temporary directory (bounded by `maxZipEntryCount`/
+  `maxZipUncompressedBytes`), then responds with `HTTPResponse.attachment(...)`
+  — the same streamed-`.file` path as any other download — and deletes the
+  temporary archive in `close()`, the one place every termination path (a
+  clean finish, a client disconnect mid-stream, a timeout) already funnels
+  through, so cleanup happens exactly once regardless of how the
+  connection ends.
+
 - `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
   `start(allowUploads:)` acquires scoped access to the currently selected
   folder via `FolderRootManager.beginAccess()` — for the entire
@@ -130,7 +148,12 @@ HTTP response and the actual filesystem effect or lack of one),
 `RangeLifecycleTests.swift` (a real Range GET over loopback — an exact byte
 span, `416` for an out-of-bounds range, and two Range requests together
 reconstructing a whole file exactly, the resumed-download case Range
-support exists for), and `LiveServerServiceTests.swift` (a real folder
-served through the full scoped-access + `HTTPServer` session lifecycle,
-including the session's `requestLog` going from `nil` to populated to `nil`
-again across start/request/stop).
+support exists for), `ZipDownloadLifecycleTests.swift` (a real selection
+POST over loopback — a real ZIP whose extracted contents match, a selected
+subdirectory's nested files, the download filename derived from the
+directory, a rejected traversal-name selection, an empty selection, both
+size limits, and the temporary archive actually being deleted afterward),
+and `LiveServerServiceTests.swift` (a real folder served through the full
+scoped-access + `HTTPServer` session lifecycle, including the session's
+`requestLog` going from `nil` to populated to `nil` again across
+start/request/stop).

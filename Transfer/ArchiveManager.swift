@@ -55,21 +55,33 @@ enum ArchiveManager {
         /// device file, socket, FIFO, or an unrecognized type); iServe never
         /// materializes these from an archive.
         case entryTypeUnsupported
+        /// The selection's total uncompressed size exceeds the caller's
+        /// `maxUncompressedBytes` (v0.3, HTTP-triggered ZIP downloads) —
+        /// aborted mid-walk rather than finishing an oversized archive.
+        case selectionTooLarge
     }
 
     /// Creates a ZIP archive at `destination` containing each URL in `items`,
     /// preserving directory structure recursively. `destination` must not
     /// already exist; `items` may mix files and directories from the same
-    /// parent folder.
-    static func createArchive(containing items: [URL], at destination: URL) throws {
+    /// parent folder. `maxUncompressedBytes` bounds the *sum* of every
+    /// file's uncompressed size, checked as the selection is walked —
+    /// callers packaging a request driven by a remote client (unlike the
+    /// in-app file manager's own deliberate selections) should pass a real
+    /// limit here.
+    static func createArchive(containing items: [URL], at destination: URL, maxUncompressedBytes: Int = .max) throws {
         let archive: ZipArchive
         do {
             archive = try ZipArchive(url: destination, accessMode: .create)
         } catch {
             throw ArchiveError.cannotCreateArchive
         }
+        var totalBytes = 0
         for item in items {
-            try addEntryRecursively(for: item, relativeTo: item.deletingLastPathComponent(), in: archive)
+            try addEntryRecursively(
+                for: item, relativeTo: item.deletingLastPathComponent(), in: archive,
+                totalBytes: &totalBytes, maxUncompressedBytes: maxUncompressedBytes
+            )
         }
     }
 
@@ -138,12 +150,18 @@ enum ArchiveManager {
 
     // MARK: - Compression
 
-    private static func addEntryRecursively(for url: URL, relativeTo base: URL, in archive: ZipArchive) throws {
+    private static func addEntryRecursively(
+        for url: URL, relativeTo base: URL, in archive: ZipArchive,
+        totalBytes: inout Int, maxUncompressedBytes: Int
+    ) throws {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw ArchiveError.sourceItemMissing
         }
         guard isDirectory.boolValue else {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            totalBytes += (attributes?[.size] as? Int) ?? 0
+            guard totalBytes <= maxUncompressedBytes else { throw ArchiveError.selectionTooLarge }
             try archive.addEntry(
                 with: relativePath(of: url, relativeTo: base),
                 relativeTo: base,
@@ -158,7 +176,10 @@ enum ArchiveManager {
             return
         }
         for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            try addEntryRecursively(for: child, relativeTo: base, in: archive)
+            try addEntryRecursively(
+                for: child, relativeTo: base, in: archive,
+                totalBytes: &totalBytes, maxUncompressedBytes: maxUncompressedBytes
+            )
         }
     }
 
