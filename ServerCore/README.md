@@ -58,8 +58,16 @@ now uses in place of `UnconfiguredServerService`.
   does something a `.fileDrop` session doesn't. `LiveServerService.start(profile:credentials:)`
   passes all three booleans straight through to `StaticFileHandler`.
 - `HTTPServer` (an actor) owns the `NWListener` lifecycle: `start()` is
-  deterministic and repeatable, and `stop()` cancels the listener and awaits
-  every live connection's cancellation before returning. A connection beyond
+  deterministic and repeatable, and `stop()` cancels the listener, awaits its
+  actual `.cancelled` state (not just the `cancel()` call returning — the
+  underlying socket tears down asynchronously) and every live connection's
+  cancellation, before returning. Awaiting the real teardown, rather than
+  firing `cancel()` and moving on, is what makes an immediate subsequent
+  `start()` reliable rather than racing the OS still releasing the previous
+  listener's socket — a gap that showed up as an intermittent client-side
+  connection failure right after a rapid stop-then-start in
+  `ConnectionLimitLifecycleTests.testStoppingAndRestartingResetsThePerAddressRateBudget`.
+  A connection beyond
   `HTTPServerLimits.maxConcurrentConnections` is cancelled immediately rather
   than queued. `accept(_:)` (v0.3, `docs/adr/0006-connection-and-rate-limits.md`)
   applies two further, per-remote-address bounds after that global one:

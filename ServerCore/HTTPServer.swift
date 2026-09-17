@@ -77,8 +77,11 @@ struct HTTPServerLimits: Sendable {
 /// Owns the `NWListener` lifecycle and every accepted `HTTPConnection`.
 ///
 /// `start()`/`stop()` are deterministic and repeatable: `stop()` always cancels the
-/// listener and awaits every live connection's cancellation before returning, so a
-/// subsequent `start()` begins from a clean, empty state. A connection beyond
+/// listener, awaits its actual `.cancelled` state (not just the `cancel()` call
+/// returning — the underlying socket tears down asynchronously) and every live
+/// connection's cancellation, before returning, so a subsequent `start()` begins
+/// from a clean, empty state with no lingering OS-level socket from the previous
+/// listener. A connection beyond
 /// `limits.maxConcurrentConnections`, or beyond one remote address's own
 /// `maxConnectionsPerAddress`/`maxConnectionsPerAddressPerWindow` (v0.3,
 /// `docs/adr/0006-connection-and-rate-limits.md`), is cancelled immediately
@@ -101,6 +104,8 @@ actor HTTPServer {
     private var listener: NWListener?
     private var connections: [UUID: HTTPConnection] = [:]
     private var startContinuation: CheckedContinuation<UInt16, Error>?
+    /// Resumed once `listener` actually reaches `.cancelled` — see `stop()`.
+    private var stopContinuation: CheckedContinuation<Void, Never>?
     /// Per-remote-address admission bookkeeping for
     /// `docs/adr/0006-connection-and-rate-limits.md`'s two additional
     /// limits — see `AddressConnectionTracker`. Keyed by
@@ -167,11 +172,24 @@ actor HTTPServer {
         }
     }
 
-    /// Cancels the listener and awaits every live connection's cancellation before
-    /// returning. Safe to call repeatedly, including before the first `start()`.
+    /// Cancels the listener, awaits its actual `.cancelled` state (not just
+    /// the `cancel()` call returning — `NWListener` tears down its
+    /// underlying socket asynchronously), and awaits every live
+    /// connection's cancellation before returning. Safe to call
+    /// repeatedly, including before the first `start()`. Awaiting the real
+    /// teardown, rather than firing `cancel()` and moving on, is what makes
+    /// an immediate subsequent `start()` reliable: without it, a new
+    /// listener can begin accepting connections while the OS is still
+    /// releasing the previous one's socket, which is exactly the kind of
+    /// gap that shows up as intermittent client-side connection failures
+    /// in a rapid stop-then-start test.
     func stop() async {
-        listener?.cancel()
-        listener = nil
+        if let listener {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                stopContinuation = continuation
+                listener.cancel()
+            }
+        }
         for connection in connections.values {
             await connection.close()
         }
@@ -257,9 +275,17 @@ actor HTTPServer {
             }
             listener?.cancel()
             listener = nil
+            if let stopContinuation {
+                self.stopContinuation = nil
+                stopContinuation.resume()
+            }
         case .cancelled:
             listener = nil
             if state != .idle { state = .idle }
+            if let stopContinuation {
+                self.stopContinuation = nil
+                stopContinuation.resume()
+            }
         default:
             break
         }
