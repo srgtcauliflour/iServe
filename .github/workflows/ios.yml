@@ -168,6 +168,17 @@ jobs:
             -exportPath build/export \
             -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist"
 
+      - name: Rename IPA with version
+        run: |
+          set -euo pipefail
+          version=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*([0-9.]+).*/\1/p' project.yml | head -n1)
+          if [ -z "$version" ]; then
+            echo "Could not read MARKETING_VERSION from project.yml" >&2
+            exit 1
+          fi
+          ipa_path=$(ls build/export/*.ipa | head -n1)
+          mv "$ipa_path" "build/export/iServe-${version}.ipa"
+
       - name: Upload signed IPA
         uses: actions/upload-artifact@v4
         with:
