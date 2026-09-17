@@ -116,6 +116,36 @@ jobs:
           echo "Resolved signing identity: $code_sign_identity"
           echo "Resolved profile UUID: $profile_uuid"
 
+      - name: Configure app target signing
+        run: |
+          set -euo pipefail
+          # Manual signing must be scoped to the iServe app target alone,
+          # in project.yml itself -- not passed as xcodebuild command-line
+          # overrides. A command-line CODE_SIGN_STYLE/PROVISIONING_PROFILE*
+          # override applies to every target xcodebuild resolves for the
+          # archive, including the ZIPFoundation/SWCompression/BitByteData
+          # SPM package targets, which don't support (and don't need) a
+          # provisioning profile at all -- that mismatch is exactly what
+          # "does not support provisioning profiles" means. Project/target
+          # build settings, unlike command-line overrides, don't cascade to
+          # other targets, so patching them into the app target's own
+          # settings before xcodegen generates the project avoids this.
+          anchor='        PRODUCT_BUNDLE_IDENTIFIER: com.srgtcauliflour.iServe'
+          replacement=$(printf '        PRODUCT_BUNDLE_IDENTIFIER: %s\n        CODE_SIGN_STYLE: Manual\n        DEVELOPMENT_TEAM: %s\n        CODE_SIGN_IDENTITY: "%s"\n        PROVISIONING_PROFILE_SPECIFIER: %s' \
+            "$BUNDLE_ID" "$TEAM_ID" "$CODE_SIGN_IDENTITY" "$PROFILE_UUID")
+          if [ "$(grep -c -F -x "$anchor" project.yml)" != "1" ]; then
+            echo "Expected exactly one match for the app target's PRODUCT_BUNDLE_IDENTIFIER line in project.yml" >&2
+            exit 1
+          fi
+          python3 - "$anchor" "$replacement" <<'PY'
+          import sys
+          anchor, replacement = sys.argv[1], sys.argv[2]
+          with open("project.yml") as f:
+              content = f.read()
+          with open("project.yml", "w") as f:
+              f.write(content.replace(anchor, replacement, 1))
+          PY
+
       - name: Generate project
         run: xcodegen generate
 
@@ -127,13 +157,7 @@ jobs:
             -project iServe.xcodeproj \
             -scheme iServe \
             -archivePath build/iServe.xcarchive \
-            -destination "generic/platform=iOS" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            PROVISIONING_PROFILE="$PROFILE_UUID" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+            -destination "generic/platform=iOS"
 
       - name: Write export options
         run: |
