@@ -6,10 +6,14 @@ import Foundation
 /// the same resolver rather than appended and opened directly, so an index file
 /// that happens to be a symlink is still subject to the root-containment check.
 ///
-/// A directory with no index file gets a generated `DirectoryListingRenderer`
-/// listing instead of `404`, matching Shu-parity directory browsing. A
-/// directory request whose path doesn't already end in "/" is redirected to
-/// the slash-terminated form first — required so the browser's relative links
+/// A directory gets a generated `DirectoryListingRenderer` listing whenever
+/// `allowDirectoryListing` is on, even if it contains an index file —
+/// auto-serving an index page is reserved for `allowDirectoryListing ==
+/// false` (`ServerProfile.websiteReadOnly`), the one mode meant for
+/// presenting a site's own pages rather than browsing a folder; see
+/// `respondToDirectory(path:directoryURL:request:)`. A directory request
+/// whose path doesn't already end in "/" is redirected to the
+/// slash-terminated form first — required so the browser's relative links
 /// (both the listing's own entries and any served page's own relative
 /// asset/href URLs) resolve against the directory rather than its parent.
 struct StaticFileHandler: HTTPRouter {
@@ -20,10 +24,15 @@ struct StaticFileHandler: HTTPRouter {
     /// capability, never implied just by selecting a folder to serve.
     var allowUploads: Bool = false
     /// On by default, matching every pre-v0.3-profiles behavior. Set to
-    /// `false` for `ServerProfile.websiteReadOnly`: a directory with no
-    /// index file gets a plain `404` instead of a generated listing, since
-    /// Website mode is for serving a site's own pages, not for browsing
-    /// whatever else is in the selected folder. Never gates a direct GET of
+    /// `false` for `ServerProfile.websiteReadOnly`: a directory now serves
+    /// its `index.html`/`index.htm` if one exists, or a plain `404`
+    /// otherwise, instead of a generated listing — Website mode is for
+    /// serving a site's own pages, not for browsing whatever else is in
+    /// the selected folder. When this is `true` (every other profile), a
+    /// directory always shows the generated listing, even one containing
+    /// an index file — that file is only ever reached by name, whether
+    /// typed directly or clicked from the listing itself, never
+    /// auto-served in place of browsing. Never gates a direct GET of
     /// a file whose name the client already knows, nor ZIP downloads — both
     /// stay bounded by what a client can already resolve, exactly as before.
     var allowDirectoryListing: Bool = true
@@ -61,15 +70,27 @@ struct StaticFileHandler: HTTPRouter {
 
     /// `path` is guaranteed to end in "/" here: `route(_:)` redirects
     /// otherwise before this is ever called.
+    ///
+    /// An index file is only auto-served when directory listing is off
+    /// (`ServerProfile.websiteReadOnly`) — that's the one mode meant for
+    /// presenting a site's own pages rather than browsing a folder. Every
+    /// other profile (File Sharing, File Drop, Full Access) always shows
+    /// the generated listing here, even when the directory happens to
+    /// contain an `index.html`/`index.htm`; a person browsing those modes
+    /// still reaches that page the ordinary way, by clicking its entry in
+    /// the listing, which resolves it as a plain file through `route(_:)`
+    /// exactly like any other file.
     private func respondToDirectory(path: String, directoryURL: URL, request: HTTPRequest) -> HTTPResponse {
-        for candidate in Self.indexCandidates {
-            guard let indexURL = try? resolver.resolve(requestPath: path + candidate) else { continue }
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: indexURL.path, isDirectory: &isDirectory), !isDirectory.boolValue {
-                return fileResponse(for: indexURL, request: request)
+        guard allowDirectoryListing else {
+            for candidate in Self.indexCandidates {
+                guard let indexURL = try? resolver.resolve(requestPath: path + candidate) else { continue }
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: indexURL.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                    return fileResponse(for: indexURL, request: request)
+                }
             }
+            return .notFound()
         }
-        guard allowDirectoryListing else { return .notFound() }
         return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path, allowUploads: allowUploads))
     }
 

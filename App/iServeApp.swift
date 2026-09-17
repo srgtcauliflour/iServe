@@ -13,7 +13,7 @@ struct iServeApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ServerDashboard(coordinator: coordinator)
+            RootTabView(coordinator: coordinator)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {

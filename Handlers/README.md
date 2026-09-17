@@ -10,24 +10,40 @@ rather than appended and opened directly, so an index file that happens to be
 a symlink is still subject to the root-containment check. A resolver error
 maps to a status code (`.escapesRoot` -> 403, other resolver errors -> 400,
 missing content -> 404) without ever including the resolver's error detail or
-a local path in the response body.
+a local path in the response body. An index lookup only ever happens when
+`allowDirectoryListing == false` (v0.3 post-ship fix) — see below.
 
 `MIMEType` maps a file extension to a `Content-Type`, falling back to
 `application/octet-stream` for anything unrecognized rather than guessing.
 
-`DirectoryListingRenderer` (v0.2, Shu parity) renders a directory that has no
-`index.html`/`index.htm` as a minimal HTML file listing instead of `404`,
-given only a directory URL `StaticFileHandler` already resolved — it opens
-nothing itself. Hidden entries (names starting with `.`) are omitted from the
-listing per `docs/SECURITY.md`'s "no hidden/special metadata by default"
-posture, though an exact request for one still resolves normally. Every
-rendered name is HTML-escaped, and the href for each entry is
-percent-encoded, since a locally created filename is not sanitized input.
-`StaticFileHandler` redirects (`301`) a directory request whose path doesn't
-already end in `/` to the slash-terminated form before rendering or serving
-an index — required so the browser's relative links (the listing's own entry
-links, and any served page's own relative asset URLs) resolve against the
-directory rather than its parent.
+`DirectoryListingRenderer` (v0.2, Shu parity) renders a directory as a
+minimal HTML file listing, given only a directory URL `StaticFileHandler`
+already resolved — it opens nothing itself. Hidden entries (names starting
+with `.`) are omitted from the listing per `docs/SECURITY.md`'s "no
+hidden/special metadata by default" posture, though an exact request for
+one still resolves normally. Every rendered name is HTML-escaped, and the
+href for each entry is percent-encoded, since a locally created filename is
+not sanitized input. `StaticFileHandler` redirects (`301`) a directory
+request whose path doesn't already end in `/` to the slash-terminated form
+before rendering or serving an index — required so the browser's relative
+links (the listing's own entry links, and any served page's own relative
+asset URLs) resolve against the directory rather than its parent.
+
+The listing also renders a breadcrumb trail (v0.3 post-ship addition) above
+the entries — "Home / folder / subfolder", each segment a link to that
+ancestor — so a person browsing File Share/File Drop/Full Access can jump
+back to any ancestor directly rather than relying on the browser's own back
+button, which only ever undoes one navigation and not at all after a
+reload. See `DirectoryListingRenderer.breadcrumbs(for:)`.
+
+`LoginPageRenderer` (v0.3, `docs/adr/0008-password-only-cookie-login.md`)
+renders the password-only HTML login page shown instead of the browser's
+native Basic Auth dialog — a plain `POST` back to its own reserved path
+(`/__iserve/login`), which `ServerCore/HTTPConnection.swift` intercepts
+before it ever reaches this handler/`SecurePathResolver`, so it never
+shadows anything the served folder actually contains except that one exact
+path. See `ServerCore/README.md` for the login flow itself
+(`SessionTokenStore`, the gate in `HTTPConnection.respond(to:leftoverBodyBytes:)`).
 
 Replaces `ServerCore/HTTPRouter.swift`'s `NotFoundRouter` bootstrap. File
 bodies are handed back as `HTTPResponseBody.file` (a URL + byte length, not
@@ -43,12 +59,18 @@ from `ServerCoordinator.profile`'s
 Per `docs/SECURITY.md`, a write capability is never implied just by
 selecting a folder to serve, so this handler refuses every upload unless a
 caller opted in explicitly for that session. `allowDirectoryListing: false`
-(the `websiteReadOnly` profile) makes a directory with no index file a plain
-`404` instead of a generated listing — Website mode is for serving a site's
-own pages, not for browsing whatever else is in the selected folder; it
-never affects a direct GET of a file whose name/path the client already
-knows, since that was never gated by anything but `SecurePathResolver` in
-the first place. When uploads are `true`,
+(the `websiteReadOnly` profile) makes a directory serve its
+`index.html`/`index.htm` if one exists, or a plain `404` otherwise — Website
+mode is for serving a site's own pages, not for browsing whatever else is in
+the selected folder. Every other profile (`allowDirectoryListing: true`)
+always shows the generated listing, even for a directory that contains an
+index file (v0.3 post-ship fix — auto-serving an index used to happen in
+every profile, which meant File Sharing/File Drop/Full Access could never
+actually show their own listing for a folder that had one); a person still
+reaches that page by clicking its entry, which never affects a direct GET
+of a file whose name/path the client already knows, since that was never
+gated by anything but `SecurePathResolver` in the first place. When uploads
+are `true`,
 `DirectoryListingRenderer` gets an extra plain-HTML upload form (no
 JavaScript) in its listing, and the handler implements `HTTPRouter`'s two
 upload-authorization requirements:
@@ -208,8 +230,9 @@ mapping, every WebDAV write route's authorization/status-mapping edge cases
 overwrite and subtree checks, `PUT`'s temporary-sibling/already-exists
 authorization), and Range routing — no networking),
 `Tests/iServeTests/DirectoryListingRendererTests.swift`
-(sorting, escaping, hidden-entry omission, the upload form's presence/absence
-— no filesystem-authorization concerns, pure rendering),
+(sorting, escaping, hidden-entry omission, the upload form's presence/absence,
+and the breadcrumb trail's shape at root/nested paths and its percent-decoded
+label vs. as-is href — no filesystem-authorization concerns, pure rendering),
 `Tests/iServeTests/WebDAVResponseBuilderTests.swift` (pure `multistatus` XML
 rendering — collection vs. file properties, escaping, one `<D:response>`
 per entry — no filesystem/networking), and

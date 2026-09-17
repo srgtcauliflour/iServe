@@ -19,6 +19,12 @@ actor HTTPConnection {
     /// `nil` means every request is let through unchecked — see
     /// `ServerCore/ServerCredentials.swift`.
     private let credentials: ServerCredentials?
+    /// Shared with every other connection this session accepts (v0.3,
+    /// password-only cookie login — `docs/adr/0008-password-only-cookie-login.md`)
+    /// — a session cookie minted on one connection must be honored by the
+    /// next, unlike everything else here, which is scoped to just this
+    /// one connection.
+    private let sessionTokens: SessionTokenStore
     private let onClose: @Sendable (UUID) -> Void
 
     private var parser: HTTPRequestParser
@@ -28,6 +34,7 @@ actor HTTPConnection {
     private var uploadState: UploadState?
     private var zipDownloadState: ZipDownloadState?
     private var webDAVPutState: WebDAVPutState?
+    private var loginState: LoginState?
     /// A ZIP built for the *current* response, in the app's own temporary
     /// directory rather than the served root. Set just before responding
     /// with it, deleted in `close()` — the one place every termination
@@ -77,12 +84,23 @@ actor HTTPConnection {
         var bytesConsumed = 0
     }
 
+    /// Everything tracked while accumulating the password-only login
+    /// form's POST body (v0.3, `docs/adr/0008-password-only-cookie-login.md`)
+    /// — just a password and a redirect path, so like `ZipDownloadState`
+    /// this only ever buffers in memory, bounded by `limits.maxLoginBodyBytes`.
+    private struct LoginState {
+        let request: HTTPRequest
+        let contentLength: Int
+        var buffer = Data()
+    }
+
     init(
         connection: NWConnection,
         router: any HTTPRouter,
         limits: HTTPServerLimits,
         requestLog: RequestLog? = nil,
         credentials: ServerCredentials? = nil,
+        sessionTokens: SessionTokenStore = SessionTokenStore(),
         onClose: @escaping @Sendable (UUID) -> Void
     ) {
         self.connection = connection
@@ -90,6 +108,7 @@ actor HTTPConnection {
         self.limits = limits
         self.requestLog = requestLog
         self.credentials = credentials
+        self.sessionTokens = sessionTokens
         self.onClose = onClose
         self.parser = HTTPRequestParser(limits: limits.parserLimits)
     }
@@ -118,6 +137,7 @@ actor HTTPConnection {
         streamingFile = nil
         discardIncompleteUpload()
         zipDownloadState = nil
+        loginState = nil
         discardIncompleteWebDAVPut()
         if let pendingZipCleanupURL {
             try? FileManager.default.removeItem(at: pendingZipCleanupURL)
@@ -144,7 +164,7 @@ actor HTTPConnection {
         }
     }
 
-    private func handleReceive(data: Data?, isComplete: Bool, didError: Bool) {
+    private func handleReceive(data: Data?, isComplete: Bool, didError: Bool) async {
         guard !didClose, !didRespond else { return }
         if didError {
             close()
@@ -161,11 +181,14 @@ actor HTTPConnection {
             } else if webDAVPutState != nil {
                 processWebDAVPutBytes(data)
                 guard !didRespond, !didClose else { return }
+            } else if loginState != nil {
+                processLoginBytes(data)
+                guard !didRespond, !didClose else { return }
             } else {
                 do {
                     if let request = try parser.feed(data) {
                         let leftover = parser.drainRemainder()
-                        respond(to: request, leftoverBodyBytes: leftover)
+                        await respond(to: request, leftoverBodyBytes: leftover)
                         guard !didRespond, !didClose else { return }
                     }
                 } catch {
@@ -182,16 +205,60 @@ actor HTTPConnection {
     }
 
     /// `docs/SECURITY.md`'s mandatory pipeline: authenticate before
-    /// authorizing a capability, so this runs before the method switch —
-    /// GET/HEAD never reach `router.route(_:)`, and POST never reaches
+    /// authorizing a capability, so this runs before `dispatch(_:leftoverBodyBytes:)`
+    /// — GET/HEAD never reach `router.route(_:)`, and POST never reaches
     /// `beginUpload`/`beginZipDownload`, without the right credentials.
     /// Nothing about the request has been authorized yet at this point, so
     /// no body byte has been read either way.
-    private func respond(to request: HTTPRequest, leftoverBodyBytes: Data) {
-        if let credentials, !Self.isAuthorized(request, credentials: credentials) {
+    ///
+    /// Checked in order (v0.3, password-only cookie login —
+    /// `docs/adr/0008-password-only-cookie-login.md`): a valid session
+    /// cookie (minted by an earlier successful login on *any* connection
+    /// this session has accepted — `sessionTokens` is shared); a `POST`
+    /// to the reserved login path, handled entirely here rather than ever
+    /// reaching `dispatch`; or valid HTTP Basic credentials, kept working
+    /// unchanged for WebDAV/API-style clients that have no way to follow
+    /// an HTML login form or hold a cookie the way a browser does.
+    ///
+    /// Failing all three, the login page (instead of a bare `401`) is
+    /// shown only for a `GET`/`HEAD` — what a browser actually navigates
+    /// with — that carries *no* `Authorization` header at all: a client
+    /// that already attempted Basic Auth (a WebDAV client, `curl -u`, or
+    /// a browser with cached credentials) gets the exact same `401`/
+    /// `WWW-Authenticate` challenge as before, so its own retry-with-
+    /// credentials flow keeps working unchanged. This makes the login
+    /// page strictly additive: nothing that was already sending
+    /// `Authorization` sees any behavior change at all.
+    private func respond(to request: HTTPRequest, leftoverBodyBytes: Data) async {
+        guard let credentials else {
+            dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
+            return
+        }
+        if let token = Self.sessionCookie(from: request), await sessionTokens.isValid(token) {
+            dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
+            return
+        }
+        if request.method == "POST", let path = Self.pathIgnoringQuery(request.target), path == LoginPageRenderer.path {
+            beginLoginSubmission(for: request, leftoverBodyBytes: leftoverBodyBytes)
+            return
+        }
+        if Self.isAuthorized(request, credentials: credentials) {
+            dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
+            return
+        }
+        guard (request.method == "GET" || request.method == "HEAD"), request.headers["Authorization"] == nil else {
             respond(with: .unauthorized(), request: request)
             return
         }
+        let redirect = Self.sanitizedRedirectPath(Self.pathIgnoringQuery(request.target))
+        respond(
+            with: .html(LoginPageRenderer.render(redirect: redirect)),
+            suppressBody: request.method == "HEAD",
+            request: request
+        )
+    }
+
+    private func dispatch(_ request: HTTPRequest, leftoverBodyBytes: Data) {
         switch request.method {
         case "GET", "HEAD":
             respond(with: router.route(request), suppressBody: request.method == "HEAD", request: request)
@@ -776,6 +843,155 @@ actor HTTPConnection {
         guard let contentType else { return false }
         let base = contentType.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
         return base.caseInsensitiveCompare("application/x-www-form-urlencoded") == .orderedSame
+    }
+
+    // MARK: - Password-only cookie login (v0.3, docs/adr/0008-password-only-cookie-login.md)
+
+    /// Called once headers are parsed for a `POST` to `LoginPageRenderer.path`.
+    /// Authorized the same shape as `beginZipDownload` — `Content-Length`
+    /// present and within `limits.maxLoginBodyBytes` — before reading a
+    /// single body byte; there's no directory/router authorization step
+    /// here, since this path never reaches the router at all.
+    private func beginLoginSubmission(for request: HTTPRequest, leftoverBodyBytes: Data) {
+        guard let contentLengthText = request.headers["Content-Length"],
+              let contentLength = Int(contentLengthText), contentLength >= 0 else {
+            respond(with: .lengthRequired(), request: request)
+            return
+        }
+        guard contentLength > 0 else {
+            respond(with: .badRequest("Password is required"), request: request)
+            return
+        }
+        guard contentLength <= limits.maxLoginBodyBytes else {
+            respond(with: .payloadTooLarge(), request: request)
+            return
+        }
+        loginState = LoginState(request: request, contentLength: contentLength)
+        guard !leftoverBodyBytes.isEmpty else { return }
+        processLoginBytes(leftoverBodyBytes)
+    }
+
+    /// Buffers newly received bytes for the active login body, bounded to
+    /// at most its declared `Content-Length` — the same discipline as a
+    /// ZIP-selection body.
+    private func processLoginBytes(_ data: Data) {
+        guard var state = loginState else { return }
+        let remainingAllowed = max(0, state.contentLength - state.buffer.count)
+        state.buffer.append(data.prefix(remainingAllowed))
+        loginState = state
+        if state.buffer.count >= state.contentLength {
+            finishLoginSubmission()
+        }
+    }
+
+    /// A wrong password re-shows the same page with an error, never a
+    /// generic `401` — the whole point of this flow is that a browser
+    /// never sees Basic Auth's native username/password prompt. A correct
+    /// one mints a new session token (shared with every other connection
+    /// this session accepts, via `sessionTokens`) and redirects back to
+    /// wherever the hidden `redirect` field says the client was actually
+    /// trying to go.
+    private func finishLoginSubmission() {
+        guard let state = loginState else { return }
+        loginState = nil
+        guard let credentials else {
+            respond(with: .notFound(), request: state.request)
+            return
+        }
+        let fields = Self.parseFormFields(from: state.buffer)
+        let suppliedPassword = fields["password"] ?? ""
+        let redirect = Self.sanitizedRedirectPath(fields["redirect"])
+        guard Self.constantTimeEquals(suppliedPassword, credentials.password) else {
+            respond(
+                with: .html(LoginPageRenderer.render(redirect: redirect, errorMessage: "Incorrect password.")),
+                request: state.request
+            )
+            return
+        }
+        Task { await self.completeLogin(redirect: redirect, request: state.request) }
+    }
+
+    /// Mints the session token and responds — split out from
+    /// `finishLoginSubmission` so the one truly async step (minting the
+    /// token via the shared, cross-connection `sessionTokens` actor) runs
+    /// inside a proper `async` method, matching `buildAndStreamZip`'s
+    /// existing shape, rather than inline in a bare `Task { ... }`
+    /// closure where ordinary property access would need its own
+    /// isolation handling.
+    private func completeLogin(redirect: String, request: HTTPRequest) async {
+        let token = await sessionTokens.mint()
+        guard !didRespond, !didClose else { return }
+        respond(with: Self.loginSuccessResponse(token: token, redirect: redirect), request: request)
+    }
+
+    /// `303 See Other` back to `redirect` — the standard "POST, then
+    /// redirect the browser to GET something else" status, so the browser
+    /// never resubmits the password form on back/refresh — with
+    /// `Set-Cookie` minting the session a browser will now send with
+    /// every later request. No `Secure` flag, since this server only ever
+    /// speaks plain HTTP (`docs/adr/0002-http-basic-authentication.md`
+    /// already accepts that trade-off for the password itself);
+    /// `HttpOnly` and `SameSite=Strict` regardless, so the cookie is never
+    /// exposed to script (there is none) and never sent on a cross-site
+    /// request.
+    private static func loginSuccessResponse(token: String, redirect: String) -> HTTPResponse {
+        var response = HTTPResponse.redirect(to: redirect, status: 303, reason: "See Other")
+        response.headers.add(
+            name: "Set-Cookie",
+            value: "\(LoginPageRenderer.sessionCookieName)=\(token); Path=/; HttpOnly; SameSite=Strict"
+        )
+        return response
+    }
+
+    /// Parses an `application/x-www-form-urlencoded` body into a
+    /// name-to-value dictionary, form-urldecoding both sides. The first
+    /// occurrence of a repeated name wins; nothing here needs more than
+    /// one value per field.
+    private static func parseFormFields(from data: Data) -> [String: String] {
+        guard let bodyString = String(data: data, encoding: .utf8) else { return [:] }
+        var fields: [String: String] = [:]
+        for pair in bodyString.split(separator: "&", omittingEmptySubsequences: true) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  let name = formURLDecode(String(parts[0])),
+                  let value = formURLDecode(String(parts[1])) else {
+                continue
+            }
+            if fields[name] == nil { fields[name] = value }
+        }
+        return fields
+    }
+
+    /// Only a same-origin, root-relative path is ever honored — never an
+    /// absolute URL or a scheme-relative `//host/...` one, either of which
+    /// would turn this into an open redirect. Also refuses a value
+    /// containing a bare CR or LF: unlike `request.target` (which can
+    /// never contain either — the request line they'd appear in has
+    /// already ended by the time a parsed target exists), this value
+    /// round-trips through a client-controlled form field, so it must be
+    /// checked before ever being placed in a response header, or a
+    /// crafted `redirect` could inject additional header lines. Falls
+    /// back to "/" for anything else, including a missing field.
+    private static func sanitizedRedirectPath(_ value: String?) -> String {
+        guard let value, value.hasPrefix("/"), !value.hasPrefix("//"),
+              !value.contains("\r"), !value.contains("\n") else {
+            return "/"
+        }
+        return value
+    }
+
+    /// The value of this server's own session cookie from a `Cookie`
+    /// header, if present — a browser sends every cookie for the origin
+    /// in one header, semicolon-separated.
+    private static func sessionCookie(from request: HTTPRequest) -> String? {
+        guard let cookieHeader = request.headers["Cookie"] else { return nil }
+        for pair in cookieHeader.split(separator: ";") {
+            let trimmed = pair.trimmingCharacters(in: .whitespaces)
+            guard let equalsIndex = trimmed.firstIndex(of: "=") else { continue }
+            guard trimmed[trimmed.startIndex..<equalsIndex] == LoginPageRenderer.sessionCookieName else { continue }
+            return String(trimmed[trimmed.index(after: equalsIndex)...])
+        }
+        return nil
     }
 
     // MARK: - Authentication (v0.3, optional HTTP Basic Auth)

@@ -57,10 +57,15 @@ Deliverables:
   Basic Authentication (RFC 7617) — off by default, never persisted to
   disk, checked on every request before it reaches the router or a body
   byte is read, with a constant-time comparison and a `401`/
-  `WWW-Authenticate` response that triggers the browser's own native login
-  prompt. See `docs/adr/0002-http-basic-authentication.md` and
+  `WWW-Authenticate` response for a client that already attempted
+  Basic Auth. See `docs/adr/0002-http-basic-authentication.md` and
   `ServerCore/README.md`. This is the gate only, not yet the
-  capability-based system below.
+  capability-based system below. Post-ship addition: a plain browser
+  `GET`/`HEAD` with no `Authorization` header at all instead gets a
+  password-only cookie login page (`/__iserve/login`) rather than the
+  browser's native username+password dialog — a WebDAV/API client that
+  already sends `Authorization` is unaffected. See
+  `docs/adr/0008-password-only-cookie-login.md`.
 - Capability-based server permissions. Shipped: a `ServerProfile` enum
   (`ServerCore/ServerProfile.swift`) bundles directory-listing, upload and
   WebDAV-write capabilities together per profile, chosen once per session
@@ -68,7 +73,16 @@ Deliverables:
   Only additionally disables the generated directory listing for a folder
   with no index (`404` instead), so a "website" session never exposes
   browsing whatever else is in the selected folder. See
-  `docs/adr/0003-capability-based-server-profiles.md`.
+  `docs/adr/0003-capability-based-server-profiles.md`. Post-ship fix: index
+  auto-serving had been happening in every profile whenever a folder
+  happened to contain one, so File Sharing/File Drop/Full Access could
+  never actually show their own listing for such a folder; now it's
+  Website/Read Only-only, and every other profile always shows the
+  listing (an index page is still reachable there by clicking its entry).
+  The generated listing also gained a breadcrumb trail
+  (`Handlers/DirectoryListingRenderer.swift`) so a browser client can jump
+  to any ancestor folder directly instead of relying on the browser's own
+  back button.
 - File Sharing, File Drop and Full Access profiles. All three shipped and
   are selectable: File Sharing (browse + download), File Drop (adds
   uploads), and Full Access (adds WebDAV `MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY`
@@ -112,7 +126,9 @@ Deliverables:
   independent security-scoped bookmark (`FileSystem/FolderAccess.swift`'s
   `MountBookmarkStore`), added/removed from `ServerDashboard` and taking
   effect on the next server start. See
-  `docs/adr/0007-multiple-mounted-folders.md`.
+  `docs/adr/0007-multiple-mounted-folders.md`. Post-ship addition: each
+  mount now has its own "Preview in App" button next to its address in
+  `ServerDashboard`, not just the primary shared folder.
 - Rate/connection/request limits and advanced logs. Shipped:
   `HTTPServer.accept(_:)` now enforces two further, per-remote-address
   bounds beyond the existing global `maxConcurrentConnections` —
@@ -149,6 +165,23 @@ Deliverables:
   zip/7z if one ever turns out to matter, and whole-tree search (current
   search only filters the current directory's listing) — all still
   bounded to the selected root the same way serving already is.
+
+  Post-ship fixes/additions: the file manager's multi-select `List` used
+  `List(selection:)`, whose `Set`-backed selection binding intercepted a
+  row's own tap even when the row was itself an interactive
+  `NavigationLink`/`Button` — silently breaking opening a folder,
+  previewing a file, and building a selection to compress/move/copy at
+  all (delete alone kept working, since it only used a per-row swipe
+  action). Replaced with hand-rolled tap-to-toggle selection so ordinary
+  taps always reach the folder link/preview button. Also added: a "Done"
+  exit button on the image/file preview sheet (`QLPreviewController`
+  supplies one only when UIKit presents it directly, not when embedded via
+  `UIViewControllerRepresentable`), and a "File Info" sheet (kind, size,
+  modified date, containing folder) via each row's leading swipe actions.
+  The file manager also moved to its own bottom-tab-bar destination
+  (`App/RootTabView.swift`) — the app now opens directly to it, with a
+  second tab for folder selection/server profile/the web server itself —
+  replacing the old "Open File Manager" sheet from `ServerDashboard`.
 
 Exit gate: large transfers resume correctly, archives remain bounded-memory, and WebDAV operations cannot escape authorized roots/capabilities.
 

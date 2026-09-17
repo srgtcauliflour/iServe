@@ -3,12 +3,19 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct ServerDashboard: View {
+    /// A single "Preview in App" target — the primary endpoint or one
+    /// additional mount's own address — for the in-app browser sheet.
+    /// `Identifiable` by its own URL so `.sheet(item:)` can present it.
+    private struct PreviewTarget: Identifiable {
+        let url: URL
+        var id: URL { url }
+    }
+
     @State private var isChoosingFolder = false
     @State private var isChoosingAdditionalFolder = false
     @State private var didRestore = false
     @State private var didCopyEndpoint = false
-    @State private var isShowingBrowser = false
-    @State private var isShowingFileManager = false
+    @State private var previewTarget: PreviewTarget?
     @State private var requestCount = 0
     @State private var bytesTransferred = 0
     @State private var rejectedConnectionCount = 0
@@ -106,13 +113,8 @@ struct ServerDashboard: View {
                     coordinator.folders.reportPickerFailure(error)
                 }
             }
-            .sheet(isPresented: $isShowingBrowser) {
-                if let endpointURL {
-                    InAppBrowserSheet(url: endpointURL, password: coordinator.requiresPassword ? coordinator.password : nil)
-                }
-            }
-            .sheet(isPresented: $isShowingFileManager) {
-                FileManagerScreen(model: FileManagerViewModel(folders: coordinator.folders))
+            .sheet(item: $previewTarget) { target in
+                InAppBrowserSheet(url: target.url, password: coordinator.requiresPassword ? coordinator.password : nil)
             }
         }
     }
@@ -173,11 +175,6 @@ struct ServerDashboard: View {
                     coordinator.forgetFolder()
                 }
                 .disabled(isBusy || isRunning)
-            }
-            if coordinator.folders.selectedURL != nil {
-                Button("Open File Manager", systemImage: "folder.badge.gearshape") {
-                    isShowingFileManager = true
-                }
             }
             if let message = coordinator.folders.errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
@@ -290,7 +287,8 @@ struct ServerDashboard: View {
                     didCopyEndpoint = true
                 }
                 Button("Preview in App", systemImage: "safari") {
-                    isShowingBrowser = true
+                    guard let endpointURL else { return }
+                    previewTarget = PreviewTarget(url: endpointURL)
                 }
                 if case .published(let name) = coordinator.bonjourState {
                     Label(name, systemImage: "dot.radiowaves.left.and.right")
@@ -316,9 +314,17 @@ struct ServerDashboard: View {
                 }
                 ForEach(coordinator.folders.additionalMounts) { mount in
                     let mountEndpoint = endpoint + "\(mount.name)/"
-                    Label(mountEndpoint, systemImage: "folder.badge.plus")
-                        .textSelection(.enabled)
-                        .accessibilityLabel("\(mount.name): \(mountEndpoint)")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(mountEndpoint, systemImage: "folder.badge.plus")
+                            .textSelection(.enabled)
+                            .accessibilityLabel("\(mount.name): \(mountEndpoint)")
+                        if let mountURL = URL(string: mountEndpoint) {
+                            Button("Preview in App", systemImage: "safari") {
+                                previewTarget = PreviewTarget(url: mountURL)
+                            }
+                            .font(.footnote)
+                        }
+                    }
                 }
             } else {
                 Text("No listening endpoint")

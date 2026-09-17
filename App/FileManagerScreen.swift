@@ -20,7 +20,7 @@ struct FileManagerScreen: View {
                     ContentUnavailableView(
                         "Folder Unavailable",
                         systemImage: "folder.badge.questionmark",
-                        description: Text(model.errorMessage ?? "Select a folder from the main screen first.")
+                        description: Text(model.errorMessage ?? "Choose a folder in the File Sharing tab first.")
                     )
                 }
             }
@@ -31,8 +31,22 @@ struct FileManagerScreen: View {
         }
         .sheet(isPresented: previewPresented) {
             if let previewURL = model.previewURL {
-                QuickLookPreview(url: previewURL)
-                    .ignoresSafeArea()
+                // `QLPreviewController` normally supplies its own "Done"
+                // button when *presented* by UIKit, but embedded directly
+                // via `UIViewControllerRepresentable` here it has no
+                // navigation bar of its own — without this wrapper there
+                // was no visible way to exit an image/file preview besides
+                // an undiscoverable swipe-down gesture.
+                NavigationStack {
+                    QuickLookPreview(url: previewURL)
+                        .ignoresSafeArea()
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") { model.previewURL = nil }
+                            }
+                        }
+                }
             }
         }
         .sheet(isPresented: editingPresented) {
@@ -163,6 +177,7 @@ struct FileManagerFolderView: View {
     @State private var selection = Set<FileManagerEntry.ID>()
     @State private var renamingEntry: FileManagerEntry?
     @State private var renameText = ""
+    @State private var infoEntry: FileManagerEntry?
     @State private var isConfirmingDelete = false
     @State private var isShowingMovePicker = false
     @State private var isShowingCopyPicker = false
@@ -181,13 +196,13 @@ struct FileManagerFolderView: View {
     var body: some View {
         listView
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic))
-            .environment(\.editMode, .constant(isSelecting ? .active : .inactive))
             .toolbar { toolbarContent }
             .confirmationDialog(deleteConfirmationTitle, isPresented: $isConfirmingDelete, titleVisibility: .visible) {
                 deleteConfirmationActions
             }
             .sheet(isPresented: $isShowingMovePicker) { movePickerSheet }
             .sheet(isPresented: $isShowingCopyPicker) { copyPickerSheet }
+            .sheet(item: $infoEntry) { entry in FileInfoSheet(entry: entry) }
             .alert("Rename", isPresented: renamingPresented, presenting: renamingEntry) { entry in
                 renameAlertActions(for: entry)
             } message: { entry in
@@ -196,8 +211,16 @@ struct FileManagerFolderView: View {
             .onAppear(perform: refresh)
     }
 
+    /// A plain, non-selection `List`: earlier this used `List(selection:)`
+    /// for multi-select, but a `List` with a `Set`-backed selection binding
+    /// intercepts row taps for its own selection handling even when a row's
+    /// content is itself an interactive `NavigationLink`/`Button` — which
+    /// silently broke opening folders, previewing files, and building up a
+    /// selection to compress/move/copy at all. Selection is now handled
+    /// entirely by hand in `row(for:)` instead, so ordinary taps always
+    /// reach the folder's `NavigationLink`/the file's preview `Button`.
     private var listView: some View {
-        List(selection: $selection) {
+        List {
             if entries.isEmpty {
                 Text("This folder is empty.")
                     .foregroundStyle(.secondary)
@@ -269,16 +292,33 @@ struct FileManagerFolderView: View {
         }
     }
 
+    /// While `isSelecting` is on, every row (folder or file alike) becomes a
+    /// plain tap-to-toggle checkbox row instead of its normal
+    /// `NavigationLink`/preview `Button` — folders are selectable too now
+    /// (they weren't before: the old code let a folder row navigate even
+    /// during selection, so a folder could never actually be selected for
+    /// compress/move/copy/delete).
     @ViewBuilder
     private func row(for entry: FileManagerEntry) -> some View {
         Group {
-            if entry.isDirectory {
+            if isSelecting {
+                Button {
+                    toggleSelection(entry)
+                } label: {
+                    HStack {
+                        Image(systemName: selection.contains(entry.id) ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(selection.contains(entry.id) ? Color.accentColor : Color.secondary)
+                            .accessibilityHidden(true)
+                        label(for: entry)
+                    }
+                }
+                .foregroundStyle(.primary)
+            } else if entry.isDirectory {
                 NavigationLink(value: entry.url) {
                     label(for: entry)
                 }
             } else {
                 Button {
-                    guard !isSelecting else { return }
                     if entry.isTextEditable {
                         model.editingTextURL = entry.url
                     } else {
@@ -309,6 +349,18 @@ struct FileManagerFolderView: View {
                 renameText = entry.name
             }
             .tint(.orange)
+            Button("Info", systemImage: "info.circle") {
+                infoEntry = entry
+            }
+            .tint(.gray)
+        }
+    }
+
+    private func toggleSelection(_ entry: FileManagerEntry) {
+        if selection.contains(entry.id) {
+            selection.remove(entry.id)
+        } else {
+            selection.insert(entry.id)
         }
     }
 
@@ -419,5 +471,61 @@ private struct FolderPickerLevel: View {
         subfolders = contents.map(FileManagerEntry.init)
             .filter(\.isDirectory)
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+}
+
+/// A read-only summary of one entry's name, kind, size, modification date,
+/// and containing folder — reached via a leading swipe action's "Info"
+/// button on any row.
+private struct FileInfoSheet: View {
+    let entry: FileManagerEntry
+
+    @Environment(\.dismiss) private var dismiss
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    var body: some View {
+        NavigationStack {
+            List {
+                LabeledContent("Name", value: entry.name)
+                    .textSelection(.enabled)
+                LabeledContent("Kind", value: kindText)
+                if !entry.isDirectory {
+                    LabeledContent("Size", value: Self.byteFormatter.string(fromByteCount: Int64(entry.size)))
+                }
+                if let modificationDate = entry.modificationDate {
+                    LabeledContent("Modified", value: Self.dateFormatter.string(from: modificationDate))
+                }
+                LabeledContent("Location", value: entry.url.deletingLastPathComponent().path)
+                    .textSelection(.enabled)
+            }
+            .navigationTitle("Info")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var kindText: String {
+        if entry.isDirectory { return "Folder" }
+        switch entry.archiveKind {
+        case .zip: return "ZIP Archive"
+        case .sevenZip: return "7z Archive"
+        case nil: return entry.url.pathExtension.isEmpty ? "File" : entry.url.pathExtension.uppercased() + " File"
+        }
     }
 }

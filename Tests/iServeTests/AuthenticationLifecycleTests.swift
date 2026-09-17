@@ -17,7 +17,13 @@ final class AuthenticationLifecycleTests: XCTestCase {
         "Basic " + Data("\(user):\(password)".utf8).base64EncodedString()
     }
 
-    func testRequestWithoutCredentialsIsRejectedWithWWWAuthenticate() async throws {
+    /// v0.3, password-only cookie login (`docs/adr/0008-password-only-cookie-login.md`):
+    /// a plain browser `GET` with no `Authorization` header at all now
+    /// gets the password-only login page instead of a bare `401` — see
+    /// `LoginLifecycleTests.swift` for the login flow itself. A client
+    /// that already attempted (and got rejected for) Basic Auth is a
+    /// different case entirely, covered below and unaffected by this.
+    func testRequestWithoutCredentialsShowsThePasswordOnlyLoginPageRatherThanWWWAuthenticate() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("secret".utf8).write(to: root.appendingPathComponent("index.html"))
@@ -28,14 +34,23 @@ final class AuthenticationLifecycleTests: XCTestCase {
         )
         let port = try await server.start()
 
-        let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
+        let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
-        XCTAssertEqual(http.statusCode, 401)
-        XCTAssertEqual(http.value(forHTTPHeaderField: "WWW-Authenticate"), "Basic realm=\"iServe\", charset=\"UTF-8\"")
+        XCTAssertEqual(http.statusCode, 200)
+        XCTAssertNil(http.value(forHTTPHeaderField: "WWW-Authenticate"))
+        let body = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(body.contains("type=\"password\""))
+        XCTAssertFalse(body.contains("type=\"text\""), "the login form must never ask for a username")
 
         await server.stop()
     }
 
+    /// Unaffected by v0.3's login page (`docs/adr/0008-password-only-cookie-login.md`):
+    /// this request already carries an `Authorization` header, just a
+    /// wrong one, so it keeps getting the same `401` a WebDAV/API client
+    /// retrying Basic Auth already knows how to respond to — only a
+    /// request with *no* `Authorization` header at all gets the login
+    /// page instead.
     func testRequestWithTheWrongPasswordIsRejected() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -94,6 +109,10 @@ final class AuthenticationLifecycleTests: XCTestCase {
         await server.stop()
     }
 
+    /// Unaffected by v0.3's login page: every header here is an
+    /// *attempted* `Authorization` value, just an unusable one, so this
+    /// still exercises the same `401` path as a correctly-formed but
+    /// wrong Basic credential — never the login page.
     func testMalformedAuthorizationHeaderIsRejectedRatherThanCrashing() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -115,7 +134,13 @@ final class AuthenticationLifecycleTests: XCTestCase {
         await server.stop()
     }
 
-    func testHeadRequestIsGatedTheSameWayAsGet() async throws {
+    /// v0.3: a `HEAD` with no `Authorization` header gets the same
+    /// login-page fallback as `GET` does, but with its body suppressed —
+    /// HTTP requires a `HEAD` response to have no body regardless of
+    /// status. A `HEAD` that already carries a wrong/malformed
+    /// `Authorization` header is unaffected and still gets `401`, same
+    /// as `GET`'s equivalent case above.
+    func testHeadRequestWithoutCredentialsGetsTheLoginPageWithNoBody() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("secret".utf8).write(to: root.appendingPathComponent("index.html"))
@@ -128,8 +153,9 @@ final class AuthenticationLifecycleTests: XCTestCase {
 
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!)
         request.httpMethod = "HEAD"
-        let (_, response) = try await URLSession.shared.data(for: request)
-        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 401)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertTrue(data.isEmpty)
 
         await server.stop()
     }

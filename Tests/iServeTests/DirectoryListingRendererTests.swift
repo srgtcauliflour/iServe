@@ -107,4 +107,22 @@ final class DirectoryListingRendererTests: XCTestCase {
         let page = html()
         XCTAssertTrue(page.contains("value=\"&lt;a &amp; b&gt;.txt\""))
     }
+
+    func testBreadcrumbsShowOnlyHomeAtRoot() {
+        let page = html(requestPath: "/")
+        XCTAssertTrue(page.contains("<nav class=\"breadcrumbs\"><a href=\"/\">Home</a></nav>"))
+    }
+
+    func testBreadcrumbsListEveryAncestorSegmentWithALinkToIt() {
+        let page = html(requestPath: "/photos/2024/")
+        XCTAssertTrue(page.contains("<a href=\"/\">Home</a>"))
+        XCTAssertTrue(page.contains("<a href=\"/photos/\">photos</a>"))
+        XCTAssertTrue(page.contains("<a href=\"/photos/2024/\">2024</a>"))
+    }
+
+    func testBreadcrumbLabelIsPercentDecodedButItsLinkIsNot() {
+        let page = html(requestPath: "/My%20Photos/")
+        XCTAssertTrue(page.contains(">My Photos</a>"))
+        XCTAssertTrue(page.contains("href=\"/My%20Photos/\""))
+    }
 }

@@ -65,10 +65,13 @@ enum DirectoryListingRenderer {
         .zipbar { margin: 1em 0; text-align: right; }
         form.upload { margin: 1.5em 0; padding: 1em; border: 1px dashed #c7c7cc; border-radius: 8px; }
         form.upload button { margin-left: 0.5em; }
+        nav.breadcrumbs { font-size: 0.9em; margin-bottom: 1em; word-break: break-word; }
+        nav.breadcrumbs a { color: #007aff; text-decoration: none; }
         </style>
         </head>
         <body>
         <h1>Index of \(escapeText(requestPath))</h1>
+        \(breadcrumbs(for: requestPath))
 
         """
 
@@ -119,6 +122,31 @@ enum DirectoryListingRenderer {
         </html>
         """
         return Data(html.utf8)
+    }
+
+    /// A clickable trail of every ancestor segment of `requestPath`, from
+    /// "Home" (the served root) down to the current directory — lets a
+    /// person browsing File Share/File Drop/Full Access jump back to any
+    /// ancestor folder directly, rather than repeatedly hitting the
+    /// browser's own back button (which only ever undoes one navigation at
+    /// a time, and not at all after a page reload). Each segment's `href`
+    /// reuses `requestPath`'s own already-wire-encoded text as-is — it
+    /// came from the request that reached this render call, so it's
+    /// already in the same percent-encoded form a link must be in — while
+    /// its visible label is percent-decoded first, so a folder like "My
+    /// Photos" reads naturally instead of as "My%20Photos".
+    private static func breadcrumbs(for requestPath: String) -> String {
+        var items = "<a href=\"/\">Home</a>"
+        if requestPath != "/" {
+            let components = requestPath.split(separator: "/", omittingEmptySubsequences: true)
+            var accumulatedHref = ""
+            for component in components {
+                accumulatedHref += String(component) + "/"
+                let label = String(component).removingPercentEncoding ?? String(component)
+                items += " / <a href=\"/\(escapeText(accumulatedHref))\">\(escapeText(label))</a>"
+            }
+        }
+        return "<nav class=\"breadcrumbs\">\(items)</nav>"
     }
 
     private static func listEntries(in directoryURL: URL) -> [Entry] {
