@@ -20,24 +20,40 @@ response sets both to the requested range instead (see
 `.partialContent`), so this reader never touches the rest of the file even
 though the file handle it opened could seek anywhere in it.
 
-`ArchiveManager` (v0.3, file manager) creates and extracts ZIP archives for
-the native in-app file manager screen — Apple has no first-party ZIP
-archive API, and `AGENTS.md`'s "no arbitrary shell execution" plus the iOS
-sandbox rule out shelling out to `zip`/`unzip`/`ditto`, so this wraps
+`ArchiveManager` (v0.3, file manager) creates ZIP archives and extracts ZIP
+and 7z archives for the native in-app file manager screen — Apple has no
+first-party archive API for either format, and `AGENTS.md`'s "no arbitrary
+shell execution" plus the iOS sandbox rule out shelling out to
+`zip`/`unzip`/`7z`/`ditto`, so this wraps
 [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (MIT-licensed,
-pure Swift, added via Swift Package Manager) — the first third-party
-dependency in this project. `createArchive(containing:at:)` recursively
-adds files/directories preserving structure; `extractArchive(at:to:)`
-defends against "Zip Slip" independently of whatever protection
-ZIPFoundation itself applies, since iServe already accepts remote uploads
-and a malicious client could upload a crafted `.zip` for later local
-extraction: every entry's destination is walked and containment-checked one
-component at a time, the same way `FileSystem/SecurePathResolver.swift`
-checks a remote request path, and any symlink entry is refused outright
-rather than materialized. Tested directly in
-`Tests/iServeTests/ArchiveManagerTests.swift` — byte-exact round trips,
-nested/empty directories, multi-item selections, and rejection of both a
-traversal entry path and a symlink entry without writing anything.
+pure Swift) and [SWCompression](https://github.com/tsolomko/SWCompression)
+(Apache-2.0, pure Swift) — this project's first third-party dependencies,
+both added via Swift Package Manager. RAR support was deliberately left
+out: every available RAR library wraps the non-commercial-licensed `unrar`
+code, which these two avoid entirely.
+
+`createArchive(containing:at:)` recursively zips files/directories,
+preserving structure. `extractArchive(at:to:)` (ZIP) and
+`extractSevenZipArchive(at:to:)` (7z, extraction-only — SWCompression
+cannot create `.7z`, and no maintained permissively-licensed Swift library
+does either) both defend against "Zip Slip" independently of whatever
+protection the underlying library applies, since iServe already accepts
+remote uploads and a malicious client could upload a crafted archive for
+later local extraction: every entry's destination is walked and
+containment-checked one component at a time, the same way
+`FileSystem/SecurePathResolver.swift` checks a remote request path, and any
+symlink (or, for 7z, any other non-regular-file entry type) is refused
+outright rather than materialized. Unlike ZIPFoundation's streaming reader,
+SWCompression's `SevenZipContainer` requires the whole compressed archive
+and every entry's decompressed bytes in memory at once — there is no
+bounded/streaming 7z reader available, a deliberate (if usually small in
+practice) departure from this project's bounded-streaming rule, accepted
+because no alternative library exists. Tested directly in
+`Tests/iServeTests/ArchiveManagerTests.swift` — byte-exact ZIP round trips,
+nested/empty directories, multi-item selections, rejection of both a
+traversal entry path and a symlink entry without writing anything, and a
+7z round trip against a small embedded fixture (SWCompression can't create
+one, so `7z`/`p7zip` built it once at authoring time).
 
 `Transfer/ByteRangeParser.swift` (v0.3) parses an HTTP `Range` request
 header (RFC 7233 §2.1) against a known file size into a validated,
