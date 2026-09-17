@@ -119,20 +119,32 @@ struct FileManagerScreen: View {
     /// manager actually showing right now" is never a guess from a
     /// screenshot or a bug report. Always visible at the top of the root
     /// screen (not nested subfolders), regardless of scroll position,
-    /// via `.safeAreaInset` rather than a plain list row.
+    /// via `.safeAreaInset` rather than a plain list row. Also surfaces
+    /// `model.lastListingDiagnostic` — a temporary debugging aid for an
+    /// on-device report that an externally-chosen folder listed empty.
+    /// Pull-to-refresh on the list below (`FileManagerFolderView`) re-runs
+    /// the listing and updates this line, to tell a timing issue apart
+    /// from a permanent one without leaving this screen.
     private func locationBanner(for rootURL: URL) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: model.isBrowsingExternalLocation ? "externaldrive" : "shippingbox")
-            Text(model.isBrowsingExternalLocation ? "Browsing: \(rootURL.path)" : "Browsing: This app's own storage")
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: model.isBrowsingExternalLocation ? "externaldrive" : "shippingbox")
+                Text(model.isBrowsingExternalLocation ? "Browsing: \(rootURL.path)" : "Browsing: This app's own storage")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            if let diagnostic = model.lastListingDiagnostic {
+                Text(diagnostic)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal)
         .padding(.vertical, 6)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.bar)
     }
 
@@ -282,6 +294,7 @@ struct FileManagerFolderView: View {
                 Text("Enter a new name for \"\(entry.name)\".")
             }
             .onAppear(perform: refresh)
+            .refreshable { refresh() }
     }
 
     /// A plain, non-selection `List`: earlier this used `List(selection:)`

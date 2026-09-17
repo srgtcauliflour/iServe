@@ -61,6 +61,11 @@ final class FileManagerViewModel {
     var previewURL: URL?
     var editingTextURL: URL?
     var errorMessage: String?
+    /// A one-line trace of what the *last* `entries(in:)` call actually
+    /// found/failed with — added purely to debug an on-device report that
+    /// an externally-chosen folder listed empty. Not shown anywhere
+    /// permanent; `FileManagerScreen`'s banner surfaces it temporarily.
+    private(set) var lastListingDiagnostic: String?
 
     init(
         access: any FolderAccess = SystemFolderAccess(),
@@ -175,6 +180,7 @@ final class FileManagerViewModel {
     func entries(in directory: URL) -> [FileManagerEntry] {
         var result: [FileManagerEntry] = []
         var coordinatorError: NSError?
+        var diagnostic = "no read attempted"
         let coordinator = NSFileCoordinator()
         coordinator.coordinate(readingItemAt: directory, options: [], error: &coordinatorError) { coordinatedURL in
             do {
@@ -183,17 +189,21 @@ final class FileManagerViewModel {
                     includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
                     options: [.skipsHiddenFiles]
                 )
+                diagnostic = "\(contents.count) raw item(s) at \(coordinatedURL.path)"
                 result = contents.map(FileManagerEntry.init).sorted { lhs, rhs in
                     if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
                     return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
                 }
             } catch {
+                diagnostic = "read error: \((error as NSError).localizedDescription)"
                 errorMessage = "This folder could not be read."
             }
         }
-        if coordinatorError != nil {
+        if let coordinatorError {
+            diagnostic = "coordinator error: \(coordinatorError.localizedDescription)"
             errorMessage = "This folder could not be read."
         }
+        lastListingDiagnostic = diagnostic
         return result
     }
 
