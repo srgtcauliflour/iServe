@@ -1,3 +1,4 @@
+import Network
 import XCTest
 @testable import iServe
 
@@ -29,21 +30,23 @@ final class ConnectionLimitLifecycleTests: XCTestCase {
         await server.stop()
     }
 
-    /// Ten simultaneous connection attempts against a concurrent cap of 2
-    /// for the one address they all share. Asserts only that *some* were
-    /// rejected (not an exact count), since real wall-clock timing among
-    /// truly concurrent connections isn't perfectly deterministic — a cap
-    /// this far below the attempt count is a comfortable enough margin to
-    /// be reliable in practice. The cap's exact, deterministic behavior
-    /// (no more than N concurrently admitted, a freed slot reusable
-    /// immediately) is proven separately and precisely by
-    /// `AddressConnectionTrackerTests.swift`, which tests the admission
-    /// decision directly without needing real concurrent connections to
-    /// race against each other — an earlier attempt to make *this* test
-    /// deterministic via an artificial per-connection delay blocked a
-    /// Swift concurrency cooperative-pool thread for that delay, which
-    /// starved unrelated concurrent work in the same process under CI.
-    func testPerAddressConnectionLimitRejectsSomeConnectionsUnderConcurrentLoad() async throws {
+    /// A connection is counted by `accept(_:)` the moment the TCP handshake
+    /// completes — before any request bytes are read, let alone routed —
+    /// so two raw connections that are opened and then simply left idle
+    /// (no request ever sent) occupy the concurrent cap's two slots exactly
+    /// as long as they stay open, with no timing race and nothing on the
+    /// server side ever blocked waiting on a client. A third connection
+    /// from the same address must then be rejected deterministically; once
+    /// the first two are cancelled and their slots freed, a fourth must
+    /// succeed. (An earlier version of this test tried to force overlap
+    /// among real *concurrent* requests instead, first with a loose "some
+    /// were rejected" assertion that could flake if none happened to
+    /// overlap, then with an artificial per-connection response delay that
+    /// blocked a Swift concurrency cooperative-pool thread and starved
+    /// unrelated work in the same process under CI. `AddressConnectionTrackerTests.swift`
+    /// separately covers the exact admission-decision logic with plain,
+    /// deterministic unit tests.)
+    func testPerAddressConnectionLimitRejectsConnectionsBeyondTheConcurrentCap() async throws {
         var limits = HTTPServerLimits.default
         limits.maxConnectionsPerAddress = 2
         limits.maxConnectionsPerAddressPerWindow = 1000 // large enough not to interfere
@@ -51,17 +54,27 @@ final class ConnectionLimitLifecycleTests: XCTestCase {
         let server = HTTPServer(limits: limits)
         let port = try await server.start()
 
-        let successCount = await withTaskGroup(of: Bool.self) { group -> Int in
-            for _ in 0..<10 {
-                group.addTask { await attemptRequest(port: port) }
-            }
-            var count = 0
-            for await succeeded in group where succeeded {
-                count += 1
-            }
-            return count
-        }
-        XCTAssertLessThan(successCount, 10, "expected at least one connection to be rejected under the per-address concurrent cap")
+        let first = try await openIdleConnection(port: port)
+        let second = try await openIdleConnection(port: port)
+        // Lets the server actor's accept() bookkeeping for both connections
+        // finish running before the third attempt -- accept() itself does
+        // no I/O and completes almost instantly once scheduled, this is
+        // just a safety margin against scheduling latency, not a race the
+        // assertion below depends on to pass.
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let thirdSucceeded = await attemptRequest(port: port)
+        XCTAssertFalse(thirdSucceeded, "a third connection from the same address should be rejected while both slots are occupied")
+
+        first.cancel()
+        second.cancel()
+
+        // A retry here only ever masks how long it takes the server to
+        // notice the cancellations and free the slots, never a real
+        // regression: if a slot genuinely weren't freed, every attempt
+        // would be rejected identically, not intermittently.
+        let fourthSucceeded = await attemptRequestWithRetry(port: port)
+        XCTAssertTrue(fourthSucceeded, "cancelling both connections should free their slots for a new one")
 
         await server.stop()
     }
@@ -128,6 +141,32 @@ private func attemptRequest(port: UInt16) async -> Bool {
 
 private func loopbackURL(port: UInt16, path: String) -> URL {
     URL(string: "http://127.0.0.1:\(port)\(path)")!
+}
+
+/// Opens a raw TCP connection to loopback:`port` and waits for it to reach
+/// `.ready`, without ever sending a byte. The server's own `accept(_:)`
+/// counts a connection as soon as the handshake completes, so a connection
+/// returned by this function occupies a per-address concurrent-cap slot
+/// for as long as the caller keeps it open — the caller cancels it via the
+/// returned `NWConnection` when done.
+private func openIdleConnection(port: UInt16) async throws -> NWConnection {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.stateUpdateHandler = nil
+                continuation.resume()
+            case .failed(let error):
+                connection.stateUpdateHandler = nil
+                continuation.resume(throwing: error)
+            default:
+                break
+            }
+        }
+        connection.start(queue: .global(qos: .userInitiated))
+    }
+    return connection
 }
 
 /// A handful of quick retries for a request expected to succeed, to

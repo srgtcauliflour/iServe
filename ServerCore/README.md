@@ -309,10 +309,14 @@ via the `Destination` header including an absolute-URL form,
 refused with `404` when `allowWebDAVWrites` is off),
 `ConnectionLimitLifecycleTests.swift` (a real `HTTPServer` over loopback —
 a low per-address rate-window budget rejecting requests deterministically
-once exhausted, a low per-address concurrent cap rejecting some of many
-simultaneous connections, rejections landing in
-`RequestLog.snapshot().rejectedConnections`, and `stop()`/`start()`
-resetting that budget for a fresh session), `AddressConnectionTrackerTests.swift`
+once exhausted; a low per-address concurrent cap rejecting a third raw
+connection while two idle ones opened earlier still occupy both slots, then
+admitting a new one once those two are cancelled — deterministic without
+racing real concurrent requests against each other, since a connection is
+counted the moment it's accepted, before any request is even sent;
+rejections landing in `RequestLog.snapshot().rejectedConnections`; and
+`stop()`/`start()` resetting that budget for a fresh session),
+`AddressConnectionTrackerTests.swift`
 (the admission decision itself, deterministically: the concurrent cap
 admitting up to and rejecting beyond its limit, independent budgets per
 address, a removed connection freeing its slot immediately, the
