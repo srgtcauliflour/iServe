@@ -357,10 +357,35 @@ they turn out to matter there rather than reopening v0.2.
    `Transfer/README.md` for the memory-bounding trade-off 7z's
    whole-archive-in-memory reader accepts.
 
-Not yet started from v0.3: streaming ZIP *downloads* over HTTP (as
-opposed to the in-app zip/unzip above), archive formats beyond zip/7z,
-multi-select "search across the whole tree" (current search only filters
-the current directory's listing), the authentication/session layer and
+4. Multi-selection streaming ZIP downloads over HTTP — the roadmap's
+   first remaining v0.3 deliverable, and distinct from the in-app
+   zip/unzip above: a *browser client* can now select several files
+   and/or subdirectories in a directory listing and download them as one
+   `.zip`. `Handlers/DirectoryListingRenderer.swift` wraps every
+   non-empty listing in a plain (no-JS) `method="POST"` form with a
+   checkbox per entry; `ServerCore/HTTPConnection.swift` gained a second
+   POST body path alongside uploads, dispatched by `Content-Type`
+   (`application/x-www-form-urlencoded` here vs `multipart/form-data` for
+   uploads) — it buffers the small selection body (bounded by the new
+   `HTTPServerLimits.maxZipSelectionBytes`, since this is a list of names,
+   never file content), resolves every name through
+   `StaticFileHandler.resolveZipEntries(directoryPath:names:)` (refusing
+   the *whole* request if even one name is a traversal attempt or no
+   longer exists), builds the archive via `Transfer/ArchiveManager.swift`
+   in the app's own temporary directory (bounded by the new
+   `maxZipEntryCount`/`maxZipUncompressedBytes`), and streams it back with
+   `HTTPResponse.attachment(...)` (`Content-Disposition: attachment`) —
+   the same `.file` streaming path as any other download. The temporary
+   archive is deleted in `close()`, the one place every termination path
+   (clean finish, client disconnect, timeout) already funnels through, so
+   cleanup happens exactly once. Unlike uploads this needs no capability
+   opt-in: packaging already-servable files as a ZIP exposes nothing a
+   plain GET of each one wouldn't. See `ServerCore/README.md`,
+   `Handlers/README.md`.
+
+Not yet started from v0.3: archive formats beyond zip/7z, multi-select
+"search across the whole tree" (current search only filters the current
+directory's listing), the authentication/session layer and
 capability-based permissions/profiles, WebDAV, optional multiple mounted
 folders, and rate/connection/request limits (see `docs/ROADMAP.md` for
 all of these).

@@ -196,6 +196,54 @@ final class StaticFileHandlerTests: XCTestCase {
         XCTAssertNil(handler.authorizeUploadedFile(directoryPath: "/", filename: ""))
     }
 
+    // MARK: - ZIP downloads (v0.3)
+
+    func testDirectoryListingIncludesTheDownloadSelectedFormWhenNonEmpty() throws {
+        try "x".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let response = makeHandler().route(request("/"))
+        guard case .data(let data) = response.body else { return XCTFail("expected an in-memory HTML body") }
+        let html = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(html.contains("name=\"select\""))
+        XCTAssertTrue(html.contains("Download Selected"))
+    }
+
+    func testDirectoryListingOmitsTheDownloadSelectedFormWhenEmpty() throws {
+        let response = makeHandler().route(request("/"))
+        guard case .data(let data) = response.body else { return XCTFail("expected an in-memory HTML body") }
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("name=\"select\""))
+    }
+
+    func testAuthorizeZipDownloadAcceptsAnExistingDirectoryWithNoOptInRequired() throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("photos"), withIntermediateDirectories: true)
+        // Unlike uploads, this needs no `allowUploads`/opt-in flag at all.
+        XCTAssertTrue(makeHandler().authorizeZipDownload(directoryPath: "/photos/"))
+    }
+
+    func testAuthorizeZipDownloadRefusesAMissingDirectory() {
+        XCTAssertFalse(makeHandler().authorizeZipDownload(directoryPath: "/missing/"))
+    }
+
+    func testResolveZipEntriesResolvesEachPlainNameInsideTheDirectory() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "b".write(to: root.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let urls = makeHandler().resolveZipEntries(directoryPath: "/", names: ["a.txt", "b.txt"])
+        XCTAssertEqual(Set(urls?.map(\.lastPathComponent) ?? []), ["a.txt", "b.txt"])
+    }
+
+    func testResolveZipEntriesRefusesTheWholeRequestIfOneNameIsMissing() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        XCTAssertNil(makeHandler().resolveZipEntries(directoryPath: "/", names: ["a.txt", "missing.txt"]))
+    }
+
+    func testResolveZipEntriesRejectsATraversalName() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        XCTAssertNil(makeHandler().resolveZipEntries(directoryPath: "/", names: ["a.txt", "../escape.txt"]))
+    }
+
+    func testResolveZipEntriesRejectsAnEmptySelection() {
+        XCTAssertNil(makeHandler().resolveZipEntries(directoryPath: "/", names: []))
+    }
+
     // MARK: - HTTP Range (v0.3)
 
     func testPlainRequestAdvertisesAcceptRanges() throws {

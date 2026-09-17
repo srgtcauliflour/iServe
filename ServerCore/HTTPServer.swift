@@ -18,6 +18,20 @@ struct HTTPServerLimits: Sendable {
     /// against the storage exhaustion `docs/SECURITY.md` calls out as a
     /// threat to test.
     var maxUploadBytes: Int
+    /// Upper bound on a "download selected as ZIP" POST body — just a list
+    /// of selected names from a directory listing's form, never file
+    /// content, so this is a small control-plane cap (like a header limit),
+    /// not a transfer-size limit.
+    var maxZipSelectionBytes: Int
+    /// Upper bound on how many items one ZIP-download request may select —
+    /// bounds how much directory-walking/compression work a single request
+    /// can trigger, independent of any one item's size.
+    var maxZipEntryCount: Int
+    /// Upper bound on the total *uncompressed* bytes a generated ZIP may
+    /// contain — checked while walking the selection (`Transfer/ArchiveManager.swift`),
+    /// so an oversized request is rejected without finishing (or fully
+    /// paying for) the compression work.
+    var maxZipUncompressedBytes: Int
     var parserLimits: HTTPRequestParser.Limits
 
     static let `default` = HTTPServerLimits(
@@ -31,6 +45,9 @@ struct HTTPServerLimits: Sendable {
         readChunkSize: 8 * 1024,
         writeChunkSize: 64 * 1024,
         maxUploadBytes: 4 * 1024 * 1024 * 1024,
+        maxZipSelectionBytes: 32 * 1024,
+        maxZipEntryCount: 500,
+        maxZipUncompressedBytes: 4 * 1024 * 1024 * 1024,
         parserLimits: .default
     )
 }

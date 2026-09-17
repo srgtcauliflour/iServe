@@ -58,6 +58,37 @@ struct StaticFileHandler: HTTPRouter {
         return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path, allowUploads: allowUploads))
     }
 
+    // MARK: - ZIP downloads
+
+    func authorizeZipDownload(directoryPath: String) -> Bool {
+        guard let resolved = try? resolver.resolve(requestPath: directoryPath) else { return false }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory) else { return false }
+        return isDirectory.boolValue
+    }
+
+    func resolveZipEntries(directoryPath: String, names: [String]) -> [URL]? {
+        var urls: [URL] = []
+        var seen = Set<String>()
+        for name in names {
+            // Same "one atomic path component" rule as an uploaded filename:
+            // this came from a checkbox value in our own rendered form, not
+            // a browsable path, so it must never introduce path structure.
+            guard !name.isEmpty, name != ".", name != "..",
+                  !name.contains("/"), !name.contains("\\") else {
+                return nil
+            }
+            guard seen.insert(name).inserted else { continue }
+            guard let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+                  let resolved = try? resolver.resolve(requestPath: directoryPath + encoded),
+                  FileManager.default.fileExists(atPath: resolved.path) else {
+                return nil
+            }
+            urls.append(resolved)
+        }
+        return urls.isEmpty ? nil : urls
+    }
+
     // MARK: - Uploads
 
     func authorizeUpload(directoryPath: String) -> Bool {

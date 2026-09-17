@@ -65,7 +65,7 @@ final class DirectoryListingRendererTests: XCTestCase {
     func testDirectoryEntryLinkHasTrailingSlashAndNoSize() throws {
         try FileManager.default.createDirectory(at: root.appendingPathComponent("sub"), withIntermediateDirectories: true)
         let page = html()
-        XCTAssertTrue(page.contains("href=\"sub/\">sub/</a></li>"))
+        XCTAssertTrue(page.contains("href=\"sub/\">sub/</a></span></li>"))
     }
 
     func testOmitsTheUploadFormByDefault() {
@@ -81,5 +81,30 @@ final class DirectoryListingRendererTests: XCTestCase {
         XCTAssertTrue(page.contains("method=\"POST\""))
         XCTAssertTrue(page.contains("enctype=\"multipart/form-data\""))
         XCTAssertTrue(page.contains("type=\"file\""))
+    }
+
+    func testIncludesADownloadSelectedFormWithACheckboxPerEntry() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "b".write(to: root.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+
+        let page = html()
+        XCTAssertTrue(page.contains("<input type=\"checkbox\" name=\"select\" value=\"a.txt\">"))
+        XCTAssertTrue(page.contains("<input type=\"checkbox\" name=\"select\" value=\"b.txt\">"))
+        XCTAssertTrue(page.contains("Download Selected"))
+        // Unconditional, unlike uploads: no allowUploads needed for it to appear.
+        XCTAssertTrue(page.contains("<form method=\"POST\">"))
+    }
+
+    func testOmitsTheDownloadSelectedFormWhenTheDirectoryIsEmpty() {
+        XCTAssertFalse(html().contains("name=\"select\""))
+        XCTAssertFalse(html().contains("Download Selected"))
+    }
+
+    func testCheckboxValueIsHtmlEscapedNotPercentEncoded() throws {
+        let name = "<a & b>.txt"
+        try "x".write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+
+        let page = html()
+        XCTAssertTrue(page.contains("value=\"&lt;a &amp; b&gt;.txt\""))
     }
 }

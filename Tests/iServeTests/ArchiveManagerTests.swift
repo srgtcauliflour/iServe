@@ -35,6 +35,20 @@ final class ArchiveManagerTests: XCTestCase {
         XCTAssertEqual(extracted, payload)
     }
 
+    func testCreateArchiveRejectsASelectionExceedingMaxUncompressedBytes() throws {
+        let source = workDir.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let file = source.appendingPathComponent("big.bin")
+        try Data(count: 100).write(to: file)
+
+        let archiveURL = workDir.appendingPathComponent("toolarge.zip")
+        XCTAssertThrowsError(
+            try ArchiveManager.createArchive(containing: [file], at: archiveURL, maxUncompressedBytes: 10)
+        ) { error in
+            XCTAssertEqual(error as? ArchiveManager.ArchiveError, .selectionTooLarge)
+        }
+    }
+
     func testNestedDirectoriesAreRecreatedExactly() throws {
         let source = workDir.appendingPathComponent("Folder", isDirectory: true)
         let nested = source.appendingPathComponent("Sub/Deeper", isDirectory: true)

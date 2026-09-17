@@ -86,6 +86,34 @@ struct HTTPResponse: Sendable {
         return HTTPResponse(status: 416, reason: "Range Not Satisfiable", headers: headers, body: .empty)
     }
 
+    /// A file offered as a download (`Content-Disposition: attachment`)
+    /// rather than served for inline display/navigation — used for the
+    /// generated ZIP a directory listing's "Download Selected" form
+    /// produces (v0.3). `url`/`length` must already be a file this
+    /// connection is authorized to stream, exactly like `.file(...)`.
+    static func attachment(url: URL, length: Int, filename: String, contentType: String = "application/zip") -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Type", value: contentType)
+        headers.add(name: "Content-Length", value: String(length))
+        headers.add(name: "Content-Disposition", value: "attachment; filename=\"\(Self.sanitizedFilename(filename))\"")
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(
+            status: 200, reason: "OK", headers: headers,
+            body: .file(HTTPFileBody(url: url, offset: 0, length: length))
+        )
+    }
+
+    /// Strips characters that would break out of the quoted
+    /// `Content-Disposition` filename parameter or inject a header line.
+    /// `filename` is server-derived (a directory name), never raw remote
+    /// input, but this costs nothing and removes any doubt.
+    private static func sanitizedFilename(_ filename: String) -> String {
+        filename
+            .replacingOccurrences(of: "\"", with: "'")
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+    }
+
     static func notImplemented(method: String) -> HTTPResponse {
         .plainText(status: 501, reason: "Not Implemented", message: "Unsupported method: \(method)")
     }
