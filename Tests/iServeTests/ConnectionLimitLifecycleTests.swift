@@ -1,3 +1,4 @@
+import Network
 import XCTest
 @testable import iServe
 
@@ -29,37 +30,51 @@ final class ConnectionLimitLifecycleTests: XCTestCase {
         await server.stop()
     }
 
-    /// Ten simultaneous connection attempts against a concurrent cap of 2
-    /// for the one address they all share. The cap is enforced strictly at
-    /// accept time, so no more than 2 connections can ever be concurrently
-    /// counted for that address — but unless every attempt is actually
-    /// *in flight at once*, a connection that finishes and vacates its slot
-    /// before the next attempt is accepted lets more than 2 succeed overall
-    /// (this is what made the test flaky: a fast 404 response can complete
-    /// before later attempts even connect). `SlowNotFoundRouter` holds every
-    /// connection open long enough that all 10 accept() calls — themselves
-    /// near-instant, pure bookkeeping — land while the earlier ones are
-    /// still occupying their slot, so the cap is guaranteed to bind and the
-    /// outcome is deterministic.
-    func testPerAddressConnectionLimitRejectsSomeConnectionsUnderConcurrentLoad() async throws {
+    /// A connection is counted by `accept(_:)` the moment the TCP handshake
+    /// completes — before any request bytes are read, let alone routed —
+    /// so two raw connections that are opened and then simply left idle
+    /// (no request ever sent) occupy the concurrent cap's two slots exactly
+    /// as long as they stay open, with no timing race and nothing on the
+    /// server side ever blocked waiting on a client. A third connection
+    /// from the same address must then be rejected deterministically; once
+    /// the first two are cancelled and their slots freed, a fourth must
+    /// succeed. (An earlier version of this test tried to force overlap
+    /// among real *concurrent* requests instead, first with a loose "some
+    /// were rejected" assertion that could flake if none happened to
+    /// overlap, then with an artificial per-connection response delay that
+    /// blocked a Swift concurrency cooperative-pool thread and starved
+    /// unrelated work in the same process under CI. `AddressConnectionTrackerTests.swift`
+    /// separately covers the exact admission-decision logic with plain,
+    /// deterministic unit tests.)
+    func testPerAddressConnectionLimitRejectsConnectionsBeyondTheConcurrentCap() async throws {
         var limits = HTTPServerLimits.default
         limits.maxConnectionsPerAddress = 2
         limits.maxConnectionsPerAddressPerWindow = 1000 // large enough not to interfere
 
-        let server = HTTPServer(router: SlowNotFoundRouter(delay: 0.3), limits: limits)
+        let server = HTTPServer(limits: limits)
         let port = try await server.start()
 
-        let successCount = await withTaskGroup(of: Bool.self) { group -> Int in
-            for _ in 0..<10 {
-                group.addTask { await attemptRequest(port: port) }
-            }
-            var count = 0
-            for await succeeded in group where succeeded {
-                count += 1
-            }
-            return count
-        }
-        XCTAssertEqual(successCount, limits.maxConnectionsPerAddress)
+        let first = try await openIdleConnection(port: port)
+        let second = try await openIdleConnection(port: port)
+        // Lets the server actor's accept() bookkeeping for both connections
+        // finish running before the third attempt -- accept() itself does
+        // no I/O and completes almost instantly once scheduled, this is
+        // just a safety margin against scheduling latency, not a race the
+        // assertion below depends on to pass.
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let thirdSucceeded = await attemptRequest(port: port)
+        XCTAssertFalse(thirdSucceeded, "a third connection from the same address should be rejected while both slots are occupied")
+
+        first.cancel()
+        second.cancel()
+
+        // A retry here only ever masks how long it takes the server to
+        // notice the cancellations and free the slots, never a real
+        // regression: if a slot genuinely weren't freed, every attempt
+        // would be rejected identically, not intermittently.
+        let fourthSucceeded = await attemptRequestWithRetry(port: port)
+        XCTAssertTrue(fourthSucceeded, "cancelling both connections should free their slots for a new one")
 
         await server.stop()
     }
@@ -128,31 +143,49 @@ private func loopbackURL(port: UInt16, path: String) -> URL {
     URL(string: "http://127.0.0.1:\(port)\(path)")!
 }
 
-/// Responds `404` like `NotFoundRouter`, but only after blocking for
-/// `delay` — long enough that a batch of near-simultaneous connections all
-/// land while earlier ones are still being held open, making concurrent-load
-/// tests deterministic instead of a race against how fast a real response
-/// completes. `Thread.sleep` (not `Task.sleep`), so it blocks only the one
-/// connection's own dispatched task, never the server actor accepting the
-/// others.
-private struct SlowNotFoundRouter: HTTPRouter {
-    let delay: TimeInterval
-
-    func route(_ request: HTTPRequest) -> HTTPResponse {
-        Thread.sleep(forTimeInterval: delay)
-        return .notFound()
+/// Opens a raw TCP connection to loopback:`port` and waits for it to reach
+/// `.ready`, without ever sending a byte. The server's own `accept(_:)`
+/// counts a connection as soon as the handshake completes, so a connection
+/// returned by this function occupies a per-address concurrent-cap slot
+/// for as long as the caller keeps it open — the caller cancels it via the
+/// returned `NWConnection` when done.
+private func openIdleConnection(port: UInt16) async throws -> NWConnection {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.stateUpdateHandler = nil
+                continuation.resume()
+            case .failed(let error):
+                connection.stateUpdateHandler = nil
+                continuation.resume(throwing: error)
+            default:
+                break
+            }
+        }
+        connection.start(queue: .global(qos: .userInitiated))
     }
+    return connection
 }
 
-/// A handful of quick retries for a request expected to succeed, to
-/// absorb a transient connection hiccup (observed right after a fresh
-/// `start()` following a `stop()`) rather than mistake it for an actual
-/// rejection.
-private func attemptRequestWithRetry(port: UInt16, attempts: Int = 3) async -> Bool {
+/// A handful of retries for a request expected to succeed, to absorb a
+/// transient connection hiccup (observed both right after a fresh
+/// `start()` following a `stop()`, and as ephemeral-port exhaustion —
+/// `connect failed ... Can't assign requested address` — from this test
+/// binary's cumulative socket churn across ~350 tests in one process)
+/// rather than mistake either for an actual rejection. Never masks a real
+/// regression: if the budget genuinely hadn't reset, or a slot genuinely
+/// weren't freed, every attempt would be rejected identically, not
+/// intermittently. CI has shown the same `Can't assign requested address`
+/// failure on 5 straight attempts spanning ~2.5s, so the budget here is
+/// deliberately generous (up to ~9s) rather than tuned to the smallest
+/// margin that happened to work last time.
+private func attemptRequestWithRetry(port: UInt16, attempts: Int = 10) async -> Bool {
     for attempt in 1...attempts {
         if await attemptRequest(port: port) { return true }
         if attempt < attempts {
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
     return false

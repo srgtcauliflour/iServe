@@ -101,16 +101,12 @@ actor HTTPServer {
     private var listener: NWListener?
     private var connections: [UUID: HTTPConnection] = [:]
     private var startContinuation: CheckedContinuation<UInt16, Error>?
-    /// Per-remote-address tracking for `docs/adr/0006-connection-and-rate-limits.md`'s
-    /// two additional limits. Keyed by `Self.remoteAddress(for:)`, never by
-    /// port, so every socket from the same client collapses to one entry.
-    /// Only ever holds addresses with a connection currently open or a
-    /// connection accepted within the last `limits.addressRateWindow` —
-    /// pruned lazily on each `accept(_:)`/`remove(_:)` — so a long session
-    /// doesn't accumulate state for every address that has ever connected.
-    private var connectionIDsByAddress: [String: Set<UUID>] = [:]
-    private var addressByConnectionID: [UUID: String] = [:]
-    private var recentConnectionTimestampsByAddress: [String: [Date]] = [:]
+    /// Per-remote-address admission bookkeeping for
+    /// `docs/adr/0006-connection-and-rate-limits.md`'s two additional
+    /// limits — see `AddressConnectionTracker`. Keyed by
+    /// `Self.remoteAddress(for:)`, never by port, so every socket from the
+    /// same client collapses to one entry.
+    private var addressTracker: AddressConnectionTracker
 
     private let router: any HTTPRouter
     private let limits: HTTPServerLimits
@@ -129,6 +125,11 @@ actor HTTPServer {
         self.limits = limits
         self.requestLog = requestLog
         self.credentials = credentials
+        self.addressTracker = AddressConnectionTracker(
+            maxConnectionsPerAddress: limits.maxConnectionsPerAddress,
+            maxConnectionsPerAddressPerWindow: limits.maxConnectionsPerAddressPerWindow,
+            addressRateWindow: limits.addressRateWindow
+        )
     }
 
     /// Starts listening on `port` (default: any available port, the normal case
@@ -175,9 +176,7 @@ actor HTTPServer {
             await connection.close()
         }
         connections.removeAll()
-        connectionIDsByAddress.removeAll()
-        addressByConnectionID.removeAll()
-        recentConnectionTimestampsByAddress.removeAll()
+        addressTracker.removeAll()
         if let startContinuation {
             self.startContinuation = nil
             startContinuation.resume(throwing: ServerError.listenerFailed("stopped before ready"))
@@ -186,31 +185,21 @@ actor HTTPServer {
     }
 
     /// Three independent caps, checked in order, before an `HTTPConnection`
-    /// is ever constructed: the existing global `maxConcurrentConnections`,
-    /// then (v0.3, `docs/adr/0006-connection-and-rate-limits.md`) a
-    /// per-address concurrent cap and a per-address rolling-window rate
-    /// limit. Any rejection is silent — `connection.cancel()`, no response
-    /// — consistent with how the global cap has always been enforced; only
+    /// is ever `start()`ed or tracked in `connections`: the existing global
+    /// `maxConcurrentConnections`, then (v0.3,
+    /// `docs/adr/0006-connection-and-rate-limits.md`) a per-address
+    /// concurrent cap and a per-address rolling-window rate limit via
+    /// `addressTracker` — constructing the `HTTPConnection` itself first
+    /// only to get its `id` for that check is side-effect-free, since
+    /// `init` does no I/O and `start()` is what actually begins reading.
+    /// Any rejection is silent — `connection.cancel()`, no response —
+    /// consistent with how the global cap has always been enforced; only
     /// `requestLog` records that it happened.
     private func accept(_ connection: NWConnection) async {
         guard connections.count < limits.maxConcurrentConnections else {
             connection.cancel()
             await requestLog?.recordRejectedConnection()
             return
-        }
-
-        let address = Self.remoteAddress(for: connection)
-        if let address {
-            pruneExpiredTimestamps(for: address)
-            let concurrentCount = connectionIDsByAddress[address]?.count ?? 0
-            let recentCount = recentConnectionTimestampsByAddress[address]?.count ?? 0
-            guard concurrentCount < limits.maxConnectionsPerAddress,
-                  recentCount < limits.maxConnectionsPerAddressPerWindow else {
-                connection.cancel()
-                await requestLog?.recordRejectedConnection()
-                return
-            }
-            recentConnectionTimestampsByAddress[address, default: []].append(Date())
         }
 
         let httpConnection = HTTPConnection(
@@ -223,36 +212,21 @@ actor HTTPServer {
             guard let self else { return }
             Task { await self.remove(id) }
         }
-        connections[httpConnection.id] = httpConnection
-        if let address {
-            connectionIDsByAddress[address, default: []].insert(httpConnection.id)
-            addressByConnectionID[httpConnection.id] = address
+
+        let address = Self.remoteAddress(for: connection)
+        if let address, !addressTracker.tryAdmit(id: httpConnection.id, address: address) {
+            connection.cancel()
+            await requestLog?.recordRejectedConnection()
+            return
         }
+
+        connections[httpConnection.id] = httpConnection
         Task { await httpConnection.start() }
     }
 
     private func remove(_ id: UUID) {
         connections.removeValue(forKey: id)
-        guard let address = addressByConnectionID.removeValue(forKey: id) else { return }
-        connectionIDsByAddress[address]?.remove(id)
-        if connectionIDsByAddress[address]?.isEmpty ?? false {
-            connectionIDsByAddress.removeValue(forKey: address)
-        }
-    }
-
-    /// Drops timestamps older than `limits.addressRateWindow`, and the
-    /// address's own dictionary entry entirely once none remain — keeping
-    /// `recentConnectionTimestampsByAddress` bounded to addresses actually
-    /// active within the window, not every address ever seen.
-    private func pruneExpiredTimestamps(for address: String) {
-        guard let timestamps = recentConnectionTimestampsByAddress[address] else { return }
-        let cutoff = Date().addingTimeInterval(-limits.addressRateWindow)
-        let kept = timestamps.filter { $0 >= cutoff }
-        if kept.isEmpty {
-            recentConnectionTimestampsByAddress.removeValue(forKey: address)
-        } else {
-            recentConnectionTimestampsByAddress[address] = kept
-        }
+        addressTracker.remove(id)
     }
 
     /// The remote peer's host, ignoring port, so every socket from the same

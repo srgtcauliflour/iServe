@@ -73,7 +73,22 @@ now uses in place of `UnconfiguredServerService`.
   limit. Every rejection is silent (`connection.cancel()`, no response,
   same as the existing global-cap behavior) but increments
   `RequestLog.rejectedConnectionCount`. `stop()` clears all of this
-  tracking, so a restarted session begins with a fresh budget.
+  tracking, so a restarted session begins with a fresh budget. The
+  bookkeeping itself lives in `AddressConnectionTracker` (a plain,
+  non-actor struct with an injectable clock), not inline in `HTTPServer` —
+  pulled out specifically so the admission *decision* (concurrent cap,
+  rate-window cap, slot reuse after removal, timestamp expiry) can be unit
+  tested with deterministic sequential calls, never by racing real
+  concurrent connections against each other in wall-clock time. An earlier
+  version tried to make a real-network concurrent-load test deterministic
+  instead, by blocking each connection's `route(_:)` call for a fixed delay
+  — `route(_:)` runs synchronously inside `HTTPConnection`'s (an actor)
+  dispatched `Task`, so that blocked a Swift concurrency cooperative-pool
+  thread for the delay, which under CI's constrained runner starved
+  unrelated concurrent work in the same test process (observed as
+  multi-second stalls and connection resets in otherwise-unrelated tests).
+  `HTTPServer.accept(_:)` now just asks `addressTracker.tryAdmit(id:address:)`
+  before ever calling `HTTPConnection.start()`.
 - `HTTPConnection` (an actor) owns exactly one accepted `NWConnection`: it
   reads bounded chunks into the parser, dispatches GET/HEAD/POST/OPTIONS/
   PROPFIND/MKCOL/PUT/DELETE/MOVE/COPY through the router (anything else
@@ -294,10 +309,20 @@ via the `Destination` header including an absolute-URL form,
 refused with `404` when `allowWebDAVWrites` is off),
 `ConnectionLimitLifecycleTests.swift` (a real `HTTPServer` over loopback —
 a low per-address rate-window budget rejecting requests deterministically
-once exhausted, a low per-address concurrent cap rejecting some of many
-simultaneous connections, rejections landing in
-`RequestLog.snapshot().rejectedConnections`, and `stop()`/`start()`
-resetting that budget for a fresh session), and
+once exhausted; a low per-address concurrent cap rejecting a third raw
+connection while two idle ones opened earlier still occupy both slots, then
+admitting a new one once those two are cancelled — deterministic without
+racing real concurrent requests against each other, since a connection is
+counted the moment it's accepted, before any request is even sent;
+rejections landing in `RequestLog.snapshot().rejectedConnections`; and
+`stop()`/`start()` resetting that budget for a fresh session),
+`AddressConnectionTrackerTests.swift`
+(the admission decision itself, deterministically: the concurrent cap
+admitting up to and rejecting beyond its limit, independent budgets per
+address, a removed connection freeing its slot immediately, the
+rate-window budget staying spent regardless of concurrent-slot removals,
+an expired timestamp aging out of the window via an injected clock, and
+`removeAll()` clearing every address), and
 `LiveServerServiceTests.swift` (a real folder served through the full
 scoped-access + `HTTPServer` session lifecycle, including the session's
 `requestLog` going from `nil` to populated to `nil` again across
