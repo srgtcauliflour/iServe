@@ -177,12 +177,15 @@ private func openIdleConnection(port: UInt16) async throws -> NWConnection {
 /// rather than mistake either for an actual rejection. Never masks a real
 /// regression: if the budget genuinely hadn't reset, or a slot genuinely
 /// weren't freed, every attempt would be rejected identically, not
-/// intermittently.
-private func attemptRequestWithRetry(port: UInt16, attempts: Int = 5) async -> Bool {
+/// intermittently. CI has shown the same `Can't assign requested address`
+/// failure on 5 straight attempts spanning ~2.5s, so the budget here is
+/// deliberately generous (up to ~9s) rather than tuned to the smallest
+/// margin that happened to work last time.
+private func attemptRequestWithRetry(port: UInt16, attempts: Int = 10) async -> Bool {
     for attempt in 1...attempts {
         if await attemptRequest(port: port) { return true }
         if attempt < attempts {
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
     return false
