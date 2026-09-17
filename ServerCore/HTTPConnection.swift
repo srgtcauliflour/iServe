@@ -972,9 +972,18 @@ actor HTTPConnection {
     /// checked before ever being placed in a response header, or a
     /// crafted `redirect` could inject additional header lines. Falls
     /// back to "/" for anything else, including a missing field.
+    ///
+    /// Checks `unicodeScalars`, not `value.contains("\r")`/`"\n"` directly:
+    /// Swift's `String` is grapheme-cluster-based, and `"\r\n"` — the
+    /// realistic CRLF-injection payload — collapses into a *single*
+    /// `Character` distinct from either `"\r"` or `"\n"` alone, so a
+    /// `Character`-level `contains` check silently passes exactly the
+    /// input this guard exists to catch. Scanning `unicodeScalars` instead
+    /// sees the CR (U+000D) and LF (U+000A) as the two separate code
+    /// points they actually are, regardless of clustering.
     private static func sanitizedRedirectPath(_ value: String?) -> String {
         guard let value, value.hasPrefix("/"), !value.hasPrefix("//"),
-              !value.contains("\r"), !value.contains("\n") else {
+              !value.unicodeScalars.contains(where: { $0 == "\r" || $0 == "\n" }) else {
             return "/"
         }
         return value
