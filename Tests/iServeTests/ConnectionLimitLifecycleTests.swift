@@ -169,15 +169,20 @@ private func openIdleConnection(port: UInt16) async throws -> NWConnection {
     return connection
 }
 
-/// A handful of quick retries for a request expected to succeed, to
-/// absorb a transient connection hiccup (observed right after a fresh
-/// `start()` following a `stop()`) rather than mistake it for an actual
-/// rejection.
-private func attemptRequestWithRetry(port: UInt16, attempts: Int = 3) async -> Bool {
+/// A handful of retries for a request expected to succeed, to absorb a
+/// transient connection hiccup (observed both right after a fresh
+/// `start()` following a `stop()`, and as ephemeral-port exhaustion —
+/// `connect failed ... Can't assign requested address` — from this test
+/// binary's cumulative socket churn across ~350 tests in one process)
+/// rather than mistake either for an actual rejection. Never masks a real
+/// regression: if the budget genuinely hadn't reset, or a slot genuinely
+/// weren't freed, every attempt would be rejected identically, not
+/// intermittently.
+private func attemptRequestWithRetry(port: UInt16, attempts: Int = 5) async -> Bool {
     for attempt in 1...attempts {
         if await attemptRequest(port: port) { return true }
         if attempt < attempts {
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(nanoseconds: 400_000_000)
         }
     }
     return false
