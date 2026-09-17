@@ -700,3 +700,37 @@ now has its own "Preview in App" button next to its address, not just the
 primary shared folder — the dashboard's single `isShowingBrowser` sheet
 flag became a `PreviewTarget?` so any endpoint (primary or a mount) can be
 opened in the in-app browser.
+
+**CRLF-injection check bypassed by grapheme clustering** (`ServerCore/HTTPConnection.swift`):
+`sanitizedRedirectPath(_:)`'s guard rejected a `redirect` value containing
+`"\r"` or `"\n"` via `String.contains`, but Swift's `String` is
+grapheme-cluster-based — `"\r\n"` immediately adjacent (the realistic
+CRLF-injection payload) collapses into a *single* `Character` distinct
+from either alone, so the check silently passed exactly the input it
+existed to catch. A wrong-but-otherwise-valid login POST with
+`redirect=/ok%0D%0AX-Injected%3A%20yes` came back with a real, separate
+`X-Injected: yes` response header rather than falling back to `/`. Caught
+by `LoginLifecycleTests.testRedirectPathIsSanitizedAgainstOpenRedirectAndHeaderInjection`
+once an unrelated bug in that same test (reusing one `URLSession` — and
+therefore its cookie jar — across three successive *successful* logins,
+so the second and third attempts rode in on the first one's session
+cookie and never reached the vulnerable code path at all) was fixed
+first. Fixed by scanning `value.unicodeScalars` for CR/LF instead of a
+`Character`-level `contains`, which sees the two code points individually
+regardless of clustering. Never shipped in a released build.
+
+**File manager decoupled from the File Sharing tab** (`App/FileManagerViewModel.swift`,
+`App/RootTabView.swift`): the file manager used to share `ServerCoordinator.folders`'
+selected root and security-scoped access, so it was unusable — an empty
+"Folder Unavailable" screen — until a folder had been chosen on the File
+Sharing tab, which had nothing to do with what a file manager is for.
+`FileManagerViewModel` no longer takes a `FolderRootManager` at all; it
+always opens the app's own sandboxed Documents directory (`rootProvider`,
+defaulting to `FileManagerViewModel.documentsDirectory()`, overridable only
+by tests), which needs no picker or security-scoped bookmark since the app
+already owns it outright. `project.yml` gained
+`INFOPLIST_KEY_UIFileSharingEnabled`/`INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace`
+so that same folder is reachable from the Files app ("On My iPhone/iPad" >
+iServe) and over USB/Wi-Fi from a Mac — otherwise "your device's files"
+would always start out permanently empty with no way to add anything
+except the web server's own upload feature.

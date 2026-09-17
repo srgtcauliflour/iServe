@@ -2,47 +2,50 @@ import Foundation
 import Observation
 import UniformTypeIdentifiers
 
-/// Backs the native in-app file manager screen (v0.3): browse the selected
-/// root on-device, preview/edit files, rename/move/copy/delete, and
+/// Backs the native in-app file manager screen (v0.3): browse the app's own
+/// on-device storage, preview/edit files, rename/move/copy/delete, and
 /// create/extract archives — all separate from the remote HTTP directory
 /// listing a browser client sees, and independent of whether the server is
 /// running.
 ///
-/// Holds its own scoped access to the selected root for the screen's
-/// lifetime via `FolderRootManager.beginAccess()`/`endAccess(_:)`. This is
-/// safe to hold at the same time `LiveServerService` holds its own access
-/// for an active serving session — the underlying security-scoped access
-/// is reference-counted, so the two are independent counts released by
-/// their own matching calls.
+/// Entirely independent of `ServerCoordinator`/`FolderRootManager` (post-v0.3
+/// fix): this used to require a folder already selected in the File Sharing
+/// tab, sharing that folder's security-scoped access, which meant the file
+/// manager couldn't be used at all before a share was set up and had nothing
+/// to do with "your device's files" as a person would expect a file manager
+/// to mean. It now always opens the app's own sandboxed Documents directory
+/// — real, on-device storage that needs no folder picker or security-scoped
+/// bookmark to reach, since the app already owns it outright. `project.yml`
+/// sets `UIFileSharingEnabled`/`LSSupportsOpeningDocumentsInPlace` so this
+/// same folder is reachable from the Files app ("On My iPhone/iPad" >
+/// iServe) and over USB/Wi-Fi from a Mac, which is how files actually get
+/// onto it from outside the app.
 @MainActor
 @Observable
 final class FileManagerViewModel {
-    private let folders: FolderRootManager
+    /// Overridable only for tests, which need an isolated temporary
+    /// directory rather than the real app container's Documents folder.
+    private let rootProvider: () -> URL
     private(set) var rootURL: URL?
-    private var scopedURL: URL?
     var previewURL: URL?
     var editingTextURL: URL?
     var errorMessage: String?
 
-    init(folders: FolderRootManager) {
-        self.folders = folders
+    init(rootProvider: @escaping () -> URL = FileManagerViewModel.documentsDirectory) {
+        self.rootProvider = rootProvider
+    }
+
+    static func documentsDirectory() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
     func start() {
-        guard scopedURL == nil else { return }
-        guard let url = folders.beginAccess() else {
-            errorMessage = "Could not access the selected folder."
-            return
-        }
-        scopedURL = url
-        rootURL = url
+        guard rootURL == nil else { return }
+        rootURL = rootProvider()
     }
 
     func stop() {
-        guard let scopedURL else { return }
-        self.scopedURL = nil
         rootURL = nil
-        folders.endAccess(scopedURL)
     }
 
     /// Lists a directory's immediate contents, folders first, both groups

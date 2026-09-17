@@ -14,15 +14,13 @@ final class FileManagerViewModelTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    /// `StubFolderAccess` (from `FolderRootManagerTests.swift`) ignores
-    /// whatever URL `select(_:)` is given and always grants scope, so it
-    /// works fine here with a real temporary directory as the root, exactly
-    /// as `LiveServerServiceTests.swift` already relies on.
+    /// `FileManagerViewModel` always resolves to the app's real Documents
+    /// directory in production; tests override `rootProvider` with an
+    /// isolated temporary directory instead, so nothing here touches the
+    /// real device filesystem outside this test's own scratch folder.
     @MainActor
     private func makeStartedModel() -> FileManagerViewModel {
-        let folders = FolderRootManager(access: StubFolderAccess(), store: MemoryBookmarkStore())
-        folders.select(root)
-        let model = FileManagerViewModel(folders: folders)
+        let model = FileManagerViewModel(rootProvider: { [root] in root! })
         model.start()
         return model
     }

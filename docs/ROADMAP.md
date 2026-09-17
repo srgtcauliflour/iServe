@@ -181,7 +181,14 @@ Deliverables:
   The file manager also moved to its own bottom-tab-bar destination
   (`App/RootTabView.swift`) — the app now opens directly to it, with a
   second tab for folder selection/server profile/the web server itself —
-  replacing the old "Open File Manager" sheet from `ServerDashboard`.
+  replacing the old "Open File Manager" sheet from `ServerDashboard`. It
+  was then decoupled from that second tab entirely: rather than sharing
+  `ServerCoordinator.folders`' selected root (unusable until a folder was
+  chosen for sharing, which has nothing to do with what a file manager is
+  for), it always opens the app's own sandboxed Documents directory, made
+  reachable from outside the app via the Files app and Finder/Explorer
+  (`UIFileSharingEnabled`/`LSSupportsOpeningDocumentsInPlace` in
+  `project.yml`).
 
 Exit gate: large transfers resume correctly, archives remain bounded-memory, and WebDAV operations cannot escape authorized roots/capabilities.
 

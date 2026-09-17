@@ -1,12 +1,14 @@
 @preconcurrency import QuickLook
 import SwiftUI
 
-/// Native in-app file manager (v0.3): browse the selected root, preview or
-/// edit files, rename/move/copy/delete, and zip/unzip — independent of the
-/// remote HTTP directory listing a browser client sees, and of whether the
-/// server is running. Scoped access to the root is acquired for the
-/// screen's whole lifetime (`.task`/`.onDisappear`), separate from any
-/// server session.
+/// Native in-app file manager (v0.3): browse this app's own on-device
+/// storage, preview or edit files, rename/move/copy/delete, and zip/unzip —
+/// independent of the remote HTTP directory listing a browser client sees,
+/// of whether the server is running, and (post-v0.3 fix) of whatever
+/// folder is or isn't selected in the File Sharing tab. `model.start()`
+/// always resolves to the app's own Documents directory, which needs no
+/// picker or security-scoped access to reach, so this screen has nothing
+/// to wait on and no "no folder selected" state of its own.
 struct FileManagerScreen: View {
     @Bindable var model: FileManagerViewModel
 
@@ -15,12 +17,12 @@ struct FileManagerScreen: View {
             Group {
                 if let rootURL = model.rootURL {
                     FileManagerFolderView(model: model, directory: rootURL)
-                        .navigationTitle(rootURL.lastPathComponent)
+                        .navigationTitle("Files")
                 } else {
                     ContentUnavailableView(
-                        "Folder Unavailable",
+                        "Files Unavailable",
                         systemImage: "folder.badge.questionmark",
-                        description: Text(model.errorMessage ?? "Choose a folder in the File Sharing tab first.")
+                        description: Text(model.errorMessage ?? "Your on-device files could not be loaded.")
                     )
                 }
             }
