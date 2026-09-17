@@ -1,22 +1,43 @@
 import Foundation
+import SWCompression
 import ZIPFoundation
 
-/// Creates and extracts ZIP archives for the in-app file manager (v0.3).
+/// Creates and extracts ZIP archives, and extracts 7z archives, for the
+/// in-app file manager (v0.3).
 ///
-/// ZIPFoundation is the first third-party dependency this project has taken on —
-/// Apple has no first-party API for creating or reading ZIP archives, and
-/// `AGENTS.md`'s "no arbitrary shell execution" plus the iOS sandbox rule out
-/// shelling out to `zip`/`unzip`/`ditto`.
+/// ZIPFoundation and SWCompression are the first third-party dependencies
+/// this project has taken on — Apple has no first-party API for creating or
+/// reading either archive format, and `AGENTS.md`'s "no arbitrary shell
+/// execution" plus the iOS sandbox rule out shelling out to
+/// `zip`/`unzip`/`7z`/`ditto`. RAR support was deliberately left out: every
+/// available RAR library wraps the non-commercial-licensed `unrar` code,
+/// which ZIPFoundation/SWCompression's permissive MIT/Apache-2.0 licensing
+/// avoids entirely.
 ///
-/// Extraction defends against "Zip Slip" independently of whatever protection
-/// ZIPFoundation itself applies: iServe already accepts remote uploads, so a
-/// malicious client could upload a crafted `.zip` — containing an entry path
-/// like `../../Library/evil` or a symlink entry — for a user to extract later
-/// via the file manager. Every entry's destination is validated to stay within
-/// the extraction root the same way `FileSystem/SecurePathResolver.swift`
-/// validates a remote request path, and symlink entries are refused outright
-/// rather than trusted.
+/// 7z support is extraction-only: SWCompression can read `.7z` containers
+/// but cannot create them (no maintained permissively-licensed Swift library
+/// does), and unlike ZIPFoundation's streaming reader, `SevenZipContainer`
+/// requires the *entire* compressed archive and every extracted entry's
+/// bytes in memory at once — there is no bounded/streaming 7z reader
+/// available. This is a real (if usually small in practice, given app
+/// sandbox storage limits) departure from this project's usual bounded-
+/// streaming rule, accepted here because there is no alternative library.
+///
+/// Both extraction paths defend against "Zip Slip" independently of
+/// whatever protection the underlying library applies: iServe already
+/// accepts remote uploads, so a malicious client could upload a crafted
+/// archive — containing an entry path like `../../Library/evil` or a
+/// symlink entry — for a user to extract later via the file manager. Every
+/// entry's destination is validated to stay within the extraction root the
+/// same way `FileSystem/SecurePathResolver.swift` validates a remote
+/// request path, and symlink (or other non-regular-file) entries are
+/// refused outright rather than trusted.
 enum ArchiveManager {
+    /// SWCompression also declares a public `Archive` protocol
+    /// (`Sources/Common/Archive.swift`), so ZIPFoundation's `Archive` class
+    /// needs disambiguating wherever both modules are imported together.
+    private typealias ZipArchive = ZIPFoundation.Archive
+
     enum ArchiveError: Error, Equatable {
         /// The archive could not be opened for reading.
         case cannotOpenArchive
@@ -30,6 +51,10 @@ enum ArchiveManager {
         case entryEscapesDestination
         /// An entry is a symlink; iServe never materializes archive symlinks on extract.
         case entrySymlinkRefused
+        /// A 7z entry is neither a regular file nor a directory (a hard link,
+        /// device file, socket, FIFO, or an unrecognized type); iServe never
+        /// materializes these from an archive.
+        case entryTypeUnsupported
     }
 
     /// Creates a ZIP archive at `destination` containing each URL in `items`,
@@ -37,9 +62,9 @@ enum ArchiveManager {
     /// already exist; `items` may mix files and directories from the same
     /// parent folder.
     static func createArchive(containing items: [URL], at destination: URL) throws {
-        let archive: Archive
+        let archive: ZipArchive
         do {
-            archive = try Archive(url: destination, accessMode: .create)
+            archive = try ZipArchive(url: destination, accessMode: .create)
         } catch {
             throw ArchiveError.cannotCreateArchive
         }
@@ -53,9 +78,9 @@ enum ArchiveManager {
     /// — without writing any file — if any entry is a symlink or would
     /// resolve outside `destination`.
     static func extractArchive(at source: URL, to destination: URL) throws {
-        let archive: Archive
+        let archive: ZipArchive
         do {
-            archive = try Archive(url: source, accessMode: .read)
+            archive = try ZipArchive(url: source, accessMode: .read)
         } catch {
             throw ArchiveError.cannotOpenArchive
         }
@@ -67,9 +92,53 @@ enum ArchiveManager {
         }
     }
 
+    /// Extracts every entry of the 7z archive at `source` into `destination`,
+    /// which must already exist as a directory. Rejects the entire
+    /// extraction — without writing any file — if any entry is anything
+    /// other than a regular file or a directory, or would resolve outside
+    /// `destination`. Loads the whole archive and every entry's decompressed
+    /// bytes into memory at once — see this type's documentation.
+    static func extractSevenZipArchive(at source: URL, to destination: URL) throws {
+        let data: Data
+        do {
+            data = try Data(contentsOf: source)
+        } catch {
+            throw ArchiveError.cannotOpenArchive
+        }
+        let entries: [SevenZipEntry]
+        do {
+            entries = try SevenZipContainer.open(container: data)
+        } catch {
+            throw ArchiveError.cannotOpenArchive
+        }
+
+        let root = destination.resolvingSymlinksInPath().standardizedFileURL
+        for entry in entries {
+            switch entry.info.type {
+            case .directory, .regular, .contiguous:
+                break
+            default:
+                throw ArchiveError.entryTypeUnsupported
+            }
+            // 7z entry names may use "\" as a separator on Windows-authored
+            // archives; containedDestination only recognizes "/".
+            let normalizedName = entry.info.name.replacingOccurrences(of: "\\", with: "/")
+            let entryURL = try containedDestination(for: normalizedName, root: root)
+            if entry.info.type == .directory {
+                try FileManager.default.createDirectory(at: entryURL, withIntermediateDirectories: true)
+            } else {
+                try FileManager.default.createDirectory(
+                    at: entryURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try (entry.data ?? Data()).write(to: entryURL)
+            }
+        }
+    }
+
     // MARK: - Compression
 
-    private static func addEntryRecursively(for url: URL, relativeTo base: URL, in archive: Archive) throws {
+    private static func addEntryRecursively(for url: URL, relativeTo base: URL, in archive: ZipArchive) throws {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw ArchiveError.sourceItemMissing

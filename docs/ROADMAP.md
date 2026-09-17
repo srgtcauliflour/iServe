@@ -49,22 +49,30 @@ Deliverables:
 - WebDAV read operations, then authorized write operations.
 - Optional multiple mounted folders after secure namespace design.
 - Rate/connection/request limits and advanced logs.
-- Feature-rich in-app sandboxed file manager. First increment shipped:
-  a native browse screen (`App/FileManagerScreen.swift`), file preview via
+- Feature-rich in-app sandboxed file manager. Shipped: a native browse
+  screen (`App/FileManagerScreen.swift`), file preview via
   `QLPreviewController` (text, images, video, PDF — whatever QuickLook
-  itself supports), and zip/unzip via a new `Transfer/ArchiveManager.swift`
-  wrapping [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (this
-  project's first third-party dependency), with its own Zip-Slip
-  containment check independent of ZIPFoundation's. Still remaining, all
-  deliberately deferred out of that first increment: edit text-based files
-  in place, archive support beyond zip/unzip — 7z, RAR and other common
-  compression formats — rename/move/copy/delete, multi-select actions
-  beyond "select to compress", and search — all still bounded to the
-  selected root the same way serving already is. Materially bigger than
-  the first increment — needs its own scoping pass and likely its own ADR
-  once v0.3's transport/auth layer lands, especially for in-place editing
-  and third-party archive-format libraries (RAR support in particular has
-  licensing considerations to check before picking a library).
+  itself supports), in-place editing of text-based files (gated on the
+  file extension's `UTType` conforming to `.text`), rename/delete (swipe
+  actions and multi-select), move/copy via a folder-picker sheet, in-list
+  search, and zip/unzip/7z-extract via `Transfer/ArchiveManager.swift`
+  wrapping [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) and
+  [SWCompression](https://github.com/tsolomko/SWCompression) (this
+  project's first third-party dependencies), with its own Zip-Slip
+  containment check independent of either library's own protections.
+  RAR support was deliberately left out: every available RAR library
+  wraps the non-commercial-licensed `unrar` code, which ZIPFoundation/
+  SWCompression's permissive MIT/Apache-2.0 licensing avoids entirely — no
+  ADR reversed this, the licensing question was resolved by not taking on
+  RAR at all. 7z support is extraction-only (no maintained
+  permissively-licensed Swift library can create `.7z`) and, unlike
+  ZIPFoundation's streaming reader, requires the whole archive and every
+  entry's decompressed bytes in memory at once — a deliberate, documented
+  departure from this project's bounded-streaming rule where no
+  alternative library exists. Still remaining: archive formats beyond
+  zip/7z if one ever turns out to matter, and whole-tree search (current
+  search only filters the current directory's listing) — all still
+  bounded to the selected root the same way serving already is.
 
 Exit gate: large transfers resume correctly, archives remain bounded-memory, and WebDAV operations cannot escape authorized roots/capabilities.
 

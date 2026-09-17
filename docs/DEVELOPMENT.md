@@ -314,21 +314,21 @@ they turn out to matter there rather than reopening v0.2.
    `Handlers/README.md`.
 
 2. Native in-app file manager, first increment (browse, preview,
-   zip/unzip — rename/move/copy/delete deliberately deferred): adds
-   [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) via Swift
-   Package Manager, this project's first third-party dependency, since
-   Apple has no first-party ZIP archive API and shelling out is ruled out
-   by `AGENTS.md`/the sandbox. `Transfer/ArchiveManager.swift` wraps it —
-   `createArchive(containing:at:)`/`extractArchive(at:to:)` — with its own
-   Zip-Slip containment check on every extracted entry (mirroring
-   `FileSystem/SecurePathResolver.swift`) and an outright refusal of
-   symlink entries, independent of whatever protection ZIPFoundation
-   itself provides. `App/FileManagerScreen.swift`/`FileManagerViewModel.swift`
-   are a new native screen (opened from `ServerDashboard`, independent of
-   whether the server is running) holding its own scoped access via the
-   now-renamed `FolderRootManager.beginAccess()`/`endAccess(_:)` — reentrant
-   with a running server's own access, since both rely on security-scoped
-   access being reference-counted. Browsing is a plain recursive
+   zip/unzip): adds [ZIPFoundation](https://github.com/weichsel/ZIPFoundation)
+   via Swift Package Manager, this project's first third-party dependency,
+   since Apple has no first-party ZIP archive API and shelling out is
+   ruled out by `AGENTS.md`/the sandbox. `Transfer/ArchiveManager.swift`
+   wraps it — `createArchive(containing:at:)`/`extractArchive(at:to:)` —
+   with its own Zip-Slip containment check on every extracted entry
+   (mirroring `FileSystem/SecurePathResolver.swift`) and an outright
+   refusal of symlink entries, independent of whatever protection
+   ZIPFoundation itself provides. `App/FileManagerScreen.swift`/
+   `FileManagerViewModel.swift` are a new native screen (opened from
+   `ServerDashboard`, independent of whether the server is running)
+   holding its own scoped access via the now-renamed
+   `FolderRootManager.beginAccess()`/`endAccess(_:)` — reentrant with a
+   running server's own access, since both rely on security-scoped access
+   being reference-counted. Browsing is a plain recursive
    `NavigationStack`; preview wraps `QLPreviewController` via
    `UIViewControllerRepresentable` (SwiftUI's own `quickLookPreview(_:)`
    modifier turned out not to resolve as a member on this toolchain, so
@@ -336,12 +336,34 @@ they turn out to matter there rather than reopening v0.2.
    multi-select "Compress" action, unzip a swipe action on `.zip` entries.
    See `Transfer/README.md`, `FileSystem/README.md`.
 
+3. Native in-app file manager, second increment: rename, delete,
+   move/copy (via a folder-picker sheet with its own "Move Here"/
+   "Copy Here" per level), in-place text editing, in-list search, and 7z
+   extraction. Rename/delete are per-row swipe actions; move/copy/delete
+   also work multi-select via the existing "Select" mode, gated behind a
+   confirmation dialog for bulk delete. None of rename/move/copy will
+   silently overwrite an existing name — same "never silently overwrite"
+   stance as uploads (`docs/SECURITY.md`) — they set `errorMessage`
+   instead. Text editing (`FileManagerEntry.isTextEditable`, gated on the
+   file extension's `UTType` conforming to `.text`) opens a plain
+   `TextEditor` sheet in place of QuickLook; an extension-less file falls
+   back to QuickLook rather than guessing. 7z extraction adds
+   [SWCompression](https://github.com/tsolomko/SWCompression) (Apache-2.0)
+   — RAR was deliberately left out entirely, since every available RAR
+   library wraps the non-commercial-licensed `unrar` code, which
+   ZIPFoundation/SWCompression's permissive licensing avoids; 7z is
+   extraction-only, since SWCompression (and no other maintained
+   permissively-licensed Swift library) can create `.7z`. See
+   `Transfer/README.md` for the memory-bounding trade-off 7z's
+   whole-archive-in-memory reader accepts.
+
 Not yet started from v0.3: streaming ZIP *downloads* over HTTP (as
-opposed to the in-app zip/unzip above), rename/move/copy/delete and other
-file-manager operations beyond this first increment, the
-authentication/session layer and capability-based permissions/profiles,
-WebDAV, optional multiple mounted folders, and rate/connection/request
-limits (see `docs/ROADMAP.md` for all of these).
+opposed to the in-app zip/unzip above), archive formats beyond zip/7z,
+multi-select "search across the whole tree" (current search only filters
+the current directory's listing), the authentication/session layer and
+capability-based permissions/profiles, WebDAV, optional multiple mounted
+folders, and rate/connection/request limits (see `docs/ROADMAP.md` for
+all of these).
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation
