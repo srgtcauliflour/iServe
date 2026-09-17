@@ -67,8 +67,10 @@ final class ConnectionLimitLifecycleTests: XCTestCase {
         let server = HTTPServer(limits: limits, requestLog: log)
         let port = try await server.start()
 
-        XCTAssertTrue(await attemptRequest(port: port))
-        XCTAssertFalse(await attemptRequest(port: port))
+        let firstSucceeded = await attemptRequest(port: port)
+        let secondSucceeded = await attemptRequest(port: port)
+        XCTAssertTrue(firstSucceeded)
+        XCTAssertFalse(secondSucceeded)
 
         let snapshot = await log.snapshot()
         XCTAssertGreaterThanOrEqual(snapshot.rejectedConnections, 1)
@@ -87,12 +89,15 @@ final class ConnectionLimitLifecycleTests: XCTestCase {
         let server = HTTPServer(limits: limits)
 
         let firstPort = try await server.start()
-        XCTAssertTrue(await attemptRequest(port: firstPort))
-        XCTAssertFalse(await attemptRequest(port: firstPort))
+        let firstSucceeded = await attemptRequest(port: firstPort)
+        let secondSucceeded = await attemptRequest(port: firstPort)
+        XCTAssertTrue(firstSucceeded)
+        XCTAssertFalse(secondSucceeded)
         await server.stop()
 
         let secondPort = try await server.start()
-        XCTAssertTrue(await attemptRequest(port: secondPort))
+        let thirdSucceeded = await attemptRequest(port: secondPort)
+        XCTAssertTrue(thirdSucceeded)
         await server.stop()
     }
 }
