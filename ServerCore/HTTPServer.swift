@@ -80,11 +80,20 @@ actor HTTPServer {
     private let router: any HTTPRouter
     private let limits: HTTPServerLimits
     private let requestLog: RequestLog?
+    /// `nil` (the default) means every request is let through unchecked —
+    /// see `ServerCore/ServerCredentials.swift`.
+    private let credentials: ServerCredentials?
 
-    init(router: any HTTPRouter = NotFoundRouter(), limits: HTTPServerLimits = .default, requestLog: RequestLog? = nil) {
+    init(
+        router: any HTTPRouter = NotFoundRouter(),
+        limits: HTTPServerLimits = .default,
+        requestLog: RequestLog? = nil,
+        credentials: ServerCredentials? = nil
+    ) {
         self.router = router
         self.limits = limits
         self.requestLog = requestLog
+        self.credentials = credentials
     }
 
     /// Starts listening on `port` (default: any available port, the normal case
@@ -147,7 +156,8 @@ actor HTTPServer {
             connection: connection,
             router: router,
             limits: limits,
-            requestLog: requestLog
+            requestLog: requestLog,
+            credentials: credentials
         ) { [weak self] id in
             guard let self else { return }
             Task { await self.remove(id) }

@@ -383,12 +383,33 @@ they turn out to matter there rather than reopening v0.2.
    plain GET of each one wouldn't. See `ServerCore/README.md`,
    `Handlers/README.md`.
 
+5. Authentication/session layer — `docs/adr/0002-http-basic-authentication.md`.
+   Optional, password-only HTTP Basic Authentication (RFC 7617), off by
+   default and never persisted to disk (unlike the selected-folder
+   bookmark, a plaintext passphrase isn't kept at rest — the owner
+   re-enters it each time they want protection on). `ServerCoordinator`
+   gained `requiresPassword`/`password`; `ServerDashboard` gained a
+   "Require Password" toggle and a `SecureField`, plus a footer warning
+   that this server has no encryption so the protection is only meaningful
+   on a trusted network. `ServerCore/HTTPConnection.swift` checks every
+   request — GET, HEAD, or POST — against `ServerCore/ServerCredentials.swift`
+   before it reaches the router or a body byte is read, using a
+   constant-time comparison so response timing can't leak the password a
+   byte at a time; a missing/wrong credential gets `401` with
+   `WWW-Authenticate: Basic realm="iServe"`, so the browser's own native
+   login prompt handles it. `ServerService.start(allowUploads:credentials:)`
+   threads the optional `ServerCredentials` down through `LiveServerService`
+   to `HTTPServer`/`HTTPConnection`. This is the gate only — the
+   capability-based permissions/profiles system (`docs/MASTER-SPEC.md` §4:
+   Website/Read Only, File Sharing, File Drop, Full Access) it's meant to
+   sit in front of is the next, separate roadmap item. See
+   `ServerCore/README.md`.
+
 Not yet started from v0.3: archive formats beyond zip/7z, multi-select
 "search across the whole tree" (current search only filters the current
-directory's listing), the authentication/session layer and
-capability-based permissions/profiles, WebDAV, optional multiple mounted
-folders, and rate/connection/request limits (see `docs/ROADMAP.md` for
-all of these).
+directory's listing), capability-based permissions/profiles, WebDAV,
+optional multiple mounted folders, and rate/connection/request limits
+(see `docs/ROADMAP.md` for all of these).
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

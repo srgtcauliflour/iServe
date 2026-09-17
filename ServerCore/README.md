@@ -62,6 +62,23 @@ now uses in place of `UnconfiguredServerService`.
   never for a request that failed to parse at all, since there is no clean
   target to show for one.
 
+  **Authentication (v0.3, `ServerCore/ServerCredentials.swift`):** if the
+  session was started with credentials, every request — GET, HEAD, or
+  POST alike — is checked against them before anything else: before
+  `router.route(_:)`, before `beginUpload`, before `beginZipDownload`, so
+  an unauthenticated request never reaches a router or has a single body
+  byte read. `ServerCredentials` is password-only (a client's Basic
+  username is decoded and ignored), and the comparison is constant-time
+  (`HTTPConnection.constantTimeEquals`) rather than a plain `==`, which
+  would let a remote attacker recover the password one byte at a time
+  from response timing. Missing/wrong credentials get `401` with
+  `WWW-Authenticate: Basic realm="iServe"`, so a browser's own native
+  login prompt handles it — no custom page, no JavaScript. `nil`
+  credentials (the default) mean no check at all — every test predating
+  this still exercises that path. See
+  `docs/adr/0002-http-basic-authentication.md` for why Basic Auth
+  specifically, and the plain-HTTP trade-off it accepts.
+
   **POST uploads (v0.2):** once headers are parsed for a POST,
   `HTTPConnection` authorizes the *whole* request — target is a directory,
   `Content-Type` names a `multipart/form-data` boundary, `Content-Length` is
@@ -102,15 +119,18 @@ now uses in place of `UnconfiguredServerService`.
   connection ends.
 
 - `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
-  `start(allowUploads:)` acquires scoped access to the currently selected
-  folder via `FolderRootManager.beginAccess()` — for the entire
-  server session, not just validation — builds an `HTTPServer` rooted there
-  with a real `StaticFileHandler`/`SecurePathResolver` (passing
-  `allowUploads` straight through to the handler) and a fresh `RequestLog`,
-  and starts it. `allowUploads` is `ServerCoordinator.uploadsEnabled` at the
-  moment `start()` was called — off by default, and per `docs/SECURITY.md`
-  never implied just by having a folder selected — so a service must never
-  default it to `true` on its own; see `App/ServerCoordinator.swift`.
+  `start(allowUploads:credentials:)` acquires scoped access to the
+  currently selected folder via `FolderRootManager.beginAccess()` — for
+  the entire server session, not just validation — builds an
+  `HTTPServer` rooted there with a real `StaticFileHandler`/
+  `SecurePathResolver` (passing `allowUploads` straight through to the
+  handler, and `credentials` straight through to the `HTTPServer`) and a
+  fresh `RequestLog`, and starts it. `allowUploads`/`credentials` reflect
+  `ServerCoordinator.uploadsEnabled`/`.requiresPassword`+`.password` at
+  the moment `start()` was called — both off by default, and per
+  `docs/SECURITY.md` never implied just by having a folder selected — so
+  a service must never default either to on/present on its own; see
+  `App/ServerCoordinator.swift`.
   `stop()` cancels the listener/connections (`await`ed inside a
   detached `Task`, since the `ServerService` protocol's `stop()` itself must
   stay synchronous) before releasing that same scoped access — never before,
@@ -153,7 +173,15 @@ POST over loopback — a real ZIP whose extracted contents match, a selected
 subdirectory's nested files, the download filename derived from the
 directory, a rejected traversal-name selection, an empty selection, both
 size limits, and the temporary archive actually being deleted afterward),
-and `LiveServerServiceTests.swift` (a real folder served through the full
+`AuthenticationLifecycleTests.swift` (a real `HTTPServer` with credentials
+set — no credentials rejected with `WWW-Authenticate`, the wrong password
+rejected, the right one accepted, the username ignored, a malformed
+`Authorization` header rejected rather than crashing, `HEAD` and an
+upload `POST` gated the same way as `GET` — including that the upload
+never touches the filesystem when rejected — and that omitting
+credentials entirely still serves every request unchecked), and
+`LiveServerServiceTests.swift` (a real folder served through the full
 scoped-access + `HTTPServer` session lifecycle, including the session's
 `requestLog` going from `nil` to populated to `nil` again across
-start/request/stop).
+start/request/stop, and a real credentials-protected session rejecting an
+unauthenticated request before accepting an authenticated one).

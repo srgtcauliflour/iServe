@@ -16,6 +16,9 @@ actor HTTPConnection {
     private let router: any HTTPRouter
     private let limits: HTTPServerLimits
     private let requestLog: RequestLog?
+    /// `nil` means every request is let through unchecked — see
+    /// `ServerCore/ServerCredentials.swift`.
+    private let credentials: ServerCredentials?
     private let onClose: @Sendable (UUID) -> Void
 
     private var parser: HTTPRequestParser
@@ -65,12 +68,14 @@ actor HTTPConnection {
         router: any HTTPRouter,
         limits: HTTPServerLimits,
         requestLog: RequestLog? = nil,
+        credentials: ServerCredentials? = nil,
         onClose: @escaping @Sendable (UUID) -> Void
     ) {
         self.connection = connection
         self.router = router
         self.limits = limits
         self.requestLog = requestLog
+        self.credentials = credentials
         self.onClose = onClose
         self.parser = HTTPRequestParser(limits: limits.parserLimits)
     }
@@ -158,7 +163,17 @@ actor HTTPConnection {
         receiveMore()
     }
 
+    /// `docs/SECURITY.md`'s mandatory pipeline: authenticate before
+    /// authorizing a capability, so this runs before the method switch —
+    /// GET/HEAD never reach `router.route(_:)`, and POST never reaches
+    /// `beginUpload`/`beginZipDownload`, without the right credentials.
+    /// Nothing about the request has been authorized yet at this point, so
+    /// no body byte has been read either way.
     private func respond(to request: HTTPRequest, leftoverBodyBytes: Data) {
+        if let credentials, !Self.isAuthorized(request, credentials: credentials) {
+            respond(with: .unauthorized(), request: request)
+            return
+        }
         switch request.method {
         case "GET", "HEAD":
             respond(with: router.route(request), suppressBody: request.method == "HEAD", request: request)
@@ -561,6 +576,46 @@ actor HTTPConnection {
         guard let contentType else { return false }
         let base = contentType.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
         return base.caseInsensitiveCompare("application/x-www-form-urlencoded") == .orderedSame
+    }
+
+    // MARK: - Authentication (v0.3, optional HTTP Basic Auth)
+
+    /// `credentials` is password-only (`ServerCore/ServerCredentials.swift`):
+    /// a client's Basic header still names a username, but it's decoded and
+    /// discarded rather than checked.
+    private static func isAuthorized(_ request: HTTPRequest, credentials: ServerCredentials) -> Bool {
+        guard let header = request.headers["Authorization"], header.hasPrefix("Basic ") else {
+            return false
+        }
+        let encoded = header.dropFirst("Basic ".count)
+        guard let data = Data(base64Encoded: String(encoded)),
+              let decoded = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        let suppliedPassword: String
+        if let colonIndex = decoded.firstIndex(of: ":") {
+            suppliedPassword = String(decoded[decoded.index(after: colonIndex)...])
+        } else {
+            suppliedPassword = decoded
+        }
+        return constantTimeEquals(suppliedPassword, credentials.password)
+    }
+
+    /// A byte-for-byte comparison that always examines every byte of the
+    /// longer operand, rather than returning as soon as a mismatch is
+    /// found the way an ordinary `==` does — otherwise a sufficiently
+    /// patient remote attacker could recover the password one byte at a
+    /// time from response timing.
+    private static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+        let lhsBytes = Array(lhs.utf8)
+        let rhsBytes = Array(rhs.utf8)
+        var mismatch: UInt8 = lhsBytes.count == rhsBytes.count ? 0 : 1
+        for index in 0..<max(lhsBytes.count, rhsBytes.count) {
+            let left = index < lhsBytes.count ? lhsBytes[index] : 0
+            let right = index < rhsBytes.count ? rhsBytes[index] : 0
+            mismatch |= left ^ right
+        }
+        return mismatch == 0
     }
 
     private static func pathIgnoringQuery(_ target: String) -> String? {

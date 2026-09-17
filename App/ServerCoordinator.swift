@@ -35,6 +35,14 @@ final class ServerCoordinator {
     /// session — only the next `start()` reads it; `ServerDashboard`
     /// disables the toggle while running to avoid that confusion.
     var uploadsEnabled = false
+    /// Off by default, and — unlike `uploadsEnabled` — never persisted:
+    /// per `docs/adr/0002-http-basic-authentication.md`, a plaintext
+    /// passphrase isn't something this app keeps at rest, so both this and
+    /// `password` reset each launch and must be re-entered to re-enable
+    /// protection. Changing either while running has no effect on the
+    /// current session, same as `uploadsEnabled`.
+    var requiresPassword = false
+    var password = ""
     let folders: FolderRootManager
     private let service: any ServerService
     private let ipAddressProvider: @Sendable () -> String?
@@ -144,10 +152,15 @@ final class ServerCoordinator {
             state = .noFolder
             return
         }
+        guard !requiresPassword || !password.isEmpty else {
+            state = .error("Enter a password before starting, or turn off password protection.")
+            return
+        }
         state = .starting
+        let credentials = requiresPassword ? ServerCredentials(password: password) : nil
         Task {
             do {
-                let port = try await service.start(allowUploads: uploadsEnabled)
+                let port = try await service.start(allowUploads: uploadsEnabled, credentials: credentials)
                 let host = ipAddressProvider() ?? "localhost"
                 state = .running(endpoint: "http://\(host):\(port)/")
                 runningPort = port
