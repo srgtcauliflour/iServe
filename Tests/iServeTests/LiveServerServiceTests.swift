@@ -26,7 +26,7 @@ final class LiveServerServiceTests: XCTestCase {
         let service = LiveServerService(folders: folders)
         XCTAssertNil(service.requestLog)
 
-        let port = try await service.start(allowUploads: false, credentials: nil)
+        let port = try await service.start(profile: .fileSharing, credentials: nil)
         XCTAssertEqual(access.events, ["start"])
         XCTAssertNotNil(service.requestLog)
 
@@ -51,7 +51,7 @@ final class LiveServerServiceTests: XCTestCase {
         let folders = FolderRootManager(access: StubFolderAccess(), store: MemoryBookmarkStore())
         let service = LiveServerService(folders: folders)
         do {
-            _ = try await service.start(allowUploads: false, credentials: nil)
+            _ = try await service.start(profile: .fileSharing, credentials: nil)
             XCTFail("expected start() to throw with no folder selected")
         } catch {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .noFolderSelected)
@@ -67,7 +67,7 @@ final class LiveServerServiceTests: XCTestCase {
         folders.select(root)
 
         let service = LiveServerService(folders: folders)
-        let port = try await service.start(allowUploads: false, credentials: ServerCredentials(password: "letmein"))
+        let port = try await service.start(profile: .fileSharing, credentials: ServerCredentials(password: "letmein"))
 
         let (_, unauthorizedResponse) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
         XCTAssertEqual((unauthorizedResponse as? HTTPURLResponse)?.statusCode, 401)
@@ -78,6 +78,23 @@ final class LiveServerServiceTests: XCTestCase {
         let (data, authorizedResponse) = try await URLSession.shared.data(for: authorizedRequest)
         XCTAssertEqual((authorizedResponse as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "<html>secret</html>")
+
+        service.stop()
+    }
+
+    @MainActor
+    func testWebsiteReadOnlyProfileReturns404ForADirectoryWithNoIndexOverLoopback() async throws {
+        try "not an index".write(to: root.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        folders.select(root)
+
+        let service = LiveServerService(folders: folders)
+        let port = try await service.start(profile: .websiteReadOnly, credentials: nil)
+
+        let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 404)
 
         service.stop()
     }
@@ -94,7 +111,7 @@ final class LiveServerServiceTests: XCTestCase {
 
         let service = LiveServerService(folders: folders)
         do {
-            _ = try await service.start(allowUploads: false, credentials: nil)
+            _ = try await service.start(profile: .fileSharing, credentials: nil)
             XCTFail("expected start() to throw when scope cannot be acquired")
         } catch {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .accessDenied)

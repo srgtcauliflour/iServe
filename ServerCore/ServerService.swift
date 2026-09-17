@@ -12,15 +12,15 @@ protocol ServerService: AnyObject {
     /// no folder to serve, scoped access could not be acquired, or the
     /// underlying listener failed to start.
     ///
-    /// `allowUploads` (v0.2) is decided by the caller for this session only
-    /// — per `docs/SECURITY.md`, a write capability is never implied just
-    /// by selecting a folder, so a service must not default this to `true`
-    /// on its own.
+    /// `profile` (v0.3) is decided by the caller for this session only — per
+    /// `docs/SECURITY.md`, a write capability is never implied just by
+    /// selecting a folder, so a service must not default this to anything
+    /// other than what the caller passed. See `ServerCore/ServerProfile.swift`.
     ///
     /// `credentials` (v0.3) is `nil` unless the caller has opted into
     /// password protection for this session (`ServerCoordinator.requiresPassword`);
     /// see `ServerCore/ServerCredentials.swift`.
-    func start(allowUploads: Bool, credentials: ServerCredentials?) async throws -> UInt16
+    func start(profile: ServerProfile, credentials: ServerCredentials?) async throws -> UInt16
 
     /// Must synchronously initiate cancellation of every owned network
     /// resource and release any security-scoped access this service acquired
@@ -40,7 +40,7 @@ final class UnconfiguredServerService: ServerService {
 
     var requestLog: RequestLog? { nil }
 
-    func start(allowUploads: Bool, credentials: ServerCredentials?) async throws -> UInt16 {
+    func start(profile: ServerProfile, credentials: ServerCredentials?) async throws -> UInt16 {
         throw ServiceError.unavailable
     }
 

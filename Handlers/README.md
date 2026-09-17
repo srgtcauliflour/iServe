@@ -34,11 +34,19 @@ bodies are handed back as `HTTPResponseBody.file` (a URL + byte length, not
 file contents) — `ServerCore/HTTPConnection.swift` is what actually streams
 them, via `Transfer/FileChunkReader.swift`.
 
-`StaticFileHandler.allowUploads` (v0.2, default `false`) is set by
-`ServerCore/LiveServerService.swift` from `ServerCoordinator.uploadsEnabled`
-— per `docs/SECURITY.md`, a write capability is never implied just by
+`StaticFileHandler.allowUploads` (v0.2, default `false`) and
+`allowDirectoryListing` (v0.3, default `true`) are set by
+`ServerCore/LiveServerService.swift` from `ServerCoordinator.profile`'s
+`allowsUploads`/`allowsDirectoryListing` — see `ServerCore/ServerProfile.swift`.
+Per `docs/SECURITY.md`, a write capability is never implied just by
 selecting a folder to serve, so this handler refuses every upload unless a
-caller opted in explicitly for that session. When `true`,
+caller opted in explicitly for that session. `allowDirectoryListing: false`
+(the `websiteReadOnly` profile) makes a directory with no index file a plain
+`404` instead of a generated listing — Website mode is for serving a site's
+own pages, not for browsing whatever else is in the selected folder; it
+never affects a direct GET of a file whose name/path the client already
+knows, since that was never gated by anything but `SecurePathResolver` in
+the first place. When uploads are `true`,
 `DirectoryListingRenderer` gets an extra plain-HTML upload form (no
 JavaScript) in its listing, and the handler implements `HTTPRouter`'s two
 upload-authorization requirements:
@@ -103,8 +111,9 @@ since this is a read/export operation, not a write.
 
 Covered by `Tests/iServeTests/StaticFileHandlerTests.swift` (router behavior:
 index preference, status mapping, MIME types, the trailing-slash redirect,
-the upload-authorization methods, the ZIP-download-authorization methods,
-and Range routing — no networking),
+`allowDirectoryListing` gating a no-index directory to `404` while still
+serving an index file when disabled, the upload-authorization methods, the
+ZIP-download-authorization methods, and Range routing — no networking),
 `Tests/iServeTests/DirectoryListingRendererTests.swift`
 (sorting, escaping, hidden-entry omission, the upload form's presence/absence
 — no filesystem-authorization concerns, pure rendering), and

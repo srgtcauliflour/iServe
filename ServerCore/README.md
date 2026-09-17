@@ -38,6 +38,19 @@ now uses in place of `UnconfiguredServerService`.
   back for an upload. Default implementations refuse every upload, so
   `NotFoundRouter` and any future router that doesn't override them stay
   upload-incapable for free.
+- `ServerProfile` (v0.3, `ServerCore/ServerProfile.swift`) bundles the
+  capabilities `docs/MASTER-SPEC.md` section 4's four server profiles grant
+  together — `allowsDirectoryListing`/`allowsUploads` — rather than letting
+  a caller pick an arbitrary combination. `ServerCoordinator.profile`
+  defaults to `.fileSharing` (browse + download, no uploads); `.fileDrop`
+  additionally allows uploads; `.websiteReadOnly` additionally turns off
+  the generated directory listing (a `404` instead, so Website mode never
+  exposes browsing whatever else is in the folder); `.fullAccess` exists
+  for a later authorized-write capability (WebDAV) and is deliberately kept
+  out of `ServerProfile.selectable` — the picker `App/ServerDashboard.swift`
+  offers — until that lands, since it's otherwise indistinguishable from
+  `.fileDrop`. `LiveServerService.start(profile:credentials:)` passes the
+  two booleans straight through to `StaticFileHandler`.
 - `HTTPServer` (an actor) owns the `NWListener` lifecycle: `start()` is
   deterministic and repeatable, and `stop()` cancels the listener and awaits
   every live connection's cancellation before returning. A connection beyond
@@ -119,18 +132,22 @@ now uses in place of `UnconfiguredServerService`.
   connection ends.
 
 - `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
-  `start(allowUploads:credentials:)` acquires scoped access to the
+  `start(profile:credentials:)` acquires scoped access to the
   currently selected folder via `FolderRootManager.beginAccess()` — for
   the entire server session, not just validation — builds an
   `HTTPServer` rooted there with a real `StaticFileHandler`/
-  `SecurePathResolver` (passing `allowUploads` straight through to the
-  handler, and `credentials` straight through to the `HTTPServer`) and a
-  fresh `RequestLog`, and starts it. `allowUploads`/`credentials` reflect
-  `ServerCoordinator.uploadsEnabled`/`.requiresPassword`+`.password` at
-  the moment `start()` was called — both off by default, and per
-  `docs/SECURITY.md` never implied just by having a folder selected — so
-  a service must never default either to on/present on its own; see
-  `App/ServerCoordinator.swift`.
+  `SecurePathResolver` (passing `profile.allowsUploads`/
+  `.allowsDirectoryListing` straight through to the handler, and
+  `credentials` straight through to the `HTTPServer`) and a
+  fresh `RequestLog`, and starts it. `profile`/`credentials` reflect
+  `ServerCoordinator.profile`/`.requiresPassword`+`.password` at
+  the moment `start()` was called — `profile` defaults to `.fileSharing`
+  (browse + download, no uploads) and `credentials` is `nil` unless
+  password protection is on, and per `docs/SECURITY.md` neither write
+  access nor a write-capable profile is ever implied just by having a
+  folder selected — so a service must never default `profile` to
+  `.fileDrop`/`.fullAccess` on its own; see `App/ServerCoordinator.swift`
+  and `ServerCore/ServerProfile.swift`.
   `stop()` cancels the listener/connections (`await`ed inside a
   detached `Task`, since the `ServerService` protocol's `stop()` itself must
   stay synchronous) before releasing that same scoped access — never before,
@@ -183,5 +200,9 @@ credentials entirely still serves every request unchecked), and
 `LiveServerServiceTests.swift` (a real folder served through the full
 scoped-access + `HTTPServer` session lifecycle, including the session's
 `requestLog` going from `nil` to populated to `nil` again across
-start/request/stop, and a real credentials-protected session rejecting an
-unauthenticated request before accepting an authenticated one).
+start/request/stop, a real credentials-protected session rejecting an
+unauthenticated request before accepting an authenticated one, and
+`.websiteReadOnly` returning `404` for a real no-index directory over
+loopback). `StaticFileHandlerTests.swift` also covers `allowDirectoryListing`
+directly: a no-index directory `404`s when it's `false`, while an index file
+in the same directory is still served.
