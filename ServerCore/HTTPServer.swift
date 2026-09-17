@@ -32,6 +32,12 @@ struct HTTPServerLimits: Sendable {
     /// so an oversized request is rejected without finishing (or fully
     /// paying for) the compression work.
     var maxZipUncompressedBytes: Int
+    /// Upper bound on one WebDAV `PUT`'s total body size (v0.3,
+    /// `docs/adr/0005-webdav-write-operations.md`) — checked and enforced
+    /// exactly like `maxUploadBytes`, just kept as its own field since a
+    /// `PUT` and a browser upload are authorized by different
+    /// `ServerProfile` capabilities and could reasonably diverge later.
+    var maxWebDAVPutBytes: Int
     var parserLimits: HTTPRequestParser.Limits
 
     static let `default` = HTTPServerLimits(
@@ -48,6 +54,7 @@ struct HTTPServerLimits: Sendable {
         maxZipSelectionBytes: 32 * 1024,
         maxZipEntryCount: 500,
         maxZipUncompressedBytes: 4 * 1024 * 1024 * 1024,
+        maxWebDAVPutBytes: 4 * 1024 * 1024 * 1024,
         parserLimits: .default
     )
 }

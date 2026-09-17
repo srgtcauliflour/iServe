@@ -53,11 +53,20 @@ final class HTTPRouterTests: XCTestCase {
         XCTAssertNil(router.routeWebDAVPropfind(path: "/", depth: .zero))
     }
 
-    func testWebDAVOptionsAdvertisesPropfindAndDAVLevel1() {
+    func testHTTPRouterDefaultImplementationsDoNotSupportWebDAVWrites() {
+        let router = NotFoundRouter()
+        XCTAssertNil(router.routeWebDAVMkcol(path: "/"))
+        XCTAssertNil(router.routeWebDAVDelete(path: "/a.txt"))
+        XCTAssertNil(router.routeWebDAVMove(sourcePath: "/a.txt", destinationHeader: "/b.txt", overwrite: true))
+        XCTAssertNil(router.routeWebDAVCopy(sourcePath: "/a.txt", destinationHeader: "/b.txt", overwrite: true))
+        XCTAssertNil(router.authorizeWebDAVPut(path: "/a.txt"))
+    }
+
+    func testWebDAVOptionsAdvertisesEveryMethodAndDAVLevel1() {
         let response = HTTPResponse.webDAVOptions()
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(response.headers["DAV"], "1")
-        XCTAssertEqual(response.headers["Allow"], "GET, HEAD, POST, OPTIONS, PROPFIND")
+        XCTAssertEqual(response.headers["Allow"], "GET, HEAD, POST, OPTIONS, PROPFIND, MKCOL, PUT, DELETE, MOVE, COPY")
     }
 
     func testWebDAVMultiStatusSetsExpectedHeaders() {
@@ -67,5 +76,18 @@ final class HTTPRouterTests: XCTestCase {
         XCTAssertEqual(response.headers["Content-Type"], "application/xml; charset=utf-8")
         XCTAssertEqual(response.headers["Content-Length"], String(body.count))
         XCTAssertEqual(response.body, .data(body))
+    }
+
+    func testWebDAVWriteStatusHelpersUseTheExpectedCodes() {
+        XCTAssertEqual(HTTPResponse.created().status, 201)
+        XCTAssertEqual(HTTPResponse.noContent().status, 204)
+        XCTAssertEqual(HTTPResponse.conflict().status, 409)
+        XCTAssertEqual(HTTPResponse.methodNotAllowed().status, 405)
+        XCTAssertEqual(HTTPResponse.preconditionFailed().status, 412)
+    }
+
+    func testCreatedAndNoContentHaveEmptyBodies() {
+        XCTAssertEqual(HTTPResponse.created().body, .empty)
+        XCTAssertEqual(HTTPResponse.noContent().body, .empty)
     }
 }

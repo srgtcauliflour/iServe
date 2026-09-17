@@ -45,17 +45,18 @@ now uses in place of `UnconfiguredServerService`.
   alone wouldn't cover.
 - `ServerProfile` (v0.3, `ServerCore/ServerProfile.swift`) bundles the
   capabilities `docs/MASTER-SPEC.md` section 4's four server profiles grant
-  together — `allowsDirectoryListing`/`allowsUploads` — rather than letting
-  a caller pick an arbitrary combination. `ServerCoordinator.profile`
-  defaults to `.fileSharing` (browse + download, no uploads); `.fileDrop`
-  additionally allows uploads; `.websiteReadOnly` additionally turns off
-  the generated directory listing (a `404` instead, so Website mode never
-  exposes browsing whatever else is in the folder); `.fullAccess` exists
-  for a later authorized-write capability (WebDAV) and is deliberately kept
-  out of `ServerProfile.selectable` — the picker `App/ServerDashboard.swift`
-  offers — until that lands, since it's otherwise indistinguishable from
-  `.fileDrop`. `LiveServerService.start(profile:credentials:)` passes the
-  two booleans straight through to `StaticFileHandler`.
+  together — `allowsDirectoryListing`/`allowsUploads`/`allowsWebDAVWrites`
+  — rather than letting a caller pick an arbitrary combination.
+  `ServerCoordinator.profile` defaults to `.fileSharing` (browse + download,
+  no uploads); `.fileDrop` additionally allows uploads; `.websiteReadOnly`
+  additionally turns off the generated directory listing (a `404` instead,
+  so Website mode never exposes browsing whatever else is in the folder);
+  `.fullAccess` additionally authorizes WebDAV
+  `MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY` (v0.3,
+  `docs/adr/0005-webdav-write-operations.md`) — now in
+  `ServerProfile.selectable` alongside the other three, since it finally
+  does something a `.fileDrop` session doesn't. `LiveServerService.start(profile:credentials:)`
+  passes all three booleans straight through to `StaticFileHandler`.
 - `HTTPServer` (an actor) owns the `NWListener` lifecycle: `start()` is
   deterministic and repeatable, and `stop()` cancels the listener and awaits
   every live connection's cancellation before returning. A connection beyond
@@ -63,9 +64,9 @@ now uses in place of `UnconfiguredServerService`.
   than queued.
 - `HTTPConnection` (an actor) owns exactly one accepted `NWConnection`: it
   reads bounded chunks into the parser, dispatches GET/HEAD/POST/OPTIONS/
-  PROPFIND through the router (anything else gets `501 Not Implemented`;
-  oversized request lines/headers get `414`/`431` instead of a generic
-  `400`), writes one
+  PROPFIND/MKCOL/PUT/DELETE/MOVE/COPY through the router (anything else
+  gets `501 Not Implemented`; oversized request lines/headers get
+  `414`/`431` instead of a generic `400`), writes one
   response — streaming a `.file` body one `FileChunkReader` chunk at a time,
   only requesting the next chunk once the previous one's network send has
   completed — and closes. v0.1 does not support keep-alive/pipelining —
@@ -139,8 +140,9 @@ now uses in place of `UnconfiguredServerService`.
 
   **WebDAV read operations (v0.3, `Handlers/WebDAVResponseBuilder.swift`,
   `docs/adr/0004-webdav-read-operations.md`):** `OPTIONS` is pure capability
-  discovery — the same `200`/`Allow: GET, HEAD, POST, OPTIONS, PROPFIND`/
-  `DAV: 1` response for every path, never touching the router. `PROPFIND`'s
+  discovery — the same `200`/`Allow: ...`/`DAV: 1` response (naming every
+  method this server code understands, not just what the current profile
+  authorizes) for every path, never touching the router. `PROPFIND`'s
   own request body is never read (this server doesn't parse WebDAV request
   XML at all — see the ADR), so unlike an upload or ZIP selection it
   responds synchronously from headers alone: the `Depth` header must be
@@ -156,14 +158,38 @@ now uses in place of `UnconfiguredServerService`.
   omits hidden entries from a `Depth: 1` directory's children, same as
   `DirectoryListingRenderer`.
 
+  **WebDAV write operations (v0.3, `docs/adr/0005-webdav-write-operations.md`):**
+  `MKCOL`/`DELETE`/`MOVE`/`COPY` all follow `routeWebDAVPropfind`'s shape —
+  no body is read, `HTTPConnection` just resolves the path (and, for
+  `MOVE`/`COPY`, the `Destination`/`Overwrite` headers) and hands the
+  router's complete response straight back. `PUT` is the one write method
+  with a body, authorized up front exactly like an upload
+  (`router.authorizeWebDAVPut(path:)`, `Content-Length` present and within
+  `HTTPServerLimits.maxWebDAVPutBytes`) before a single byte is read. Unlike
+  an upload, `PUT` is expected to overwrite an existing file — so instead
+  of writing directly to the destination (an upload's approach, safe there
+  only because overwrite was never allowed), `HTTPConnection` streams the
+  body to a hidden temporary sibling file via `Transfer/FileChunkWriter.swift`
+  and only replaces the real destination — `FileManager.replaceItemAt` if
+  it already existed, `moveItem` otherwise, both atomic same-volume
+  operations — once every declared byte has arrived; any failure along the
+  way deletes only the temporary file, leaving a pre-existing destination
+  completely untouched. Every write method requires
+  `StaticFileHandler.allowWebDAVWrites` (only `ServerProfile.fullAccess`
+  sets it) and responds `404` when it's off, the same "hide the capability"
+  convention `allowUploads`/`allowDirectoryListing` already use. `DELETE`,
+  and `MOVE`/`COPY` as either endpoint, refuse (`403`) to touch
+  `resolver.root` itself; `MOVE`/`COPY` also refuse (`409`) moving/copying
+  a directory into its own subtree.
+
 - `LiveServerService` (issue #6, `@MainActor`) is the real `ServerService`:
   `start(profile:credentials:)` acquires scoped access to the
   currently selected folder via `FolderRootManager.beginAccess()` — for
   the entire server session, not just validation — builds an
   `HTTPServer` rooted there with a real `StaticFileHandler`/
   `SecurePathResolver` (passing `profile.allowsUploads`/
-  `.allowsDirectoryListing` straight through to the handler, and
-  `credentials` straight through to the `HTTPServer`) and a
+  `.allowsDirectoryListing`/`.allowsWebDAVWrites` straight through to the
+  handler, and `credentials` straight through to the `HTTPServer`) and a
   fresh `RequestLog`, and starts it. `profile`/`credentials` reflect
   `ServerCoordinator.profile`/`.requiresPassword`+`.password` at
   the moment `start()` was called — `profile` defaults to `.fileSharing`
@@ -227,9 +253,15 @@ loopback — capability discovery, `Depth: 0` on a file and on a directory,
 `Depth: 1` listing immediate children only and omitting hidden entries, a
 missing/`infinity` `Depth` header rejected with `400`, a missing path
 `404`, and `allowDirectoryListing: false` refusing a directory the same
-way the HTML listing already does) and `WebDAVResponseBuilderTests.swift`
+way the HTML listing already does), `WebDAVResponseBuilderTests.swift`
 (pure XML rendering — collection vs. file properties, escaping, one
-`<D:response>` per entry), and
+`<D:response>` per entry), `WebDAVWriteLifecycleTests.swift` (a real
+`MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY` round trip over loopback — creating a
+directory, creating and overwriting a file, a `PUT` over
+`maxWebDAVPutBytes` writing nothing, deleting a file, renaming and copying
+via the `Destination` header including an absolute-URL form,
+`Overwrite: F` refusing an existing destination, and every write method
+refused with `404` when `allowWebDAVWrites` is off), and
 `LiveServerServiceTests.swift` (a real folder served through the full
 scoped-access + `HTTPServer` session lifecycle, including the session's
 `requestLog` going from `nil` to populated to `nil` again across

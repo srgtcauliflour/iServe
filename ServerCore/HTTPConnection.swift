@@ -27,6 +27,7 @@ actor HTTPConnection {
     private var streamingFile: FileChunkReader?
     private var uploadState: UploadState?
     private var zipDownloadState: ZipDownloadState?
+    private var webDAVPutState: WebDAVPutState?
     /// A ZIP built for the *current* response, in the app's own temporary
     /// directory rather than the served root. Set just before responding
     /// with it, deleted in `close()` — the one place every termination
@@ -61,6 +62,19 @@ actor HTTPConnection {
         let directoryPath: String
         let contentLength: Int
         var buffer = Data()
+    }
+
+    /// Everything tracked while streaming a WebDAV `PUT`'s body to its
+    /// temporary sibling file (v0.3, `docs/adr/0005-webdav-write-operations.md`).
+    /// The real destination is never touched until `finishWebDAVPut()`
+    /// replaces it in one atomic step, so a failure at any point here only
+    /// ever costs the temporary file, never a pre-existing destination.
+    private struct WebDAVPutState {
+        let request: HTTPRequest
+        let authorization: WebDAVPutAuthorization
+        let writer: FileChunkWriter
+        let contentLength: Int
+        var bytesConsumed = 0
     }
 
     init(
@@ -104,6 +118,7 @@ actor HTTPConnection {
         streamingFile = nil
         discardIncompleteUpload()
         zipDownloadState = nil
+        discardIncompleteWebDAVPut()
         if let pendingZipCleanupURL {
             try? FileManager.default.removeItem(at: pendingZipCleanupURL)
             self.pendingZipCleanupURL = nil
@@ -142,6 +157,9 @@ actor HTTPConnection {
                 guard !didRespond, !didClose else { return }
             } else if zipDownloadState != nil {
                 processZipDownloadBytes(data)
+                guard !didRespond, !didClose else { return }
+            } else if webDAVPutState != nil {
+                processWebDAVPutBytes(data)
                 guard !didRespond, !didClose else { return }
             } else {
                 do {
@@ -187,6 +205,16 @@ actor HTTPConnection {
             respond(with: .webDAVOptions(), request: request)
         case "PROPFIND":
             respondToPropfind(request)
+        case "MKCOL":
+            respondToWebDAVRoute(request) { router.routeWebDAVMkcol(path: $0) }
+        case "DELETE":
+            respondToWebDAVRoute(request) { router.routeWebDAVDelete(path: $0) }
+        case "MOVE":
+            respondToWebDAVCopyOrMove(request, isMove: true)
+        case "COPY":
+            respondToWebDAVCopyOrMove(request, isMove: false)
+        case "PUT":
+            beginWebDAVPut(for: request, leftoverBodyBytes: leftoverBodyBytes)
         default:
             respond(with: .notImplemented(method: request.method), request: request)
         }
@@ -225,6 +253,139 @@ actor HTTPConnection {
         case "1": return .one
         default: return nil
         }
+    }
+
+    // MARK: - WebDAV (v0.3 write operations)
+
+    /// Shared shape for `MKCOL`/`DELETE`: like `PROPFIND`, neither reads a
+    /// request body, so this responds synchronously from the path alone.
+    /// See `docs/adr/0005-webdav-write-operations.md`.
+    private func respondToWebDAVRoute(_ request: HTTPRequest, _ route: (String) -> HTTPResponse?) {
+        guard let path = Self.pathIgnoringQuery(request.target) else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+        guard let response = route(path) else {
+            respond(with: .notImplemented(method: request.method), request: request)
+            return
+        }
+        respond(with: response, request: request)
+    }
+
+    /// `MOVE`/`COPY` read no body either — the source path plus the
+    /// `Destination`/`Overwrite` headers fully determine the response.
+    private func respondToWebDAVCopyOrMove(_ request: HTTPRequest, isMove: Bool) {
+        guard let path = Self.pathIgnoringQuery(request.target) else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+        // RFC 4918 §10.6: any value other than exactly "F" means overwrite.
+        let overwrite = request.headers["Overwrite"]?.uppercased() != "F"
+        let destination = request.headers["Destination"]
+        let response = isMove
+            ? router.routeWebDAVMove(sourcePath: path, destinationHeader: destination, overwrite: overwrite)
+            : router.routeWebDAVCopy(sourcePath: path, destinationHeader: destination, overwrite: overwrite)
+        guard let response else {
+            respond(with: .notImplemented(method: request.method), request: request)
+            return
+        }
+        respond(with: response, request: request)
+    }
+
+    /// Called once headers are parsed for a `PUT`. Authorizes the whole
+    /// request up front exactly like `beginUpload` — `Content-Length`
+    /// present and within `limits.maxWebDAVPutBytes`, and
+    /// `router.authorizeWebDAVPut` accepts the path — before reading a
+    /// single body byte.
+    private func beginWebDAVPut(for request: HTTPRequest, leftoverBodyBytes: Data) {
+        guard let path = Self.pathIgnoringQuery(request.target) else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+        guard let contentLengthText = request.headers["Content-Length"],
+              let contentLength = Int(contentLengthText), contentLength >= 0 else {
+            respond(with: .lengthRequired(), request: request)
+            return
+        }
+        guard contentLength <= limits.maxWebDAVPutBytes else {
+            respond(with: .payloadTooLarge(), request: request)
+            return
+        }
+        guard let authorization = router.authorizeWebDAVPut(path: path) else {
+            respond(with: .notFound(), request: request)
+            return
+        }
+        guard let writer = FileChunkWriter(url: authorization.temporaryURL, maxBytes: limits.maxWebDAVPutBytes) else {
+            respond(with: .internalServerError(), request: request)
+            return
+        }
+
+        webDAVPutState = WebDAVPutState(
+            request: request, authorization: authorization, writer: writer, contentLength: contentLength
+        )
+        guard !leftoverBodyBytes.isEmpty else { return }
+        processWebDAVPutBytes(leftoverBodyBytes)
+    }
+
+    /// Writes newly received bytes straight to the temporary sibling file,
+    /// bounded to at most this `PUT`'s declared `Content-Length` regardless
+    /// of how much more the client actually sends — the same discipline as
+    /// an upload's body.
+    private func processWebDAVPutBytes(_ data: Data) {
+        guard var state = webDAVPutState else { return }
+        let remainingAllowed = max(0, state.contentLength - state.bytesConsumed)
+        let consuming = Data(data.prefix(remainingAllowed))
+        state.bytesConsumed += consuming.count
+        do {
+            try state.writer.write(consuming)
+        } catch {
+            webDAVPutState = state
+            failWebDAVPut()
+            return
+        }
+        webDAVPutState = state
+        if state.bytesConsumed >= state.contentLength {
+            finishWebDAVPut()
+        }
+    }
+
+    /// Every declared body byte has arrived: close the temporary file and
+    /// replace the real destination with it in one step — `replaceItemAt`
+    /// when it already existed (an atomic overwrite), `moveItem` otherwise
+    /// (an atomic same-volume rename) — so a pre-existing file is never
+    /// left partially overwritten.
+    private func finishWebDAVPut() {
+        guard let state = webDAVPutState else { return }
+        webDAVPutState = nil
+        state.writer.close()
+        do {
+            if state.authorization.alreadyExists {
+                _ = try FileManager.default.replaceItemAt(state.authorization.destinationURL, withItemAt: state.authorization.temporaryURL)
+            } else {
+                try FileManager.default.moveItem(at: state.authorization.temporaryURL, to: state.authorization.destinationURL)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: state.authorization.temporaryURL)
+            respond(with: .internalServerError(), request: state.request)
+            return
+        }
+        respond(with: state.authorization.alreadyExists ? .noContent() : .created(), request: state.request)
+    }
+
+    private func failWebDAVPut() {
+        guard let state = webDAVPutState else { return }
+        discardIncompleteWebDAVPut()
+        respond(with: .badRequest("Upload failed"), request: state.request)
+    }
+
+    /// Closes the writer and deletes the temporary file only — the real
+    /// destination (if any) was never touched, so there's nothing else to
+    /// undo. Safe to call with no `PUT` in flight.
+    private func discardIncompleteWebDAVPut() {
+        guard let state = webDAVPutState else { return }
+        state.writer.close()
+        try? FileManager.default.removeItem(at: state.authorization.temporaryURL)
+        webDAVPutState = nil
     }
 
     private func respond(withParseError error: Error) {

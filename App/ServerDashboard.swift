@@ -223,6 +223,11 @@ struct ServerDashboard: View {
             ? "Keep iServe open while sharing. Anyone who can reach this address can add files to the selected folder."
             : "Keep iServe open while sharing. Serving stops when the app is no longer active."
         ]
+        if coordinator.profile.allowsWebDAVWrites {
+            lines.append(
+                "Full Access also lets a connected WebDAV client overwrite, move, or delete files and folders in the selected folder — including replacing existing files without a prompt."
+            )
+        }
         if coordinator.requiresPassword {
             lines.append(
                 "A password prompt will appear before anyone can connect. iServe has no encryption, so only rely on this on networks you trust — not open/public Wi-Fi."

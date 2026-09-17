@@ -36,7 +36,8 @@ final class LiveServerService: ServerService {
         let router = StaticFileHandler(
             resolver: resolver,
             allowUploads: profile.allowsUploads,
-            allowDirectoryListing: profile.allowsDirectoryListing
+            allowDirectoryListing: profile.allowsDirectoryListing,
+            allowWebDAVWrites: profile.allowsWebDAVWrites
         )
         let server = HTTPServer(router: router, limits: limits, requestLog: log, credentials: credentials)
         do {
