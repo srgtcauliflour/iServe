@@ -734,3 +734,23 @@ so that same folder is reachable from the Files app ("On My iPhone/iPad" >
 iServe) and over USB/Wi-Fi from a Mac — otherwise "your device's files"
 would always start out permanently empty with no way to add anything
 except the web server's own upload feature.
+
+**"Empty folder instead of my device storage" fast follow** (same files, plus
+`FileSystem/FolderAccess.swift`): the app's own Documents directory is real
+on-device storage, but it's genuinely empty on a fresh install — third-party
+iOS apps have no access to "the device's" files at large without a person
+explicitly granting it per folder; there's no automatic, unscoped "home
+directory" to browse the way there is on desktop platforms. Added
+`FileManagerViewModel.chooseLocation(_:)`/`resetToAppStorage()`, reachable
+via a new `locationMenu` in `App/FileManagerScreen.swift`'s toolbar
+("Browse Other Location…"), which opens the exact same system folder
+picker `ServerDashboard`'s "Choose Folder" already uses — On My
+iPhone/iPad, Downloads, iCloud Drive, another app's shared documents, or
+any other folder a person grants. `UserDefaultsFolderBookmarkStore` gained
+a `key` parameter so this remembers its own bookmark
+(`iServe.fileManagerLocationBookmark`) entirely independently of the
+shared folder's own (`iServe.selectedFolderBookmark`); `start()` now tries
+that remembered bookmark first and only falls back to the Documents
+directory if none is saved or it no longer resolves — so the one-time
+picker grant is the only manual step, and every later launch resumes
+automatically.

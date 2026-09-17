@@ -1,16 +1,19 @@
 @preconcurrency import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Native in-app file manager (v0.3): browse this app's own on-device
-/// storage, preview or edit files, rename/move/copy/delete, and zip/unzip —
+/// storage (or, via `locationMenu`, any other folder a person picks),
+/// preview or edit files, rename/move/copy/delete, and zip/unzip —
 /// independent of the remote HTTP directory listing a browser client sees,
 /// of whether the server is running, and (post-v0.3 fix) of whatever
 /// folder is or isn't selected in the File Sharing tab. `model.start()`
-/// always resolves to the app's own Documents directory, which needs no
-/// picker or security-scoped access to reach, so this screen has nothing
-/// to wait on and no "no folder selected" state of its own.
+/// always resolves to *some* root (the app's Documents directory, or a
+/// remembered external location), so this screen has nothing to wait on
+/// and no "no folder selected" state of its own.
 struct FileManagerScreen: View {
     @Bindable var model: FileManagerViewModel
+    @State private var isChoosingLocation = false
 
     var body: some View {
         NavigationStack {
@@ -18,6 +21,11 @@ struct FileManagerScreen: View {
                 if let rootURL = model.rootURL {
                     FileManagerFolderView(model: model, directory: rootURL)
                         .navigationTitle("Files")
+                        .toolbar {
+                            ToolbarItem(placement: .navigationBarLeading) {
+                                locationMenu
+                            }
+                        }
                 } else {
                     ContentUnavailableView(
                         "Files Unavailable",
@@ -29,6 +37,18 @@ struct FileManagerScreen: View {
             .navigationDestination(for: URL.self) { directory in
                 FileManagerFolderView(model: model, directory: directory)
                     .navigationTitle(directory.lastPathComponent)
+            }
+        }
+        .fileImporter(
+            isPresented: $isChoosingLocation,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first { model.chooseLocation(url) }
+            case .failure(let error):
+                model.reportPickerFailure(error)
             }
         }
         .sheet(isPresented: previewPresented) {
@@ -63,6 +83,32 @@ struct FileManagerScreen: View {
         }
         .task { model.start() }
         .onDisappear { model.stop() }
+    }
+
+    /// "Browse Other Location…" opens the system folder picker — the same
+    /// one `ServerDashboard`'s "Choose Folder" uses — for anywhere iOS's
+    /// sandboxing doesn't already grant this app: On My iPhone/iPad,
+    /// Downloads, iCloud Drive, another app's shared documents. There's no
+    /// way to reach any of that without a person picking it at least once;
+    /// this screen just remembers the choice afterward
+    /// (`FileManagerViewModel.chooseLocation(_:)`) so it feels automatic on
+    /// every later launch. The reset action only appears once there's
+    /// somewhere to reset *to* — i.e. only while actually browsing an
+    /// external location rather than the app's own Documents directory.
+    private var locationMenu: some View {
+        Menu {
+            Button("Browse Other Location…", systemImage: "folder.badge.plus") {
+                isChoosingLocation = true
+            }
+            if model.isBrowsingExternalLocation {
+                Button("Use This App's Storage", systemImage: "arrow.uturn.backward") {
+                    model.resetToAppStorage()
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityLabel("Change browse location")
     }
 
     private var previewPresented: Binding<Bool> {

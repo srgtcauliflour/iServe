@@ -48,9 +48,16 @@ protocol FolderBookmarkStore {
 @MainActor
 final class UserDefaultsFolderBookmarkStore: FolderBookmarkStore {
     private let defaults: UserDefaults
-    private let key = "iServe.selectedFolderBookmark"
+    private let key: String
 
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    /// `key` defaults to the primary shared folder's own slot; the file
+    /// manager's "browse another location" feature
+    /// (`App/FileManagerViewModel.swift`) passes its own distinct key so
+    /// the two remembered folders never collide or overwrite each other.
+    init(defaults: UserDefaults = .standard, key: String = "iServe.selectedFolderBookmark") {
+        self.defaults = defaults
+        self.key = key
+    }
 
     var bookmark: Data? {
         get { defaults.data(forKey: key) }

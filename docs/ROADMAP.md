@@ -185,10 +185,17 @@ Deliverables:
   was then decoupled from that second tab entirely: rather than sharing
   `ServerCoordinator.folders`' selected root (unusable until a folder was
   chosen for sharing, which has nothing to do with what a file manager is
-  for), it always opens the app's own sandboxed Documents directory, made
+  for), it defaults to the app's own sandboxed Documents directory, made
   reachable from outside the app via the Files app and Finder/Explorer
   (`UIFileSharingEnabled`/`LSSupportsOpeningDocumentsInPlace` in
-  `project.yml`).
+  `project.yml`). That default is genuinely empty on a fresh install,
+  though, and iOS has no such thing as an automatic, unscoped "home
+  directory" a third-party app can browse — so a "Browse Other Location…"
+  action (the same system folder picker `ServerDashboard` already uses for
+  the shared folder) lets a person point the file manager at On My
+  iPhone/iPad, Downloads, iCloud Drive, or any other folder instead, with
+  its own independent bookmark remembered for next launch so the one-time
+  picker grant is the only manual step.
 
 Exit gate: large transfers resume correctly, archives remain bounded-memory, and WebDAV operations cannot escape authorized roots/capabilities.
 
