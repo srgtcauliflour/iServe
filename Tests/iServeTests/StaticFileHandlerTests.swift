@@ -18,6 +18,10 @@ final class StaticFileHandlerTests: XCTestCase {
         StaticFileHandler(resolver: SecurePathResolver(root: root))
     }
 
+    private func makeWritableHandler() -> StaticFileHandler {
+        StaticFileHandler(resolver: SecurePathResolver(root: root), allowWebDAVWrites: true)
+    }
+
     private func request(_ target: String, method: String = "GET") -> HTTPRequest {
         HTTPRequest(method: method, target: target, httpVersion: "HTTP/1.1", headers: HTTPHeaders())
     }
@@ -290,6 +294,146 @@ final class StaticFileHandlerTests: XCTestCase {
     func testRouteWebDAVPropfindOnAMissingPathReturnsNotFound() {
         let response = makeHandler().routeWebDAVPropfind(path: "/missing.txt", depth: .zero)
         XCTAssertEqual(response?.status, 404)
+    }
+
+    // MARK: - WebDAV (v0.3 write operations)
+
+    func testRouteWebDAVMkcolRefusesWhenWritesAreDisabled() {
+        XCTAssertEqual(makeHandler().routeWebDAVMkcol(path: "/newdir")?.status, 404)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("newdir").path))
+    }
+
+    func testRouteWebDAVMkcolCreatesADirectoryWhenWritesAreEnabled() {
+        let response = makeWritableHandler().routeWebDAVMkcol(path: "/newdir")
+        XCTAssertEqual(response?.status, 201)
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("newdir").path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
+    }
+
+    func testRouteWebDAVMkcolReturnsMethodNotAllowedWhenTargetAlreadyExists() throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("existing"), withIntermediateDirectories: true)
+        let response = makeWritableHandler().routeWebDAVMkcol(path: "/existing")
+        XCTAssertEqual(response?.status, 405)
+    }
+
+    func testRouteWebDAVMkcolReturnsNotFoundWhenParentIsMissing() {
+        let response = makeWritableHandler().routeWebDAVMkcol(path: "/missing/newdir")
+        XCTAssertEqual(response?.status, 404)
+    }
+
+    func testRouteWebDAVDeleteRemovesAFile() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let response = makeWritableHandler().routeWebDAVDelete(path: "/a.txt")
+        XCTAssertEqual(response?.status, 204)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("a.txt").path))
+    }
+
+    func testRouteWebDAVDeleteRemovesADirectoryRecursively() throws {
+        let dir = root.appendingPathComponent("dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "nested".write(to: dir.appendingPathComponent("nested.txt"), atomically: true, encoding: .utf8)
+        let response = makeWritableHandler().routeWebDAVDelete(path: "/dir")
+        XCTAssertEqual(response?.status, 204)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+    }
+
+    func testRouteWebDAVDeleteRefusesToDeleteTheRoot() {
+        let response = makeWritableHandler().routeWebDAVDelete(path: "/")
+        XCTAssertEqual(response?.status, 403)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+    }
+
+    func testRouteWebDAVDeleteReturnsNotFoundForAMissingPath() {
+        XCTAssertEqual(makeWritableHandler().routeWebDAVDelete(path: "/missing.txt")?.status, 404)
+    }
+
+    func testRouteWebDAVDeleteRefusesWhenWritesAreDisabled() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(makeHandler().routeWebDAVDelete(path: "/a.txt")?.status, 404)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("a.txt").path))
+    }
+
+    func testRouteWebDAVMoveRenamesAFile() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let response = makeWritableHandler().routeWebDAVMove(sourcePath: "/a.txt", destinationHeader: "/b.txt", overwrite: true)
+        XCTAssertEqual(response?.status, 201)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("a.txt").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("b.txt").path))
+    }
+
+    func testRouteWebDAVMoveAcceptsAnAbsoluteURLDestination() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let response = makeWritableHandler().routeWebDAVMove(
+            sourcePath: "/a.txt", destinationHeader: "http://192.0.2.1:8080/b.txt", overwrite: true
+        )
+        XCTAssertEqual(response?.status, 201)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("b.txt").path))
+    }
+
+    func testRouteWebDAVMoveReturns204WhenReplacingAnExistingDestination() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "b".write(to: root.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let response = makeWritableHandler().routeWebDAVMove(sourcePath: "/a.txt", destinationHeader: "/b.txt", overwrite: true)
+        XCTAssertEqual(response?.status, 204)
+    }
+
+    func testRouteWebDAVMoveRefusesOverwriteWhenOverwriteIsFalseAndDestinationExists() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "b".write(to: root.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let response = makeWritableHandler().routeWebDAVMove(sourcePath: "/a.txt", destinationHeader: "/b.txt", overwrite: false)
+        XCTAssertEqual(response?.status, 412)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("a.txt").path))
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("b.txt"), encoding: .utf8), "b")
+    }
+
+    func testRouteWebDAVMoveRefusesMovingADirectoryIntoItsOwnSubtree() throws {
+        let dir = root.appendingPathComponent("dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let response = makeWritableHandler().routeWebDAVMove(sourcePath: "/dir", destinationHeader: "/dir/nested", overwrite: true)
+        XCTAssertEqual(response?.status, 409)
+    }
+
+    func testRouteWebDAVMoveRequiresADestinationHeader() {
+        let response = makeWritableHandler().routeWebDAVMove(sourcePath: "/a.txt", destinationHeader: nil, overwrite: true)
+        XCTAssertEqual(response?.status, 400)
+    }
+
+    func testRouteWebDAVCopyDuplicatesAFileLeavingTheSourceInPlace() throws {
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let response = makeWritableHandler().routeWebDAVCopy(sourcePath: "/a.txt", destinationHeader: "/b.txt", overwrite: true)
+        XCTAssertEqual(response?.status, 201)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("a.txt").path))
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("b.txt"), encoding: .utf8), "a")
+    }
+
+    func testAuthorizeWebDAVPutRefusesWhenWritesAreDisabled() {
+        XCTAssertNil(makeHandler().authorizeWebDAVPut(path: "/new.txt"))
+    }
+
+    func testAuthorizeWebDAVPutProvidesATemporarySiblingAndReflectsExistingState() throws {
+        let authorization = try XCTUnwrap(makeWritableHandler().authorizeWebDAVPut(path: "/new.txt"))
+        XCTAssertFalse(authorization.alreadyExists)
+        XCTAssertEqual(authorization.destinationURL.lastPathComponent, "new.txt")
+        XCTAssertNotEqual(authorization.temporaryURL, authorization.destinationURL)
+        XCTAssertEqual(authorization.temporaryURL.deletingLastPathComponent(), authorization.destinationURL.deletingLastPathComponent())
+
+        try "existing".write(to: root.appendingPathComponent("existing.txt"), atomically: true, encoding: .utf8)
+        let existingAuthorization = try XCTUnwrap(makeWritableHandler().authorizeWebDAVPut(path: "/existing.txt"))
+        XCTAssertTrue(existingAuthorization.alreadyExists)
+    }
+
+    func testAuthorizeWebDAVPutRefusesAnExistingDirectoryTarget() throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("dir"), withIntermediateDirectories: true)
+        XCTAssertNil(makeWritableHandler().authorizeWebDAVPut(path: "/dir"))
+    }
+
+    func testAuthorizeWebDAVPutRefusesTheRootItself() {
+        XCTAssertNil(makeWritableHandler().authorizeWebDAVPut(path: "/"))
+    }
+
+    func testAuthorizeWebDAVPutRefusesAMissingParentDirectory() {
+        XCTAssertNil(makeWritableHandler().authorizeWebDAVPut(path: "/missing/new.txt"))
     }
 
     // MARK: - HTTP Range (v0.3)

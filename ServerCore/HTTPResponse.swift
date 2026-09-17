@@ -195,14 +195,59 @@ struct HTTPResponse: Sendable {
     /// `OPTIONS` capability discovery (v0.3, WebDAV) — the same response for
     /// every path, since it never resolves or authorizes anything; a client
     /// uses this only to learn the server understands WebDAV before it
-    /// tries `PROPFIND`.
+    /// tries `PROPFIND`. `Allow` names every method this server code
+    /// understands regardless of whether the current session's profile
+    /// actually authorizes it — same as any other server's `Allow` header
+    /// describing what a resource/protocol supports rather than the
+    /// caller's own permissions; a disallowed attempt still gets refused
+    /// (`404`, per `docs/adr/0005-webdav-write-operations.md`'s "hide the
+    /// capability" convention) when it's actually made.
     static func webDAVOptions() -> HTTPResponse {
         var headers = HTTPHeaders()
-        headers.add(name: "Allow", value: "GET, HEAD, POST, OPTIONS, PROPFIND")
+        headers.add(name: "Allow", value: "GET, HEAD, POST, OPTIONS, PROPFIND, MKCOL, PUT, DELETE, MOVE, COPY")
         headers.add(name: "DAV", value: "1")
         headers.add(name: "Content-Length", value: "0")
         headers.add(name: "Connection", value: "close")
         return HTTPResponse(status: 200, reason: "OK", headers: headers, body: .empty)
+    }
+
+    /// A bare `201 Created` — WebDAV `MKCOL`, or a `PUT`/`COPY`/`MOVE` whose
+    /// destination didn't already exist (v0.3, `docs/adr/0005-webdav-write-operations.md`).
+    static func created() -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Length", value: "0")
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(status: 201, reason: "Created", headers: headers, body: .empty)
+    }
+
+    /// A bare `204 No Content` — WebDAV `DELETE`, or a `PUT`/`COPY`/`MOVE`
+    /// whose destination already existed and was replaced (v0.3).
+    static func noContent() -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Length", value: "0")
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(status: 204, reason: "No Content", headers: headers, body: .empty)
+    }
+
+    /// `409 Conflict` — WebDAV `MKCOL`/`MOVE`/`COPY` refusing an operation
+    /// that has no sound filesystem meaning right now (a missing
+    /// intermediate parent, or moving/copying a directory into its own
+    /// subtree; v0.3).
+    static func conflict() -> HTTPResponse {
+        .plainText(status: 409, reason: "Conflict", message: "Conflict")
+    }
+
+    /// `405 Method Not Allowed` — WebDAV `MKCOL` targeting a path that
+    /// already exists; RFC 4918 §9.3.1 reserves `MKCOL` for an unmapped URL
+    /// (v0.3).
+    static func methodNotAllowed() -> HTTPResponse {
+        .plainText(status: 405, reason: "Method Not Allowed", message: "Method Not Allowed")
+    }
+
+    /// `412 Precondition Failed` — a WebDAV `MOVE`/`COPY` with
+    /// `Overwrite: F` whose destination already exists (v0.3).
+    static func preconditionFailed() -> HTTPResponse {
+        .plainText(status: 412, reason: "Precondition Failed", message: "Precondition Failed")
     }
 
     /// Renders the status line and header block, ending with the blank line that

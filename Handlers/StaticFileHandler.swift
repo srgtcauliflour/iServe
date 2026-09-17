@@ -27,6 +27,12 @@ struct StaticFileHandler: HTTPRouter {
     /// a file whose name the client already knows, nor ZIP downloads — both
     /// stay bounded by what a client can already resolve, exactly as before.
     var allowDirectoryListing: Bool = true
+    /// Off by default. Gates WebDAV `MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY`
+    /// (v0.3, `docs/adr/0005-webdav-write-operations.md`) — only
+    /// `ServerProfile.fullAccess` sets this. Every refusal responds `404`,
+    /// the same "hide the capability" convention `allowUploads`/
+    /// `allowDirectoryListing` already use.
+    var allowWebDAVWrites: Bool = false
 
     func route(_ request: HTTPRequest) -> HTTPResponse {
         guard let path = Self.path(fromTarget: request.target) else { return .badRequest() }
@@ -156,6 +162,163 @@ struct StaticFileHandler: HTTPRouter {
                 displayName: name
             )
         }
+    }
+
+    // MARK: - WebDAV (v0.3 write operations)
+
+    func routeWebDAVMkcol(path: String) -> HTTPResponse? {
+        guard allowWebDAVWrites else { return .notFound() }
+        let resolved: URL
+        do {
+            resolved = try resolver.resolve(requestPath: path)
+        } catch let error as SecurePathResolver.ResolutionError {
+            return Self.response(for: error)
+        } catch {
+            return .internalServerError()
+        }
+        // RFC 4918 §9.3.1: MKCOL only succeeds on an unmapped URL.
+        guard !FileManager.default.fileExists(atPath: resolved.path) else {
+            return .methodNotAllowed()
+        }
+        do {
+            // Never auto-create intermediate collections — RFC 4918
+            // forbids MKCOL from creating more than the one requested
+            // collection; a missing parent already failed resolution above.
+            try FileManager.default.createDirectory(at: resolved, withIntermediateDirectories: false)
+        } catch {
+            return .internalServerError()
+        }
+        return .created()
+    }
+
+    func routeWebDAVDelete(path: String) -> HTTPResponse? {
+        guard allowWebDAVWrites else { return .notFound() }
+        let resolved: URL
+        do {
+            resolved = try resolver.resolve(requestPath: path)
+        } catch let error as SecurePathResolver.ResolutionError {
+            return Self.response(for: error)
+        } catch {
+            return .internalServerError()
+        }
+        // Never delete the served root itself: that's the whole selected
+        // folder disappearing out from under this session's scoped access.
+        guard resolved != resolver.root else { return .forbidden() }
+        guard FileManager.default.fileExists(atPath: resolved.path) else { return .notFound() }
+        do {
+            try FileManager.default.removeItem(at: resolved)
+        } catch {
+            return .internalServerError()
+        }
+        return .noContent()
+    }
+
+    func routeWebDAVMove(sourcePath: String, destinationHeader: String?, overwrite: Bool) -> HTTPResponse? {
+        webDAVCopyOrMove(sourcePath: sourcePath, destinationHeader: destinationHeader, overwrite: overwrite, isMove: true)
+    }
+
+    func routeWebDAVCopy(sourcePath: String, destinationHeader: String?, overwrite: Bool) -> HTTPResponse? {
+        webDAVCopyOrMove(sourcePath: sourcePath, destinationHeader: destinationHeader, overwrite: overwrite, isMove: false)
+    }
+
+    private func webDAVCopyOrMove(sourcePath: String, destinationHeader: String?, overwrite: Bool, isMove: Bool) -> HTTPResponse? {
+        guard allowWebDAVWrites else { return .notFound() }
+        guard let destinationPath = Self.path(fromDestinationHeader: destinationHeader) else {
+            return .badRequest("Destination header is required")
+        }
+
+        let sourceURL: URL
+        do {
+            sourceURL = try resolver.resolve(requestPath: sourcePath)
+        } catch let error as SecurePathResolver.ResolutionError {
+            return Self.response(for: error)
+        } catch {
+            return .internalServerError()
+        }
+        guard sourceURL != resolver.root else { return .forbidden() }
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return .notFound() }
+
+        let destinationURL: URL
+        do {
+            destinationURL = try resolver.resolve(requestPath: destinationPath)
+        } catch let error as SecurePathResolver.ResolutionError {
+            return Self.response(for: error)
+        } catch {
+            return .internalServerError()
+        }
+        guard destinationURL != resolver.root else { return .forbidden() }
+
+        // Never move/copy a directory into its own subtree -- no sound
+        // filesystem meaning (infinite nesting or a broken half-move/copy).
+        var sourceIsDirectory: ObjCBool = false
+        FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &sourceIsDirectory)
+        if sourceIsDirectory.boolValue {
+            let sourcePrefix = sourceURL.path.hasSuffix("/") ? sourceURL.path : sourceURL.path + "/"
+            guard !(destinationURL.path + "/").hasPrefix(sourcePrefix) else { return .conflict() }
+        }
+
+        let destinationExists = FileManager.default.fileExists(atPath: destinationURL.path)
+        guard !destinationExists || overwrite else { return .preconditionFailed() }
+
+        // Same "no implicit intermediate creation" rule as MKCOL: the
+        // destination's own parent must already exist as a directory.
+        var parentIsDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: destinationURL.deletingLastPathComponent().path, isDirectory: &parentIsDirectory),
+              parentIsDirectory.boolValue else {
+            return .conflict()
+        }
+
+        do {
+            if destinationExists {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            if isMove {
+                try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+            } else {
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            }
+        } catch {
+            return .internalServerError()
+        }
+        return destinationExists ? .noContent() : .created()
+    }
+
+    /// Authorizes a WebDAV `PUT` up front, exactly like `authorizeUpload`:
+    /// writes must be enabled, the path must resolve, it must not already
+    /// be an existing *directory* (a file may already exist -- unlike an
+    /// upload, `PUT` is expected to overwrite), and the parent must already
+    /// exist. `temporaryURL` is a hidden sibling of the real destination so
+    /// `HTTPConnection` can stream the body there and only replace the real
+    /// file with one atomic rename/replace once every byte has arrived --
+    /// see `docs/adr/0005-webdav-write-operations.md`.
+    func authorizeWebDAVPut(path: String) -> WebDAVPutAuthorization? {
+        guard allowWebDAVWrites else { return nil }
+        guard let destination = try? resolver.resolve(requestPath: path), destination != resolver.root else {
+            return nil
+        }
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory)
+        guard !exists || !isDirectory.boolValue else { return nil }
+        let parent = destination.deletingLastPathComponent()
+        var parentIsDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &parentIsDirectory), parentIsDirectory.boolValue else {
+            return nil
+        }
+        let temporaryURL = parent.appendingPathComponent(".iserve-put-\(UUID().uuidString).tmp")
+        return WebDAVPutAuthorization(destinationURL: destination, temporaryURL: temporaryURL, alreadyExists: exists)
+    }
+
+    /// Parses the raw `Destination` header (an absolute URL or a bare path)
+    /// into a request path suitable for `SecurePathResolver.resolve(requestPath:)`.
+    /// Uses `URLComponents.percentEncodedPath` specifically, never
+    /// `URL.path` (which silently percent-*decodes*) -- resolving an
+    /// already-decoded string here would resolve a subtly different path
+    /// than the one the client meant, breaking this server's single-decode
+    /// discipline (`docs/SECURITY.md`).
+    private static func path(fromDestinationHeader header: String?) -> String? {
+        guard let header, !header.isEmpty, let components = URLComponents(string: header) else { return nil }
+        let path = components.percentEncodedPath
+        return path.isEmpty ? nil : path
     }
 
     // MARK: - ZIP downloads

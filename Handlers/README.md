@@ -34,10 +34,12 @@ bodies are handed back as `HTTPResponseBody.file` (a URL + byte length, not
 file contents) — `ServerCore/HTTPConnection.swift` is what actually streams
 them, via `Transfer/FileChunkReader.swift`.
 
-`StaticFileHandler.allowUploads` (v0.2, default `false`) and
-`allowDirectoryListing` (v0.3, default `true`) are set by
-`ServerCore/LiveServerService.swift` from `ServerCoordinator.profile`'s
-`allowsUploads`/`allowsDirectoryListing` — see `ServerCore/ServerProfile.swift`.
+`StaticFileHandler.allowUploads` (v0.2, default `false`),
+`allowDirectoryListing` (v0.3, default `true`), and `allowWebDAVWrites`
+(v0.3, default `false`) are set by `ServerCore/LiveServerService.swift`
+from `ServerCoordinator.profile`'s
+`allowsUploads`/`allowsDirectoryListing`/`allowsWebDAVWrites` — see
+`ServerCore/ServerProfile.swift`.
 Per `docs/SECURITY.md`, a write capability is never implied just by
 selecting a folder to serve, so this handler refuses every upload unless a
 caller opted in explicitly for that session. `allowDirectoryListing: false`
@@ -129,12 +131,39 @@ ever called) and hands the router's response straight back; `nil` becomes
 this produces, and the ADR for why request-body parsing and
 `Depth: infinity` are both out of scope.
 
+`StaticFileHandler`'s five WebDAV write requirements (v0.3,
+`docs/adr/0005-webdav-write-operations.md`) — `routeWebDAVMkcol(path:)`,
+`routeWebDAVDelete(path:)`, `routeWebDAVMove(sourcePath:destinationHeader:overwrite:)`,
+`routeWebDAVCopy(sourcePath:destinationHeader:overwrite:)`, and
+`authorizeWebDAVPut(path:)` — all require `allowWebDAVWrites`, refusing
+with `404` when it's off (only `ServerProfile.fullAccess` sets it). The
+first four own a complete response, same shape as `routeWebDAVPropfind`;
+`authorizeWebDAVPut` instead returns a `WebDAVPutAuthorization?` (a
+destination URL, a hidden temporary sibling URL, and whether the
+destination already exists) since `PUT`'s body must stream to disk the
+same way an upload's does — `ServerCore/HTTPConnection.swift` writes to
+the temporary URL via `Transfer/FileChunkWriter.swift` and only replaces
+the real destination in one atomic step once every byte has arrived,
+so an interrupted `PUT` never corrupts a file that was already there
+(unlike `authorizeUploadedFile`, `PUT` is allowed to overwrite — a
+deliberate, documented divergence, see the ADR). `MKCOL` refuses
+(`405`) a path that already exists and never auto-creates intermediate
+directories, matching RFC 4918 §9.3.1 exactly. `DELETE`, and `MOVE`/`COPY`
+as either endpoint, refuse (`403`) to touch `resolver.root` itself;
+`MOVE`/`COPY` also parse the `Destination` header via
+`URLComponents.percentEncodedPath` (never `URL.path`, which would silently
+decode it) and refuse (`409`) moving/copying a directory into its own
+subtree.
+
 Covered by `Tests/iServeTests/StaticFileHandlerTests.swift` (router behavior:
 index preference, status mapping, MIME types, the trailing-slash redirect,
 `allowDirectoryListing` gating a no-index directory to `404` while still
 serving an index file when disabled, the upload-authorization methods, the
 ZIP-download-authorization methods, `routeWebDAVPropfind`'s resolution-error
-mapping, and Range routing — no networking),
+mapping, every WebDAV write route's authorization/status-mapping edge cases
+(disabled writes, an existing `MKCOL` target, deleting root, `MOVE`/`COPY`
+overwrite and subtree checks, `PUT`'s temporary-sibling/already-exists
+authorization), and Range routing — no networking),
 `Tests/iServeTests/DirectoryListingRendererTests.swift`
 (sorting, escaping, hidden-entry omission, the upload form's presence/absence
 — no filesystem-authorization concerns, pure rendering),
@@ -145,11 +174,15 @@ per entry — no filesystem/networking), and
 `Tests/iServeTests/UploadLifecycleTests.swift`/
 `Tests/iServeTests/RangeLifecycleTests.swift`/
 `Tests/iServeTests/ZipDownloadLifecycleTests.swift`/
-`Tests/iServeTests/WebDAVLifecycleTests.swift` (the same handler driven
+`Tests/iServeTests/WebDAVLifecycleTests.swift`/
+`Tests/iServeTests/WebDAVWriteLifecycleTests.swift` (the same handler driven
 by a real `HTTPServer` over loopback, including following a real redirect to
 a real listing, a real multipart upload landing on disk byte-exact, two
 Range requests together reconstructing a file exactly, a real selection
 POST producing a real ZIP whose extracted contents match, including a
 selected subdirectory's nested files, a rejected traversal-name selection,
-the temporary archive actually being deleted afterward, and a real
-`OPTIONS`/`PROPFIND` round trip at both depths).
+the temporary archive actually being deleted afterward, a real
+`OPTIONS`/`PROPFIND` round trip at both depths, and a real
+`MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY` round trip including an overwriting
+`PUT` leaving no temporary file behind and every write method refused when
+disabled).

@@ -446,11 +446,41 @@ they turn out to matter there rather than reopening v0.2.
    `Handlers/WebDAVResponseBuilder.swift` renders the `multistatus` XML
    body. See `ServerCore/README.md`, `Handlers/README.md`.
 
+8. Authorized WebDAV write operations —
+   `docs/adr/0005-webdav-write-operations.md`. `ServerProfile.fullAccess`
+   gained a real, distinct effect: a new `allowsWebDAVWrites` capability
+   (only it sets), now added to `ServerProfile.selectable` alongside the
+   other three profiles. `ServerCore/HTTPConnection.swift` dispatches
+   `MKCOL`/`DELETE`/`MOVE`/`COPY` (no request body — the router builds a
+   complete response from the path alone, same shape as `PROPFIND`) and
+   `PUT` (the one write method with a body, authorized up front like an
+   upload). Unlike a browser upload, `PUT` is expected to overwrite an
+   existing file — accepting that is the whole point of opting into Full
+   Access — so instead of writing straight to the destination,
+   `HTTPConnection` streams the body to a hidden temporary sibling file via
+   `Transfer/FileChunkWriter.swift` and only replaces the real destination
+   in one atomic step (`FileManager.replaceItemAt`/`moveItem`) once every
+   byte has arrived; any failure only ever costs the temporary file, never
+   a pre-existing destination. `ServerCore/HTTPRouter.swift` gained five
+   new requirements (`routeWebDAVMkcol`/`routeWebDAVDelete`/
+   `routeWebDAVMove`/`routeWebDAVCopy`/`authorizeWebDAVPut`), all requiring
+   `Handlers/StaticFileHandler.swift`'s new `allowWebDAVWrites` and
+   refusing with `404` when it's off, same convention as
+   `allowUploads`/`allowDirectoryListing`. `DELETE`, and `MOVE`/`COPY` as
+   either endpoint, refuse (`403`) to touch the served root itself;
+   `MOVE`/`COPY` refuse (`409`) moving/copying a directory into its own
+   subtree, and parse the `Destination` header via
+   `URLComponents.percentEncodedPath` (never `URL.path`, which would
+   silently decode it). `MKCOL` never auto-creates intermediate
+   directories, matching RFC 4918 exactly. `LOCK`/`UNLOCK` are a
+   deliberate, documented non-goal — see the ADR for why. See
+   `ServerCore/README.md`, `Handlers/README.md`.
+
 Not yet started from v0.3: archive formats beyond zip/7z, multi-select
 "search across the whole tree" (current search only filters the current
-directory's listing), authorized WebDAV write operations, optional multiple
-mounted folders, and rate/connection/request limits (see `docs/ROADMAP.md`
-for all of these).
+directory's listing), WebDAV `LOCK`/`UNLOCK` (deliberately out of scope,
+see ADR-0005), optional multiple mounted folders, and rate/connection/request
+limits (see `docs/ROADMAP.md` for all of these).
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

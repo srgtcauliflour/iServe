@@ -62,20 +62,19 @@ Deliverables:
   `ServerCore/README.md`. This is the gate only, not yet the
   capability-based system below.
 - Capability-based server permissions. Shipped: a `ServerProfile` enum
-  (`ServerCore/ServerProfile.swift`) bundles directory-listing and upload
-  capabilities together per profile, chosen once per session (before
-  `Start Server`) rather than left to combine freely. Website/Read Only
-  additionally disables the generated directory listing for a folder with
-  no index (`404` instead), so a "website" session never exposes browsing
-  whatever else is in the selected folder — File Sharing and File Drop
-  differ only in whether uploads are allowed. See
+  (`ServerCore/ServerProfile.swift`) bundles directory-listing, upload and
+  WebDAV-write capabilities together per profile, chosen once per session
+  (before `Start Server`) rather than left to combine freely. Website/Read
+  Only additionally disables the generated directory listing for a folder
+  with no index (`404` instead), so a "website" session never exposes
+  browsing whatever else is in the selected folder. See
   `docs/adr/0003-capability-based-server-profiles.md`.
-- File Sharing, File Drop and Full Access profiles. File Sharing and File
-  Drop shipped as above; Full Access is defined in `ServerProfile` but
-  deliberately kept out of the picker until WebDAV write operations (next)
-  give it something that actually distinguishes it from File Drop.
-- WebDAV read operations, then authorized write operations. Read operations
-  shipped: `OPTIONS` (capability discovery — `DAV: 1`, `Allow` naming every
+- File Sharing, File Drop and Full Access profiles. All three shipped and
+  are selectable: File Sharing (browse + download), File Drop (adds
+  uploads), and Full Access (adds WebDAV `MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY`
+  — `docs/adr/0005-webdav-write-operations.md`).
+- WebDAV read operations, then authorized write operations. Both shipped.
+  Read: `OPTIONS` (capability discovery — `DAV: 1`, `Allow` naming every
   supported method) and `PROPFIND` (`Depth: 0`/`1` only; a missing header or
   `Depth: infinity` is refused with `400`, and the response always describes
   a fixed property set rather than parsing the client's request body — see
@@ -83,10 +82,17 @@ Deliverables:
   documented simplifications rather than full RFC 4918 conformance). Gated
   by the same directory-listing capability as the HTML listing
   (`docs/adr/0003-capability-based-server-profiles.md`) for a directory
-  target; a known file path is never gated, same as a plain GET. Authorized
-  write operations (`MKCOL`, `PUT`/`DELETE`/`MOVE`/`COPY` via WebDAV,
-  `LOCK`/`UNLOCK`) remain the next, separate increment, once
-  `ServerProfile.fullAccess` has something real to do.
+  target; a known file path is never gated, same as a plain GET. Write:
+  `MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY`, gated by
+  `ServerProfile.fullAccess`'s `allowsWebDAVWrites` and refused with `404`
+  when off. `PUT` (unlike a browser upload) is allowed to overwrite an
+  existing file, streaming to a hidden temporary sibling file first and
+  only replacing the real destination in one atomic step once the whole
+  body has arrived, so an interrupted `PUT` can never corrupt a
+  pre-existing file. `DELETE`/`MOVE`/`COPY` refuse to touch the served
+  root itself; `MOVE`/`COPY` refuse moving/copying a directory into its
+  own subtree. `LOCK`/`UNLOCK` are a deliberate, documented non-goal for
+  now — see `docs/adr/0005-webdav-write-operations.md`.
 - Optional multiple mounted folders after secure namespace design.
 - Rate/connection/request limits and advanced logs.
 - Feature-rich in-app sandboxed file manager. Shipped: a native browse

@@ -46,7 +46,11 @@ A task is not complete because code exists. It is complete when implementation, 
 - `Transfer/` — streaming, ranges, ZIP.
 - `Networking/` — interfaces, Bonjour, reachability, QR/public-address presentation.
 - `Security/` — auth, permissions, sessions/tokens, rate limits.
-- `WebDAV/` — optional protocol module.
+- WebDAV (v0.3): no separate module — `docs/adr/0004-webdav-read-operations.md`/
+  `docs/adr/0005-webdav-write-operations.md` extend `ServerCore/HTTPRouter.swift`/
+  `Handlers/StaticFileHandler.swift` directly instead, since it's a thin,
+  per-method extension of the same request pipeline already serving
+  GET/HEAD/POST, not a distinct subsystem worth its own boundary.
 - `PHP/` — optional runtime/bridge module.
 - `Logging/` — request/event/statistics pipeline.
 - `Tests/` — unit/integration/security tests.

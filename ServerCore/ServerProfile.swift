@@ -2,11 +2,13 @@ import Foundation
 
 /// One of the server profiles `docs/MASTER-SPEC.md` section 4 defines. Each
 /// case bundles the capabilities a session grants together, rather than
-/// letting directory browsing and uploads vary independently — the same
-/// "explicit capability, never implied" posture `docs/SECURITY.md` already
-/// applies to uploads on their own now applies to the whole bundle. Threaded
-/// from `ServerCoordinator` down through `ServerService.start(profile:credentials:)`
-/// to `Handlers/StaticFileHandler.swift`'s `allowDirectoryListing`/`allowUploads`.
+/// letting directory browsing, uploads and WebDAV writes vary independently
+/// — the same "explicit capability, never implied" posture `docs/SECURITY.md`
+/// already applies to uploads on their own now applies to the whole bundle.
+/// Threaded from `ServerCoordinator` down through
+/// `ServerService.start(profile:credentials:)` to
+/// `Handlers/StaticFileHandler.swift`'s `allowDirectoryListing`/
+/// `allowUploads`/`allowWebDAVWrites`.
 enum ServerProfile: String, CaseIterable, Sendable, Identifiable, Hashable {
     case websiteReadOnly
     case fileSharing
@@ -15,13 +17,11 @@ enum ServerProfile: String, CaseIterable, Sendable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
-    /// Cases meaningful to offer as a choice today. `.fullAccess` is defined
-    /// now so a later authorized-write capability (WebDAV) doesn't need
-    /// another `ServerService.start` signature change, but it stays out of
-    /// the picker until something actually distinguishes it from
-    /// `.fileDrop` — offering two profiles that behave identically would be
-    /// actively misleading rather than a harmless placeholder.
-    static let selectable: [ServerProfile] = [.websiteReadOnly, .fileSharing, .fileDrop]
+    /// Every case is meaningful to offer as a choice: `.fullAccess`
+    /// (`docs/adr/0005-webdav-write-operations.md`) now authorizes
+    /// `MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY`, finally distinguishing it from
+    /// `.fileDrop` rather than being an inert placeholder.
+    static let selectable: [ServerProfile] = [.websiteReadOnly, .fileSharing, .fileDrop, .fullAccess]
 
     /// Whether a directory with no index file gets a generated
     /// `DirectoryListingRenderer` listing, or a plain `404`. Website mode is
@@ -43,6 +43,17 @@ enum ServerProfile: String, CaseIterable, Sendable, Identifiable, Hashable {
         }
     }
 
+    /// Whether WebDAV `MKCOL`/`PUT`/`DELETE`/`MOVE`/`COPY` are authorized at
+    /// all (`docs/adr/0005-webdav-write-operations.md`). Unlike a browser
+    /// upload, WebDAV `PUT` is allowed to overwrite an existing file —
+    /// enabling this is the explicit, one-time opt-in into that.
+    var allowsWebDAVWrites: Bool {
+        switch self {
+        case .websiteReadOnly, .fileSharing, .fileDrop: false
+        case .fullAccess: true
+        }
+    }
+
     var displayName: String {
         switch self {
         case .websiteReadOnly: "Website / Read Only"
@@ -57,7 +68,7 @@ enum ServerProfile: String, CaseIterable, Sendable, Identifiable, Hashable {
         case .websiteReadOnly: "Serves index pages only. No directory browsing, no uploads."
         case .fileSharing: "Browse and download files. No uploads."
         case .fileDrop: "Browse, download, and upload files. No destructive operations."
-        case .fullAccess: "Reserved for authorized write operations (e.g. WebDAV) once they ship."
+        case .fullAccess: "Full WebDAV access: create, overwrite, move, copy, and delete files and folders."
         }
     }
 }

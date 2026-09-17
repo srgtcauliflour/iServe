@@ -16,9 +16,21 @@ enum WebDAVDepth: Sendable, Equatable {
     case one
 }
 
+/// What `HTTPConnection` needs to stream a WebDAV `PUT`'s body to disk
+/// without ever risking an existing file (`docs/adr/0005-webdav-write-operations.md`):
+/// bytes are written to `temporaryURL` (a hidden sibling of `destinationURL`,
+/// so the final step is an atomic same-volume rename/replace) and only
+/// replace `destinationURL` once every declared body byte has arrived
+/// intact. `alreadyExists` decides the success status (`201`/`204`).
+struct WebDAVPutAuthorization: Sendable {
+    let destinationURL: URL
+    let temporaryURL: URL
+    let alreadyExists: Bool
+}
+
 /// Dispatches a parsed, method-supported request (GET/HEAD/POST/OPTIONS/
-/// PROPFIND; `HTTPConnection` rejects everything else with 501 before a
-/// router ever sees it) to a response.
+/// PROPFIND/MKCOL/PUT/DELETE/MOVE/COPY; `HTTPConnection` rejects everything
+/// else with 501 before a router ever sees it) to a response.
 ///
 /// Issue #5 supplies the real implementation: strip any query string from
 /// `request.target`, resolve the remaining path through `SecurePathResolver`,
@@ -70,6 +82,32 @@ protocol HTTPRouter: Sendable {
     /// `route(_:)`; `nil` means this router doesn't support WebDAV at all,
     /// which `HTTPConnection` maps to `501 Not Implemented`.
     func routeWebDAVPropfind(path: String, depth: WebDAVDepth) -> HTTPResponse?
+
+    /// WebDAV `MKCOL` (v0.3 write support, `docs/adr/0005-webdav-write-operations.md`)
+    /// — builds and owns the complete response itself, same shape as
+    /// `routeWebDAVPropfind`.
+    func routeWebDAVMkcol(path: String) -> HTTPResponse?
+
+    /// WebDAV `DELETE`. Refuses (with whatever status the implementation
+    /// chooses — this server uses `403`) to remove the served root itself.
+    func routeWebDAVDelete(path: String) -> HTTPResponse?
+
+    /// WebDAV `MOVE`. `destinationHeader` is the raw `Destination` header
+    /// value (absolute URL or bare path); `overwrite` reflects the
+    /// `Overwrite` header (`true` unless it was exactly `F`, per RFC 4918).
+    func routeWebDAVMove(sourcePath: String, destinationHeader: String?, overwrite: Bool) -> HTTPResponse?
+
+    /// WebDAV `COPY`. Same parameters as `routeWebDAVMove`.
+    func routeWebDAVCopy(sourcePath: String, destinationHeader: String?, overwrite: Bool) -> HTTPResponse?
+
+    /// Authorizes a WebDAV `PUT` before any body byte is read — same
+    /// "decide everything up front" discipline as `authorizeUpload`, but
+    /// `nil` here collapses every refusal reason (writes disabled, a
+    /// resolver rejection, the target already being a directory, a missing
+    /// parent) into one outcome, exactly like `authorizeUpload`/
+    /// `authorizeUploadedFile` already do for uploads — `HTTPConnection`
+    /// always responds `404` to any of them.
+    func authorizeWebDAVPut(path: String) -> WebDAVPutAuthorization?
 }
 
 extension HTTPRouter {
@@ -78,6 +116,11 @@ extension HTTPRouter {
     func authorizeZipDownload(directoryPath: String) -> Bool { false }
     func resolveZipEntries(directoryPath: String, names: [String]) -> [URL]? { nil }
     func routeWebDAVPropfind(path: String, depth: WebDAVDepth) -> HTTPResponse? { nil }
+    func routeWebDAVMkcol(path: String) -> HTTPResponse? { nil }
+    func routeWebDAVDelete(path: String) -> HTTPResponse? { nil }
+    func routeWebDAVMove(sourcePath: String, destinationHeader: String?, overwrite: Bool) -> HTTPResponse? { nil }
+    func routeWebDAVCopy(sourcePath: String, destinationHeader: String?, overwrite: Bool) -> HTTPResponse? { nil }
+    func authorizeWebDAVPut(path: String) -> WebDAVPutAuthorization? { nil }
 }
 
 /// The v0.1 bootstrap router: no static handler exists yet, so every request
