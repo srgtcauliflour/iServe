@@ -35,7 +35,11 @@ import UniformTypeIdentifiers
 @Observable
 final class FileManagerViewModel {
     private let access: any FolderAccess
-    private let bookmarkStore: any FolderBookmarkStore
+    /// `var`, not `let`: assigning through `bookmarkStore.bookmark = ...`
+    /// is a protocol-requirement setter call on the existential, which
+    /// Swift only allows when the existential itself is mutable — the same
+    /// reason `FolderRootManager.store` is `var` too.
+    private var bookmarkStore: any FolderBookmarkStore
     /// Overridable only for tests, which need an isolated temporary
     /// directory rather than the real app container's Documents folder.
     /// Explicitly `@MainActor`, not a plain `() -> URL`: every member of
