@@ -122,14 +122,20 @@ final class LoginLifecycleTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let (server, port) = try await startServer(root: root)
-        let (session, _) = noRedirectSession()
-
         let attempts = [
             "https://evil.example/phish",
             "//evil.example/phish",
             "/ok\r\nX-Injected: yes",
         ]
         for redirect in attempts {
+            // A fresh session per attempt: reusing one across a successful
+            // login (password "letmein" is correct in every attempt here)
+            // would let its cookie jar carry the just-minted session cookie
+            // into the next iteration's request, which the server would
+            // then treat as "already logged in" and dispatch straight to
+            // the router instead of the login path this test means to
+            // exercise.
+            let (session, _) = noRedirectSession()
             let encoded = redirect.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? redirect
             let (_, response) = try await session.data(for: loginRequest(port: port, password: "letmein", redirect: encoded))
             let http = try XCTUnwrap(response as? HTTPURLResponse, "redirect: \(redirect)")

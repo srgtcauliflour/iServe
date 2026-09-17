@@ -22,7 +22,10 @@ final class MountLifecycleTests: XCTestCase {
         let server = HTTPServer(router: router)
         let port = try await server.start()
 
-        let (primaryData, primaryResponse) = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/"))
+        // "/index.html" by name: the primary's default handler keeps
+        // directory listing on, so "/" itself no longer auto-serves the
+        // index file (v0.3 post-ship fix — see StaticFileHandlerTests).
+        let (primaryData, primaryResponse) = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/index.html"))
         XCTAssertEqual((primaryResponse as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(String(decoding: primaryData, as: UTF8.self), "primary page")
 

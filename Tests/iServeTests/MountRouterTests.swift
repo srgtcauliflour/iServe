@@ -72,11 +72,17 @@ final class MountRouterTests: XCTestCase {
         XCTAssertEqual(file.url, mountARoot.appendingPathComponent("notes.txt"))
     }
 
+    /// "/index.html" by name, not "/" itself: the primary's default handler
+    /// keeps directory listing on, so "/" no longer auto-serves the index
+    /// file (v0.3 post-ship fix — see StaticFileHandlerTests). This test's
+    /// own point — that the primary, not a mount, is what answers a
+    /// top-level request regardless of how many mounts exist — is
+    /// unaffected either way.
     func testRequestForThePrimaryRootAlwaysServesThePrimaryRegardlessOfMountCount() throws {
         try "index".write(to: primaryRoot.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         let router = makeRouter(withMounts: ["MountA": mountARoot, "MountB": mountBRoot])
 
-        let response = router.route(request("/"))
+        let response = router.route(request("/index.html"))
 
         XCTAssertEqual(response.status, 200)
         guard case .file(let file) = response.body else { return XCTFail("expected the primary's index.html") }

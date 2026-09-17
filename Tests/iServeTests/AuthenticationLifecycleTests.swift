@@ -81,7 +81,10 @@ final class AuthenticationLifecycleTests: XCTestCase {
         )
         let port = try await server.start()
 
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!)
+        // "/index.html" by name: the default handler keeps directory
+        // listing on, so "/" itself no longer auto-serves the index file
+        // (v0.3 post-ship fix — see StaticFileHandlerTests).
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/index.html")!)
         request.setValue(basicHeader(password: "letmein"), forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
@@ -198,7 +201,10 @@ final class AuthenticationLifecycleTests: XCTestCase {
         let server = HTTPServer(router: StaticFileHandler(resolver: SecurePathResolver(root: root)))
         let port = try await server.start()
 
-        let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
+        // "/index.html" by name: the default handler keeps directory
+        // listing on, so "/" itself no longer auto-serves the index file
+        // (v0.3 post-ship fix — see StaticFileHandlerTests).
+        let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/index.html")!)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "open")
 

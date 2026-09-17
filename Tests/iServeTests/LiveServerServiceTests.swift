@@ -30,14 +30,19 @@ final class LiveServerServiceTests: XCTestCase {
         XCTAssertEqual(access.events, ["start"])
         XCTAssertNotNil(service.requestLog)
 
-        let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
+        // File Sharing keeps directory listing on, so "/" itself now shows
+        // the generated listing rather than auto-serving index.html (v0.3
+        // post-ship fix — see StaticFileHandlerTests); request the index
+        // file by name instead, which is unaffected by that and still
+        // proves the folder is really being served end to end.
+        let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/index.html")!)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "<html>ok</html>")
 
         let log = try XCTUnwrap(service.requestLog)
         let snapshot = try await waitForSnapshot(log, expectingAtLeast: 1)
         XCTAssertEqual(snapshot.totalRequests, 1)
-        XCTAssertEqual(snapshot.entries.first?.path, "/")
+        XCTAssertEqual(snapshot.entries.first?.path, "/index.html")
         XCTAssertEqual(snapshot.entries.first?.status, 200)
 
         service.stop()
@@ -69,10 +74,22 @@ final class LiveServerServiceTests: XCTestCase {
         let service = LiveServerService(folders: folders)
         let port = try await service.start(profile: .fileSharing, credentials: ServerCredentials(password: "letmein"))
 
-        let (_, unauthorizedResponse) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
+        // A wrong-but-present Authorization header, not an absent one: a
+        // request with no Authorization header at all now gets the v0.3
+        // password-only login page instead of a bare 401 (see
+        // AuthenticationLifecycleTests/LoginLifecycleTests) — this proves
+        // the credential is actually checked, the same way a WebDAV/API
+        // client retrying Basic Auth would see it.
+        var wrongPasswordRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/index.html")!)
+        let wrongCredentials = Data(":wrong".utf8).base64EncodedString()
+        wrongPasswordRequest.setValue("Basic \(wrongCredentials)", forHTTPHeaderField: "Authorization")
+        let (_, unauthorizedResponse) = try await URLSession.shared.data(for: wrongPasswordRequest)
         XCTAssertEqual((unauthorizedResponse as? HTTPURLResponse)?.statusCode, 401)
 
-        var authorizedRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!)
+        // "/index.html" by name, not "/": File Sharing keeps directory
+        // listing on, so "/" itself no longer auto-serves the index file
+        // (v0.3 post-ship fix).
+        var authorizedRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/index.html")!)
         let encodedCredentials = Data(":letmein".utf8).base64EncodedString()
         authorizedRequest.setValue("Basic \(encodedCredentials)", forHTTPHeaderField: "Authorization")
         let (data, authorizedResponse) = try await URLSession.shared.data(for: authorizedRequest)
