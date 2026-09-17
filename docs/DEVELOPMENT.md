@@ -498,11 +498,52 @@ they turn out to matter there rather than reopening v0.2.
    half of this deliverable. See `ServerCore/README.md`,
    `Logging/README.md`.
 
+10. Optional multiple mounted folders —
+    `docs/adr/0007-multiple-mounted-folders.md`. `FolderRootManager` gained
+    `additionalMounts` (each an `AdditionalMount { name, url }`) alongside the
+    existing single primary root, persisted independently via a new
+    `MountBookmarkStore`/`UserDefaultsMountBookmarkStore` (a separate
+    UserDefaults key, its own `[MountBookmark]`, never mixed into the
+    primary's single bookmark) — `addMount(_:)` derives a unique path-segment
+    name from the folder's own last path component, disambiguating a
+    collision with a numeric suffix; `removeMount(named:)` forgets one for
+    good; `restoreMounts()` is the multi-mount equivalent of `restore()`,
+    dropping (without forgetting) any mount whose bookmark no longer
+    resolves or validates rather than blocking every other mount over one
+    bad one. A new `Handlers/MountRouter.swift` dispatches by the request
+    target's first path component between the primary and any number of
+    named mounts, each with its own independent `StaticFileHandler`/
+    `SecurePathResolver`; `/` always means the primary regardless of mount
+    count (no generated mounts-index page — discovery happens in
+    `App/ServerDashboard.swift`'s own UI), and with zero additional mounts
+    every `HTTPRouter` requirement is a provable, unconditional pass-through
+    to the primary (the same `HTTPRequest` forwarded, never reconstructed),
+    proven by dedicated zero-mount tests rather than merely asserted in a
+    comment. `ServerCore/LiveServerService.swift` acquires scoped access for
+    every currently-resolvable mount alongside the primary (skipping,
+    silently, one whose scope can't be acquired right now) and constructs
+    each mount's handler with uploads/WebDAV writes forced off regardless of
+    `ServerProfile` — additional mounts are always read/download-only;
+    `MOVE`/`COPY` refuse (`409`) the moment source and destination resolve
+    to different mounts, primary included. A same-named top-level entry
+    inside the primary is shadowed by a mount of the same name — a
+    documented trade-off, not a security concern. Caught during self-review,
+    before any code was written: an initial ADR draft contradicted itself
+    (claiming both "the primary always serves at bare root, unchanged" and
+    "a generated index replaces `/` once a second mount exists") — resolved
+    by dropping the generated index entirely, which is also simpler. Also
+    caught during self-review: `FolderRootManager.resolvedMount(from:)`
+    initially used `try?` around a call that legitimately returns `Data?` on
+    success (`nil` meaning "not stale, no refresh needed") — Swift's
+    optional-flattening (SE-0230) would have made that indistinguishable
+    from the call throwing, silently dropping every non-stale mount from
+    `restoreMounts()`; fixed with a real `do`/`catch` instead. See
+    `FileSystem/README.md`, `Handlers/README.md`, `ServerCore/README.md`.
+
 Not yet started from v0.3: archive formats beyond zip/7z, multi-select
 "search across the whole tree" (current search only filters the current
-directory's listing), WebDAV `LOCK`/`UNLOCK` (deliberately out of scope,
-see ADR-0005), and optional multiple mounted folders (see `docs/ROADMAP.md`
-for all of these).
+directory's listing), and WebDAV `LOCK`/`UNLOCK` (deliberately out of
+scope, see ADR-0005) — see `docs/ROADMAP.md`.
 
 Each build-error round on the request-log/dashboard work (issue #6) surfaced
 independently only once the prior one was fixed — a Swift 6 actor-isolation

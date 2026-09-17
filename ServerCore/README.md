@@ -220,6 +220,24 @@ now uses in place of `UnconfiguredServerService`.
   one of these; nothing else should construct an `HTTPServer` for the app's
   own serving session.
 
+  `start(profile:credentials:)` also acquires scoped access for every
+  currently-resolvable additional mount (v0.3, optional multiple mounted
+  folders, `docs/adr/0007-multiple-mounted-folders.md`) via
+  `FolderRootManager.beginAccess(forMountNamed:)` — a mount whose scope
+  can't be acquired right now is silently skipped for this session rather
+  than failing the whole server start over one bad mount. Each resolvable
+  mount gets its own `StaticFileHandler`/`SecurePathResolver`, constructed
+  with uploads and WebDAV writes forced off regardless of `profile` (only
+  `allowDirectoryListing` follows it, same as the primary) — additional
+  mounts are always read/download-only. The primary and every mount handler
+  are wrapped in a `MountRouter` (`Handlers/README.md`) unconditionally,
+  even with zero additional mounts, so every session exercises the same
+  dispatch path the "provable pass-through" guarantee depends on. `stop()`
+  releases every mount's scoped access alongside the primary's, in the same
+  order guarantee (after the listener/connections are cancelled, never
+  before) — and a start failure releases everything already acquired,
+  mounts included, before rethrowing.
+
   **`App/iServeApp.swift` is the only place that should construct a real
   `LiveServerService`.** It was missed entirely for one release cycle — the
   shipped app kept using the `UnconfiguredServerService` bootstrap by

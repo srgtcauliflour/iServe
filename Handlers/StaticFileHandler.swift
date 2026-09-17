@@ -223,7 +223,7 @@ struct StaticFileHandler: HTTPRouter {
 
     private func webDAVCopyOrMove(sourcePath: String, destinationHeader: String?, overwrite: Bool, isMove: Bool) -> HTTPResponse? {
         guard allowWebDAVWrites else { return .notFound() }
-        guard let destinationPath = Self.path(fromDestinationHeader: destinationHeader) else {
+        guard let destinationPath = WebDAVDestinationHeaderParser.path(from: destinationHeader) else {
             return .badRequest("Destination header is required")
         }
 
@@ -306,19 +306,6 @@ struct StaticFileHandler: HTTPRouter {
         }
         let temporaryURL = parent.appendingPathComponent(".iserve-put-\(UUID().uuidString).tmp")
         return WebDAVPutAuthorization(destinationURL: destination, temporaryURL: temporaryURL, alreadyExists: exists)
-    }
-
-    /// Parses the raw `Destination` header (an absolute URL or a bare path)
-    /// into a request path suitable for `SecurePathResolver.resolve(requestPath:)`.
-    /// Uses `URLComponents.percentEncodedPath` specifically, never
-    /// `URL.path` (which silently percent-*decodes*) -- resolving an
-    /// already-decoded string here would resolve a subtly different path
-    /// than the one the client meant, breaking this server's single-decode
-    /// discipline (`docs/SECURITY.md`).
-    private static func path(fromDestinationHeader header: String?) -> String? {
-        guard let header, !header.isEmpty, let components = URLComponents(string: header) else { return nil }
-        let path = components.percentEncodedPath
-        return path.isEmpty ? nil : path
     }
 
     // MARK: - ZIP downloads

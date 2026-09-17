@@ -225,6 +225,133 @@ final class FolderRootManagerTests: XCTestCase {
         XCTAssertEqual(access.events, ["start", "start", "stop", "stop"])
     }
 
+    // MARK: - Additional mounts (v0.3, docs/adr/0007-multiple-mounted-folders.md)
+
+    @MainActor
+    func testAddMountPersistsBookmarkAndAppendsToAdditionalMounts() {
+        let access = MultiMountFolderAccess()
+        let mountStore = MemoryMountBookmarkStore()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: mountStore)
+        let url = URL(fileURLWithPath: "/private/Photos")
+
+        manager.addMount(url)
+
+        XCTAssertEqual(manager.additionalMounts.map(\.name), ["Photos"])
+        XCTAssertEqual(manager.additionalMounts.first?.url, url)
+        XCTAssertEqual(mountStore.mounts.map(\.name), ["Photos"])
+        XCTAssertNil(manager.errorMessage)
+    }
+
+    @MainActor
+    func testAddMountDerivesUniqueNameFromFolderNameAndDisambiguatesCollisions() {
+        let access = MultiMountFolderAccess()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: MemoryMountBookmarkStore())
+
+        manager.addMount(URL(fileURLWithPath: "/private/Photos"))
+        manager.addMount(URL(fileURLWithPath: "/private/other/Photos"))
+        manager.addMount(URL(fileURLWithPath: "/private/third/Photos"))
+
+        XCTAssertEqual(manager.additionalMounts.map(\.name), ["Photos", "Photos-2", "Photos-3"])
+    }
+
+    @MainActor
+    func testAddMountFailureSetsErrorMessageAndDoesNotAppend() {
+        let access = MultiMountFolderAccess()
+        access.validationFails = true
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: MemoryMountBookmarkStore())
+
+        manager.addMount(URL(fileURLWithPath: "/private/Photos"))
+
+        XCTAssertTrue(manager.additionalMounts.isEmpty)
+        XCTAssertNotNil(manager.errorMessage)
+    }
+
+    @MainActor
+    func testRemoveMountDropsFromListAndPersistedStore() {
+        let access = MultiMountFolderAccess()
+        let mountStore = MemoryMountBookmarkStore()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: mountStore)
+        manager.addMount(URL(fileURLWithPath: "/private/Photos"))
+        manager.addMount(URL(fileURLWithPath: "/private/Music"))
+
+        manager.removeMount(named: "Photos")
+
+        XCTAssertEqual(manager.additionalMounts.map(\.name), ["Music"])
+        XCTAssertEqual(mountStore.mounts.map(\.name), ["Music"])
+    }
+
+    @MainActor
+    func testRestoreMountsResolvesAllPersistedBookmarks() {
+        let access = MultiMountFolderAccess()
+        let firstManager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: MemoryMountBookmarkStore())
+        firstManager.addMount(URL(fileURLWithPath: "/private/Photos"))
+        firstManager.addMount(URL(fileURLWithPath: "/private/Music"))
+        let mountStore = MemoryMountBookmarkStore(mounts: firstManager.additionalMounts.map {
+            MountBookmark(name: $0.name, bookmark: $0.url.absoluteString.data(using: .utf8)!)
+        })
+
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: mountStore)
+        manager.restoreMounts()
+
+        XCTAssertEqual(Set(manager.additionalMounts.map(\.name)), Set(["Photos", "Music"]))
+    }
+
+    @MainActor
+    func testRestoreMountsSkipsUnresolvableBookmarkWithoutAffectingOthers() {
+        let access = MultiMountFolderAccess()
+        let goodURL = URL(fileURLWithPath: "/private/Photos")
+        let mountStore = MemoryMountBookmarkStore(mounts: [
+            MountBookmark(name: "Broken", bookmark: Data([0xFF])),
+            MountBookmark(name: "Photos", bookmark: goodURL.absoluteString.data(using: .utf8)!)
+        ])
+        access.unresolvableBookmarks = [Data([0xFF])]
+
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: mountStore)
+        manager.restoreMounts()
+
+        XCTAssertEqual(manager.additionalMounts.map(\.name), ["Photos"])
+        // The unresolvable mount's bookmark stays persisted for a future retry.
+        XCTAssertEqual(mountStore.mounts.map(\.name), ["Broken", "Photos"])
+    }
+
+    @MainActor
+    func testRestoreMountsRefreshesStaleBookmarkForThatMountOnly() {
+        let access = MultiMountFolderAccess()
+        let staleURL = URL(fileURLWithPath: "/private/Photos")
+        access.staleURLs = [staleURL]
+        let mountStore = MemoryMountBookmarkStore(mounts: [
+            MountBookmark(name: "Photos", bookmark: staleURL.absoluteString.data(using: .utf8)!)
+        ])
+
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: mountStore)
+        manager.restoreMounts()
+
+        XCTAssertEqual(manager.additionalMounts.map(\.name), ["Photos"])
+        XCTAssertEqual(access.events.filter { $0.hasPrefix("bookmark:") }, ["bookmark:Photos"])
+    }
+
+    @MainActor
+    func testBeginAccessForMountNamedReturnsURLAndAcquiresScope() {
+        let access = MultiMountFolderAccess()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: MemoryMountBookmarkStore())
+        manager.addMount(URL(fileURLWithPath: "/private/Photos"))
+        access.events = []
+
+        let scoped = manager.beginAccess(forMountNamed: "Photos")
+
+        XCTAssertEqual(scoped, URL(fileURLWithPath: "/private/Photos"))
+        XCTAssertEqual(access.events, ["start:Photos"])
+    }
+
+    @MainActor
+    func testBeginAccessForMountNamedReturnsNilForUnknownName() {
+        let access = MultiMountFolderAccess()
+        let manager = FolderRootManager(access: access, store: MemoryBookmarkStore(), mountStore: MemoryMountBookmarkStore())
+
+        XCTAssertNil(manager.beginAccess(forMountNamed: "DoesNotExist"))
+        XCTAssertTrue(access.events.isEmpty)
+    }
+
     @MainActor
     func testUserDefaultsBookmarkSurvivesStoreRecreationAndForget() {
         let name = "iServe.tests.\(UUID().uuidString)"
@@ -276,5 +403,48 @@ final class StubFolderAccess: FolderAccess {
         events.append("resolve")
         if resolveFails { throw CocoaError(.fileReadNoSuchFile) }
         return (url, stale)
+    }
+}
+
+@MainActor
+final class MemoryMountBookmarkStore: MountBookmarkStore {
+    var mounts: [MountBookmark]
+    init(mounts: [MountBookmark] = []) { self.mounts = mounts }
+}
+
+/// Unlike `StubFolderAccess` (one fixed URL for every call), this stub
+/// round-trips each mount's own URL through its bookmark data (the URL's
+/// `absoluteString`, UTF-8 encoded) so tests can exercise more than one
+/// mount at once and assert on each by name.
+@MainActor
+final class MultiMountFolderAccess: FolderAccess {
+    var grantsScope = true
+    var validationFails = false
+    var bookmarkFails = false
+    var staleURLs: Set<URL> = []
+    var unresolvableBookmarks: Set<Data> = []
+    var events: [String] = []
+
+    func startAccessing(_ url: URL) -> Bool {
+        events.append("start:\(url.lastPathComponent)")
+        return grantsScope
+    }
+    func stopAccessing(_ url: URL) { events.append("stop:\(url.lastPathComponent)") }
+    func validateDirectory(_ url: URL) throws {
+        events.append("validate:\(url.lastPathComponent)")
+        if validationFails { throw FolderAccessError.notDirectory }
+    }
+    func makeBookmark(_ url: URL) throws -> Data {
+        events.append("bookmark:\(url.lastPathComponent)")
+        if bookmarkFails { throw CocoaError(.fileReadNoPermission) }
+        return url.absoluteString.data(using: .utf8)!
+    }
+    func resolveBookmark(_ data: Data) throws -> (url: URL, stale: Bool) {
+        if unresolvableBookmarks.contains(data) { throw CocoaError(.fileReadNoSuchFile) }
+        guard let urlString = String(data: data, encoding: .utf8), let url = URL(string: urlString) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        events.append("resolve:\(url.lastPathComponent)")
+        return (url, staleURLs.contains(url))
     }
 }
