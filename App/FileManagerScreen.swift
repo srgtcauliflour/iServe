@@ -26,6 +26,9 @@ struct FileManagerScreen: View {
                                 locationMenu
                             }
                         }
+                        .safeAreaInset(edge: .top) {
+                            locationBanner(for: rootURL)
+                        }
                 } else {
                     ContentUnavailableView(
                         "Files Unavailable",
@@ -109,6 +112,28 @@ struct FileManagerScreen: View {
             Image(systemName: "ellipsis.circle")
         }
         .accessibilityLabel("Change browse location")
+    }
+
+    /// A persistent, unmissable readout of exactly what `model.rootURL`
+    /// currently is — added specifically so "which folder is the file
+    /// manager actually showing right now" is never a guess from a
+    /// screenshot or a bug report. Always visible at the top of the root
+    /// screen (not nested subfolders), regardless of scroll position,
+    /// via `.safeAreaInset` rather than a plain list row.
+    private func locationBanner(for rootURL: URL) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: model.isBrowsingExternalLocation ? "externaldrive" : "shippingbox")
+            Text(model.isBrowsingExternalLocation ? "Browsing: \(rootURL.path)" : "Browsing: This app's own storage")
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
     }
 
     private var previewPresented: Binding<Bool> {
