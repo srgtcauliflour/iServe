@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/php-embed.yml'
+      - 'PHP/Bridge/**'
 
 # Kept entirely separate from ios.yml on purpose (docs/adr/0009-php-runtime-feasibility.md):
 # cross-compiling PHP's embed SAPI has known-fragile spots even on a plain
@@ -121,6 +122,11 @@ jobs:
     runs-on: macos-14
     continue-on-error: true
     steps:
+      - name: Checkout iServe (for the PHP bridge source under test)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
       - name: Checkout php-src
         uses: actions/checkout@v4
         with:
@@ -137,7 +143,7 @@ jobs:
         working-directory: php-src
         run: ./buildconf --force
 
-      - name: configure (native macOS build, embed SAPI only)
+      - name: configure (native macOS build, embed SAPI + session)
         working-directory: php-src
         run: |
           ./configure \
@@ -146,40 +152,34 @@ jobs:
             --disable-cli \
             --disable-cgi \
             --disable-phpdbg \
-            --enable-embed=static
+            --enable-embed=static \
+            --enable-session=static
 
       - name: make
         working-directory: php-src
         run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
 
-      - name: Write embed SAPI smoke test (C)
+      - name: Compile the iServe PHP bridge + its smoke test against libphp.a
         working-directory: php-src
         run: |
-          cat > embed_smoke_test.c <<'EOF'
-          #include <sapi/embed/php_embed.h>
-
-          int main(int argc, char **argv) {
-              PHP_EMBED_START_BLOCK(argc, argv)
-              zend_eval_string("echo 'hello from embed SAPI';", NULL, "embed_smoke_test");
-              PHP_EMBED_END_BLOCK()
-              return 0;
-          }
-          EOF
-
-      - name: Compile + link smoke test against libphp.a
-        working-directory: php-src
-        run: |
-          clang embed_smoke_test.c -o embed_smoke_test \
+          clang -c "$GITHUB_WORKSPACE/iserve/PHP/Bridge/iserve_php_bridge.c" -o iserve_php_bridge.o \
             -I. -Imain -IZend -ITSRM -Iinclude \
-            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            -I"$GITHUB_WORKSPACE/iserve/PHP/Bridge/include" \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+
+          clang -c "$GITHUB_WORKSPACE/iserve/PHP/Bridge/Tests/iserve_bridge_smoke_test.c" -o iserve_bridge_smoke_test.o \
+            -I"$GITHUB_WORKSPACE/iserve/PHP/Bridge/include" \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+
+          clang iserve_php_bridge.o iserve_bridge_smoke_test.o -o iserve_bridge_smoke_test \
             libs/libphp.a \
             -lresolv -liconv -lm -lsqlite3
 
-      - name: Run smoke test — expect "hello from embed SAPI" in stdout
+      - name: Run the bridge smoke test — request/response mapping, open_basedir, disable_functions
         working-directory: php-src
         run: |
-          ./embed_smoke_test | tee smoke_output.txt
-          grep -q "hello from embed SAPI" smoke_output.txt || (echo "embed SAPI did not produce expected output" && exit 1)
+          ./iserve_bridge_smoke_test "$GITHUB_WORKSPACE/iserve/PHP/Bridge/Tests/fixtures" 2>&1 | tee bridge_smoke_output.txt
+          grep -q "^all checks passed$" bridge_smoke_output.txt || (echo "bridge smoke test failed — see FAIL lines above" && exit 1)
 
   simulator-smoke-test:
     name: "Step 3: embed SAPI smoke test (iOS Simulator target)"

@@ -204,16 +204,34 @@ Goal: serve useful self-contained PHP applications.
 
 Precondition: approve PHP feasibility ADR covering runtime integration, extensions, code-signing/distribution and sandbox implications. **Done** — see `docs/adr/0009-php-runtime-feasibility.md`.
 
-In progress: `.github/workflows/php-embed.yml` (a new, dedicated workflow, kept
+Done: `.github/workflows/php-embed.yml` (a new, dedicated workflow, kept
 independent of `ios.yml` — every job in it runs `continue-on-error: true`)
 cross-compiles PHP 8.4.2's embed SAPI as `libphp.a` for the iOS device and
 Simulator targets, in four incremental, CI-observed steps: device
 cross-compile, a native-macOS embed-SAPI smoke test, a Simulator-target
 smoke test (actually executed in CI via `xcrun simctl spawn`), and a
 device-target link smoke test (build-only — a device binary can't execute
-on a CI runner). Once that's green, next up is the Swift/C bridge
-(`sapi/embed/php_embed.h`'s `php_embed_init`/`zend_eval_string`/
-`php_embed_shutdown`) and request/response mapping.
+on a CI runner). All four green.
+
+In progress: `PHP/Bridge/iserve_php_bridge.c` is a real Swift/C bridge onto
+the embed SAPI — not the stock `php_embed_init`/`php_embed_shutdown`
+convenience macros (those are a one-shot, single-request-per-process design),
+but a hand-built module-startup/per-request/module-shutdown split so one
+process can serve many requests without re-running PHP's own module
+initialization each time. It maps GET/POST/cookies/server variables in,
+captures response status/headers/body out, and narrows `open_basedir` to
+each request's own resolved root — all verified for real in CI via
+`native-smoke-test`'s new bridge integration test
+(`PHP/Bridge/Tests/iserve_bridge_smoke_test.c`), which runs two requests
+back-to-back in one process and checks request/response mapping,
+`open_basedir` enforcement, and `disable_functions` enforcement. `PHPWorker.swift`
+wraps it in a single-worker actor per ADR-0009. Neither is wired into the
+`iServe` app target yet — that needs a CI step to package the cross-compiled
+`libphp.a` together with the php-src headers the bridge includes, and
+`ios.yml` to fetch that artifact before building the app. Once linked in,
+still open: sessions, SQLite/PDO wiring, `index.php` routing, file uploads
+through the bridge, the PHP diagnostics console, and the compatibility/
+security test suite below.
 
 Deliverables:
 - Embedded PHP runtime/bridge.

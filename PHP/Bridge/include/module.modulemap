@@ -1,0 +1,4 @@
+module PHPBridge {
+    header "iserve_php_bridge.h"
+    export *
+}
