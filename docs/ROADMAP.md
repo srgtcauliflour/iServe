@@ -267,6 +267,17 @@ body field), sessions, SQLite/PDO wiring, `index.php` routing, file uploads
 through the bridge, a UI toggle for `phpExecutionEnabled`, the PHP
 diagnostics console, and the compatibility/security test suite below.
 
+**Remote content in a served page, clarified (no code change needed):** a
+plain HTML/CSS/JS page iServe serves has always been able to reference a
+remote RSS feed, API, or icon/asset — `fetch()`/`<img src="https://...">`/
+etc. are requests the *browser rendering the page* makes directly to that
+remote host, entirely outside iServe's own process. This server sends no
+`Content-Security-Policy`, CORS, or other response header that would
+restrict that (checked directly — none exists anywhere in this codebase),
+so it already works today whenever the viewing device has its own internet
+connectivity. **PHP scripts reaching the internet is a different, deferred
+question** — see v0.5 below.
+
 Deliverables:
 - Embedded PHP runtime/bridge.
 - Request mapping for GET/POST/cookies/server state/file uploads. GET
@@ -280,6 +291,36 @@ Deliverables:
 - Compatibility/security test suite.
 
 Exit gate: representative self-contained PHP+SQLite applications execute reliably without compromising iServe's root/permission boundaries.
+
+## v0.5 — PHP Outbound Networking
+Goal: let a PHP script served by iServe pull from a real internet source —
+an RSS feed, a third-party API, a remotely-hosted icon/asset — for sites
+under active local development that aren't fully self-contained.
+
+Deliberately its own version, not folded into v0.4: ADR-0009 explicitly
+scoped outbound networking (`curl`, `allow_url_fopen`/`allow_url_include`)
+out of v0.4 as a first-cut security boundary, naming it as a future
+amendment rather than baseline scope — see that ADR's "Revisit triggers".
+v0.4's own exit gate ("without compromising iServe's root/permission
+boundaries") was written against a PHP runtime that categorically cannot
+originate network traffic; widening that is a distinct, additional
+capability with its own threat model (SSRF against the device's own LAN,
+DNS rebinding, unbounded outbound requests), not a tweak to land alongside
+v0.4's already-large scope.
+
+Precondition: accept `docs/adr/0010-php-outbound-networking.md` — currently
+a stub naming the open questions (curl vs. stream-wrapper-only, a capability
+toggle layered on top of `phpExecutionEnabled` rather than implied by it,
+an SSRF/local-network denylist and DNS-rebinding defense, resource bounds,
+sanitized remote-fetch error behavior) rather than an accepted design.
+
+Deliverables (pending that ADR's actual decisions):
+- Outbound HTTP(S) capability, off by default, gated separately from `phpExecutionEnabled`.
+- SSRF/local-network-exposure defense (host/IP-range denylist, validated at connect time against DNS-rebinding).
+- Resource bounds on outbound requests (timeout, response size, redirect limit, concurrency).
+- Sanitized failure behavior matching ADR-0009's existing "never leak local detail" rule.
+
+Exit gate: a locally-tested site can call a real external API/RSS feed/asset from PHP, with the same "explicit capability, never implied" and "bounded, never unbounded" discipline this project applies everywhere else, verified by its own test suite before this is considered release-ready.
 
 ## v1.0 — Gold Release
 Goal: production-quality user and developer experience.
