@@ -224,14 +224,13 @@ jobs:
           tag="v${version}"
           ipa_path=$(ls build/export/*.ipa | head -n1)
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; uploading/replacing the .ipa asset."
-            gh release upload "$tag" "$ipa_path" --clobber
-          else
-            gh release create "$tag" "$ipa_path" \
-              --target "${{ github.sha }}" \
-              --title "iServe $tag" \
-              --notes "Signed .ipa build for iServe $tag."
+            echo "Release $tag already exists; deleting it (and its tag) so this build replaces it entirely, rather than just swapping the .ipa asset in place."
+            gh release delete "$tag" --yes --cleanup-tag
           fi
+          gh release create "$tag" "$ipa_path" \
+            --target "${{ github.sha }}" \
+            --title "iServe $tag" \
+            --notes "Signed .ipa build for iServe $tag."
 
       - name: Remove temporary keychain
         if: always()
