@@ -120,6 +120,28 @@ int main(int argc, char **argv)
 
     iserve_php_free_result(&result_b);
 
+    // Request C: exercises fixtures/sqlite.php — proves pdo_sqlite/sqlite3
+    // (ADR-0009's extension allowlist) actually work under the embed SAPI,
+    // reusing the same started bridge again. This is v0.4's own exit gate
+    // ("self-contained PHP+SQLite applications execute reliably"), not
+    // exercised by requests A/B at all.
+    char sqlite_script_filename[1024];
+    snprintf(sqlite_script_filename, sizeof(sqlite_script_filename), "%s/sqlite.php", fixtures_dir);
+    iserve_php_request_t request_c = {0};
+    request_c.method = "GET";
+    request_c.uri = "/sqlite.php";
+    request_c.script_filename = sqlite_script_filename;
+    request_c.document_root = fixtures_dir;
+
+    iserve_php_result_t result_c;
+    iserve_php_execute(&request_c, &result_c);
+
+    check(result_c.startup_diagnostic == NULL, "request C: no startup diagnostic");
+    check(body_contains(&result_c, "sqlite3_roundtrip=hello from sqlite3"), "request C: sqlite3 extension writes and reads back");
+    check(body_contains(&result_c, "pdo_sqlite_roundtrip=hello from pdo_sqlite"), "request C: pdo_sqlite extension writes and reads back");
+
+    iserve_php_free_result(&result_c);
+
     iserve_php_bridge_shutdown();
 
     if (g_failures > 0) {

@@ -172,7 +172,7 @@ jobs:
         working-directory: php-src
         run: ./buildconf --force
 
-      - name: configure (native macOS build, embed SAPI + session)
+      - name: configure (native macOS build, embed SAPI + session + sqlite)
         working-directory: php-src
         run: |
           ./configure \
@@ -182,7 +182,10 @@ jobs:
             --disable-cgi \
             --disable-phpdbg \
             --enable-embed=static \
-            --enable-session=static
+            --enable-session=static \
+            --enable-pdo=static \
+            --with-pdo-sqlite=static \
+            --with-sqlite3=static
 
       - name: make
         working-directory: php-src

@@ -287,12 +287,23 @@ static side of the ordering — no server or executor needed) and
 `PHPScriptExecutionLifecycleTests.swift` (a resolved `.php` index actually
 executing, and never doing so when directory listing is on).
 
-Still open: sessions, SQLite/PDO wiring, file uploads *through PHP* (a
-script receiving an uploaded file via `$_FILES` — distinct from the
-POST-body wiring already landed, which hands PHP the raw body but doesn't
-parse multipart uploads for it), a UI toggle for `phpExecutionEnabled`,
-the PHP diagnostics console, and the compatibility/security test suite
-below.
+Done: SQLite/PDO — v0.4's own exit gate names "self-contained PHP+SQLite
+applications" explicitly, and neither extension had actually been
+exercised anywhere before now (only compiled into the allowlist per
+ADR-0009). `native-smoke-test`'s configure step now also enables
+`pdo_sqlite`/`sqlite3` (previously only the device/Simulator cross-compile
+jobs did — the one job that can actually *run* PHP hadn't had them at
+all). `PHP/Bridge/Tests/fixtures/sqlite.php` creates a database file
+within `open_basedir`, writes to it and reads it back through both the
+`SQLite3` class and `PDO`'s `sqlite:` DSN; a third request in
+`iserve_bridge_smoke_test.c` exercises it, reusing the same started
+bridge as requests A/B.
+
+Still open: sessions, file uploads *through PHP* (a script receiving an
+uploaded file via `$_FILES` — distinct from the POST-body wiring already
+landed, which hands PHP the raw body but doesn't parse multipart uploads
+for it), a UI toggle for `phpExecutionEnabled`, the PHP diagnostics
+console, and the compatibility/security test suite below.
 
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a
@@ -311,7 +322,7 @@ Deliverables:
   body done; file uploads *through PHP* (`$_FILES`) still open (see above).
 - Response status/header/body capture. Done.
 - Sessions.
-- SQLite/PDO.
+- SQLite/PDO. Done.
 - Selected extensions (subject to feasibility).
 - `index.php` routing. Done.
 - PHP diagnostics console.
