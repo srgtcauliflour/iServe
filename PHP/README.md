@@ -18,5 +18,15 @@ build/release pipeline, while still proving `PHP/Bridge`/`PHPWorker.swift`
 compile and link against the rest of the real app (SwiftUI, ServerCore,
 Handlers — not just a standalone clang invocation).
 
-Nothing in the app yet constructs a `PHPWorker` or calls it from the HTTP
-request path — see `docs/ROADMAP.md`'s v0.4 section for what's still open.
+`ServerCoordinator.phpExecutionEnabled` (off by default) constructs and
+starts a `PHPWorker`, under `#if canImport(PHPBridge)` so the ordinary
+`iServe` target never references it, and hands it down through
+`ServerService`/`LiveServerService` to `StaticFileHandler`, which now
+actually dispatches a `.php` GET/HEAD request to it
+(`ServerCore/PHPScriptExecutor.swift` declares the executor protocol
+itself with no dependency on this directory, so that dispatch code lives
+in the ordinary `iServe` target too, and is covered by a real test —
+`Tests/iServeTests/PHPScriptExecutionLifecycleTests.swift` — using a fake
+executor, no PHP runtime involved). See `docs/ROADMAP.md`'s v0.4 section
+for what's still open (POST bodies, sessions, SQLite/PDO, `index.php`
+routing, a UI toggle for the capability).

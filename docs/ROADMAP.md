@@ -241,16 +241,37 @@ proves the bridge genuinely compiles and links as part of the full app
 (SwiftUI, ServerCore, Handlers — everything), not just a standalone clang
 invocation.
 
-Still open: actually calling `PHPWorker` from the HTTP request path (right
-now nothing constructs one), sessions, SQLite/PDO wiring, `index.php`
-routing, file uploads through the bridge, the PHP diagnostics console, and
-the compatibility/security test suite below. `iServeWithPHP` builds the
-bridge into the app but doesn't yet exercise it from a real request.
+Done: `.php` requests now actually reach `PHPWorker` through the real HTTP
+pipeline, GET/HEAD only for now. `ServerCore/PHPScriptExecutor.swift`
+declares the `PHPScriptExecutor` protocol (plus `PHPRequest`/`PHPResponse`)
+with no dependency on the PHP bridge itself, so `Handlers/StaticFileHandler.swift`
+can hold an optional executor and stay part of the ordinary `iServe` target.
+`HTTPRouter` gained a `routePHPScript(_:)` requirement (default `nil`,
+mirroring how each WebDAV method already gets its own requirement rather
+than being folded into `route(_:)`); `HTTPConnection` tries it first for
+GET/HEAD, falling back to the ordinary static path when it declines — off,
+no executor, or not a `.php` file. `ServerCoordinator.phpExecutionEnabled`
+(off by default, orthogonal to `profile` per the ADR) constructs and starts
+a `PHPWorker` under `#if canImport(PHPBridge)` and hands it down through
+`ServerService.start`/`LiveServerService`, gated additionally on
+`profile.allowsDirectoryListing` per the ADR's own framing. Verified for
+real by `Tests/iServeTests/PHPScriptExecutionLifecycleTests.swift` — a fake
+`PHPScriptExecutor` driven through a real `HTTPServer` over loopback, no PHP
+runtime involved, so it runs on every `ios.yml` test pass, not just the
+occasional `iServeWithPHP` build check.
+
+Still open: POST bodies (`HTTPRequest` carries none today — v0.1 never
+needed one; wiring `php://input` needs the same kind of streaming state
+machine `HTTPConnection`'s upload/WebDAV-PUT handling already uses, not a
+body field), sessions, SQLite/PDO wiring, `index.php` routing, file uploads
+through the bridge, a UI toggle for `phpExecutionEnabled`, the PHP
+diagnostics console, and the compatibility/security test suite below.
 
 Deliverables:
 - Embedded PHP runtime/bridge.
-- Request mapping for GET/POST/cookies/server state/file uploads.
-- Response status/header/body capture.
+- Request mapping for GET/POST/cookies/server state/file uploads. GET
+  done; POST still open (see above).
+- Response status/header/body capture. Done.
 - Sessions.
 - SQLite/PDO.
 - Selected extensions (subject to feasibility).

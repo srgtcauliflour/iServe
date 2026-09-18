@@ -1,14 +1,9 @@
 import Foundation
 import PHPBridge
 
-/// NOT YET wired into the `iServe` app target — `project.yml` does not add
-/// `PHP/` to any target's sources yet, and `ios.yml` does not vendor the
-/// `libphp.a`/headers this needs. It compiles only once a later CI step
-/// packages `.github/workflows/php-embed.yml`'s cross-compiled `libphp.a`
-/// together with the php-src headers it needs and `ios.yml` fetches that
-/// artifact before invoking xcodebuild (see `docs/ROADMAP.md`'s v0.4
-/// section). Until then, this is real source under active development,
-/// checked against `PHP/Bridge`'s C API, but unbuilt.
+/// Compiles and links only into the CI-only `iServeWithPHP` target (see
+/// `PHP/README.md`) — the ordinary `iServe` target `ios.yml` builds and
+/// ships never includes `PHP/` at all, per ADR-0009's isolation guarantee.
 ///
 /// One request at a time, matching ADR-0009's single PHP-worker-actor
 /// design: `iserve_php_execute` touches PHP's process-global interpreter
@@ -17,7 +12,7 @@ import PHPBridge
 /// enforces that serialization here — callers just `await` this actor's
 /// `execute(_:)` like any other actor method, and the compiler guarantees
 /// no two calls run at once.
-public actor PHPWorker {
+public actor PHPWorker: PHPScriptExecutor {
     public enum WorkerError: Error {
         case alreadyStarted
         case notStarted
@@ -146,46 +141,6 @@ public struct PHPWorkerLimits: Sendable {
     }
 }
 
-public struct PHPRequest: Sendable {
-    public var method: String
-    public var uri: String
-    public var queryString: String?
-    public var body: Data?
-    public var contentType: String?
-    public var remoteAddr: String?
-    public var cookieHeader: String?
-    /// Absolute path to the `.php` file to run.
-    public var scriptFilename: String
-    /// Absolute path this request's `open_basedir` is narrowed to — the
-    /// same resolved root `SecurePathResolver` already computed for this
-    /// session/mount (ADR-0009's filesystem-restrictions section).
-    public var documentRoot: String
-
-    public init(
-        method: String,
-        uri: String,
-        queryString: String? = nil,
-        body: Data? = nil,
-        contentType: String? = nil,
-        remoteAddr: String? = nil,
-        cookieHeader: String? = nil,
-        scriptFilename: String,
-        documentRoot: String
-    ) {
-        self.method = method
-        self.uri = uri
-        self.queryString = queryString
-        self.body = body
-        self.contentType = contentType
-        self.remoteAddr = remoteAddr
-        self.cookieHeader = cookieHeader
-        self.scriptFilename = scriptFilename
-        self.documentRoot = documentRoot
-    }
-}
-
-public struct PHPResponse: Sendable {
-    public var statusCode: Int
-    public var headers: [(name: String, value: String)]
-    public var body: Data
-}
+// PHPRequest/PHPResponse/PHPScriptExecutor live in ServerCore/PHPScriptExecutor.swift
+// — shared by every target, including the ordinary iServe target that
+// never compiles this file at all. See that file's doc comment for why.

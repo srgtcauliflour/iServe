@@ -108,6 +108,19 @@ protocol HTTPRouter: Sendable {
     /// `authorizeUploadedFile` already do for uploads — `HTTPConnection`
     /// always responds `404` to any of them.
     func authorizeWebDAVPut(path: String) -> WebDAVPutAuthorization?
+
+    /// PHP script execution (v0.4, `docs/adr/0009-php-runtime-feasibility.md`).
+    /// `nil` means this request isn't handled as PHP at all — the feature is
+    /// off, no executor is wired up, or the resolved path isn't a `.php`
+    /// file — in which case `HTTPConnection` falls back to `route(_:)`'s
+    /// ordinary static-file handling exactly as if this method didn't
+    /// exist. Unlike every other requirement here, this one is `async`: it
+    /// may run an entire PHP script to completion before returning. The
+    /// default implementation always returns `nil`, so `NotFoundRouter` and
+    /// any router that doesn't override it stay PHP-incapable with no extra
+    /// code — same convention `authorizeUpload`'s doc comment above
+    /// describes for uploads.
+    func routePHPScript(_ request: HTTPRequest) async -> HTTPResponse?
 }
 
 extension HTTPRouter {
@@ -121,6 +134,7 @@ extension HTTPRouter {
     func routeWebDAVMove(sourcePath: String, destinationHeader: String?, overwrite: Bool) -> HTTPResponse? { nil }
     func routeWebDAVCopy(sourcePath: String, destinationHeader: String?, overwrite: Bool) -> HTTPResponse? { nil }
     func authorizeWebDAVPut(path: String) -> WebDAVPutAuthorization? { nil }
+    func routePHPScript(_ request: HTTPRequest) async -> HTTPResponse? { nil }
 }
 
 /// The v0.1 bootstrap router: no static handler exists yet, so every request

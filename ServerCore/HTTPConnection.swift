@@ -231,11 +231,11 @@ actor HTTPConnection {
     /// `Authorization` sees any behavior change at all.
     private func respond(to request: HTTPRequest, leftoverBodyBytes: Data) async {
         guard let credentials else {
-            dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
+            await dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
             return
         }
         if let token = Self.sessionCookie(from: request), await sessionTokens.isValid(token) {
-            dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
+            await dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
             return
         }
         if request.method == "POST", let path = Self.pathIgnoringQuery(request.target), path == LoginPageRenderer.path {
@@ -243,7 +243,7 @@ actor HTTPConnection {
             return
         }
         if Self.isAuthorized(request, credentials: credentials) {
-            dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
+            await dispatch(request, leftoverBodyBytes: leftoverBodyBytes)
             return
         }
         guard (request.method == "GET" || request.method == "HEAD"), request.headers["Authorization"] == nil else {
@@ -258,10 +258,19 @@ actor HTTPConnection {
         )
     }
 
-    private func dispatch(_ request: HTTPRequest, leftoverBodyBytes: Data) {
+    private func dispatch(_ request: HTTPRequest, leftoverBodyBytes: Data) async {
         switch request.method {
         case "GET", "HEAD":
-            respond(with: router.route(request), suppressBody: request.method == "HEAD", request: request)
+            // Tried first, separately from route(_:) itself, same as every
+            // WebDAV method already has its own routeWebDAV* requirement
+            // rather than being folded into route(_:) — see HTTPRouter's
+            // doc comment. `nil` (feature off, no executor, not a .php
+            // path) falls straight through to the ordinary static path.
+            if let phpResponse = await router.routePHPScript(request) {
+                respond(with: phpResponse, suppressBody: request.method == "HEAD", request: request)
+            } else {
+                respond(with: router.route(request), suppressBody: request.method == "HEAD", request: request)
+            }
         case "POST":
             if Self.isFormURLEncoded(request.headers["Content-Type"]) {
                 beginZipDownload(for: request, leftoverBodyBytes: leftoverBodyBytes)

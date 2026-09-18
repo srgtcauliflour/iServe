@@ -26,7 +26,7 @@ final class LiveServerServiceTests: XCTestCase {
         let service = LiveServerService(folders: folders)
         XCTAssertNil(service.requestLog)
 
-        let port = try await service.start(profile: .fileSharing, credentials: nil)
+        let port = try await service.start(profile: .fileSharing, credentials: nil, phpExecutor: nil)
         XCTAssertEqual(access.events, ["start"])
         XCTAssertNotNil(service.requestLog)
 
@@ -56,7 +56,7 @@ final class LiveServerServiceTests: XCTestCase {
         let folders = FolderRootManager(access: StubFolderAccess(), store: MemoryBookmarkStore())
         let service = LiveServerService(folders: folders)
         do {
-            _ = try await service.start(profile: .fileSharing, credentials: nil)
+            _ = try await service.start(profile: .fileSharing, credentials: nil, phpExecutor: nil)
             XCTFail("expected start() to throw with no folder selected")
         } catch {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .noFolderSelected)
@@ -72,7 +72,7 @@ final class LiveServerServiceTests: XCTestCase {
         folders.select(root)
 
         let service = LiveServerService(folders: folders)
-        let port = try await service.start(profile: .fileSharing, credentials: ServerCredentials(password: "letmein"))
+        let port = try await service.start(profile: .fileSharing, credentials: ServerCredentials(password: "letmein"), phpExecutor: nil)
 
         // A wrong-but-present Authorization header, not an absent one: a
         // request with no Authorization header at all now gets the v0.3
@@ -108,7 +108,7 @@ final class LiveServerServiceTests: XCTestCase {
         folders.select(root)
 
         let service = LiveServerService(folders: folders)
-        let port = try await service.start(profile: .websiteReadOnly, credentials: nil)
+        let port = try await service.start(profile: .websiteReadOnly, credentials: nil, phpExecutor: nil)
 
         let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 404)
@@ -128,7 +128,7 @@ final class LiveServerServiceTests: XCTestCase {
 
         let service = LiveServerService(folders: folders)
         do {
-            _ = try await service.start(profile: .fileSharing, credentials: nil)
+            _ = try await service.start(profile: .fileSharing, credentials: nil, phpExecutor: nil)
             XCTFail("expected start() to throw when scope cannot be acquired")
         } catch {
             XCTAssertEqual(error as? LiveServerService.ServiceError, .accessDenied)

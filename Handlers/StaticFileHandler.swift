@@ -42,6 +42,15 @@ struct StaticFileHandler: HTTPRouter {
     /// the same "hide the capability" convention `allowUploads`/
     /// `allowDirectoryListing` already use.
     var allowWebDAVWrites: Bool = false
+    /// Off by default (`docs/adr/0009-php-runtime-feasibility.md`'s
+    /// capability gating: PHP execution is an explicit, session-level
+    /// toggle, orthogonal to `ServerProfile`, never implied just by a
+    /// profile allowing directory listing). `phpExecutor` is `nil` for the
+    /// ordinary `iServe` target, which never links the PHP bridge at all —
+    /// in that build a `.php` file always round-trips as a plain static
+    /// file, exactly like before this existed, regardless of this flag.
+    var allowPHPExecution: Bool = false
+    var phpExecutor: (any PHPScriptExecutor)? = nil
 
     func route(_ request: HTTPRequest) -> HTTPResponse {
         guard let path = Self.path(fromTarget: request.target) else { return .badRequest() }
@@ -66,6 +75,52 @@ struct StaticFileHandler: HTTPRouter {
             return respondToDirectory(path: path, directoryURL: resolved, request: request)
         }
         return fileResponse(for: resolved, request: request)
+    }
+
+    /// `nil` whenever this request shouldn't be handled as PHP at all — the
+    /// capability is off, the path doesn't resolve to an existing `.php`
+    /// file, or resolution itself failed — so the caller falls back to
+    /// `route(_:)`'s ordinary static-file handling, which re-resolves the
+    /// same path and reports any error the normal way. Deliberately
+    /// re-resolves rather than sharing `route(_:)`'s result: this is a
+    /// separate `HTTPRouter` requirement (see that protocol's doc comment)
+    /// called *before* `route(_:)`, not a branch inside it, so the two
+    /// paths don't share call state.
+    func routePHPScript(_ request: HTTPRequest) async -> HTTPResponse? {
+        guard allowPHPExecution, let phpExecutor else { return nil }
+        guard let path = Self.path(fromTarget: request.target) else { return nil }
+        guard let resolved = try? resolver.resolve(requestPath: path) else { return nil }
+        guard resolved.pathExtension.lowercased() == "php" else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return nil
+        }
+
+        // GET/HEAD only for now: HTTPRequest carries no body (v0.1 never
+        // needed one), and a POST body is instead streamed straight to
+        // disk/memory by HTTPConnection's own upload/WebDAV-PUT state
+        // machines rather than ever landing on HTTPRequest — wiring POST
+        // bodies through to php://input needs the same kind of streaming
+        // plumbing those already use, not a body field here. Still open;
+        // see docs/ROADMAP.md's v0.4 section.
+        let phpRequest = PHPRequest(
+            method: request.method,
+            uri: request.target,
+            queryString: Self.queryString(fromTarget: request.target),
+            contentType: request.headers["Content-Type"],
+            cookieHeader: request.headers["Cookie"],
+            scriptFilename: resolved.path,
+            documentRoot: resolver.root.path
+        )
+        do {
+            let response = try await phpExecutor.execute(phpRequest)
+            return Self.httpResponse(fromPHP: response)
+        } catch {
+            // The real failure reason is for on-device diagnostics only
+            // (ADR-0009's "remote error behavior": display_errors is
+            // always off) — never surfaced to the client beyond a generic 500.
+            return .internalServerError()
+        }
     }
 
     /// `path` is guaranteed to end in "/" here: `route(_:)` redirects
@@ -420,6 +475,68 @@ struct StaticFileHandler: HTTPRouter {
         guard !target.isEmpty else { return nil }
         guard let queryIndex = target.firstIndex(of: "?") else { return target }
         return String(target[target.startIndex..<queryIndex])
+    }
+
+    /// The raw text after "?" in `target`, undecoded (PHP's own `$_GET`
+    /// parsing expects raw, url-encoded `QUERY_STRING`, same as any other
+    /// SAPI) — `nil` when there's no "?" at all, "" for a bare trailing "?".
+    private static func queryString(fromTarget target: String) -> String? {
+        guard let queryIndex = target.firstIndex(of: "?") else { return nil }
+        let afterQuestionMark = target.index(after: queryIndex)
+        return afterQuestionMark < target.endIndex ? String(target[afterQuestionMark...]) : ""
+    }
+
+    /// Maps a PHP script's own status/headers/body onto this server's
+    /// response type. Fills in `Content-Type`/`Content-Length` only if the
+    /// script didn't already send its own — mirroring every other response
+    /// factory in `HTTPResponse.swift`, PHP output is always a `Connection:
+    /// close` response, matching this server's one-response-per-connection
+    /// design (see `HTTPConnection`'s own doc comment).
+    private static func httpResponse(fromPHP response: PHPResponse) -> HTTPResponse {
+        var headers = HTTPHeaders()
+        var sawContentType = false
+        var sawContentLength = false
+        for header in response.headers {
+            headers.add(name: header.name, value: header.value)
+            if header.name.caseInsensitiveCompare("Content-Type") == .orderedSame { sawContentType = true }
+            if header.name.caseInsensitiveCompare("Content-Length") == .orderedSame { sawContentLength = true }
+        }
+        if !sawContentType {
+            headers.add(name: "Content-Type", value: "text/html; charset=UTF-8")
+        }
+        if !sawContentLength {
+            headers.add(name: "Content-Length", value: String(response.body.count))
+        }
+        headers.add(name: "Connection", value: "close")
+        return HTTPResponse(
+            status: response.statusCode,
+            reason: reasonPhrase(for: response.statusCode),
+            headers: headers,
+            body: .data(response.body)
+        )
+    }
+
+    private static func reasonPhrase(for status: Int) -> String {
+        switch status {
+        case 200: "OK"
+        case 201: "Created"
+        case 204: "No Content"
+        case 301: "Moved Permanently"
+        case 302: "Found"
+        case 304: "Not Modified"
+        case 400: "Bad Request"
+        case 401: "Unauthorized"
+        case 403: "Forbidden"
+        case 404: "Not Found"
+        case 500: "Internal Server Error"
+        default:
+            switch status {
+            case ..<300: "OK"
+            case ..<400: "Redirect"
+            case ..<500: "Client Error"
+            default: "Server Error"
+            }
+        }
     }
 
     private static func response(for error: SecurePathResolver.ResolutionError) -> HTTPResponse {

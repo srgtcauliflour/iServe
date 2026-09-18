@@ -20,7 +20,15 @@ protocol ServerService: AnyObject {
     /// `credentials` (v0.3) is `nil` unless the caller has opted into
     /// password protection for this session (`ServerCoordinator.requiresPassword`);
     /// see `ServerCore/ServerCredentials.swift`.
-    func start(profile: ServerProfile, credentials: ServerCredentials?) async throws -> UInt16
+    ///
+    /// `phpExecutor` (v0.4) is `nil` unless the caller has both opted into
+    /// PHP execution for this session (`ServerCoordinator.phpExecutionEnabled`)
+    /// *and* the app was built with the PHP bridge linked in at all — the
+    /// ordinary `iServe` target never has one to pass, so `.php` files keep
+    /// serving as plain static files there regardless of the toggle. See
+    /// `ServerCore/PHPScriptExecutor.swift` and
+    /// `docs/adr/0009-php-runtime-feasibility.md`.
+    func start(profile: ServerProfile, credentials: ServerCredentials?, phpExecutor: (any PHPScriptExecutor)?) async throws -> UInt16
 
     /// Must synchronously initiate cancellation of every owned network
     /// resource and release any security-scoped access this service acquired
@@ -40,7 +48,7 @@ final class UnconfiguredServerService: ServerService {
 
     var requestLog: RequestLog? { nil }
 
-    func start(profile: ServerProfile, credentials: ServerCredentials?) async throws -> UInt16 {
+    func start(profile: ServerProfile, credentials: ServerCredentials?, phpExecutor: (any PHPScriptExecutor)?) async throws -> UInt16 {
         throw ServiceError.unavailable
     }
 
