@@ -55,6 +55,62 @@ final class StaticFileHandlerTests: XCTestCase {
         XCTAssertEqual(file.url.lastPathComponent, "index.htm")
     }
 
+    /// v0.4 index resolution order: `index.html`/`index.htm` > `index.php` >
+    /// first `.html` > first `.php`. These four cases exercise the static
+    /// side of that order (no PHP executor wired up here at all, so a
+    /// resolved `.php` file just serves its source as plain text — same
+    /// "hide the capability" fallback a `.php` file already gets when
+    /// reached directly); `PHPScriptExecutionLifecycleTests` covers a
+    /// resolved `.php` index actually *executing* when PHP is enabled.
+    func testFallsBackToIndexPhpWhenNoHtmlIndexExists() throws {
+        try "<?php".write(to: root.appendingPathComponent("index.php"), atomically: true, encoding: .utf8)
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/"))
+        XCTAssertEqual(response.status, 200)
+        guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.url.lastPathComponent, "index.php")
+    }
+
+    func testIndexHtmlWinsOverIndexPhpWhenBothExist() throws {
+        try "html".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        try "<?php".write(to: root.appendingPathComponent("index.php"), atomically: true, encoding: .utf8)
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/"))
+        XCTAssertEqual(response.status, 200)
+        guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.url.lastPathComponent, "index.html")
+    }
+
+    func testFallsBackToFirstHtmlFileWhenNoIndexCandidateExists() throws {
+        try "<html>zzz</html>".write(to: root.appendingPathComponent("zzz.html"), atomically: true, encoding: .utf8)
+        try "<html>about</html>".write(to: root.appendingPathComponent("about.html"), atomically: true, encoding: .utf8)
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/"))
+        XCTAssertEqual(response.status, 200)
+        guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.url.lastPathComponent, "about.html")
+    }
+
+    func testFallsBackToFirstPhpFileWhenNoHtmlFileExistsAtAll() throws {
+        try "<?php".write(to: root.appendingPathComponent("zzz.php"), atomically: true, encoding: .utf8)
+        try "<?php".write(to: root.appendingPathComponent("run.php"), atomically: true, encoding: .utf8)
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/"))
+        XCTAssertEqual(response.status, 200)
+        guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.url.lastPathComponent, "run.php")
+    }
+
+    func testFirstHtmlFileFallbackWinsOverFirstPhpFileFallback() throws {
+        try "<?php".write(to: root.appendingPathComponent("aaa.php"), atomically: true, encoding: .utf8)
+        try "<html>zzz</html>".write(to: root.appendingPathComponent("zzz.html"), atomically: true, encoding: .utf8)
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/"))
+        XCTAssertEqual(response.status, 200)
+        guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.url.lastPathComponent, "zzz.html")
+    }
+
     /// File Sharing (the default profile `makeHandler()` represents), File
     /// Drop, and Full Access all keep `allowDirectoryListing == true` and
     /// must always show the listing, never auto-serve an index page out

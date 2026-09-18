@@ -51,6 +51,70 @@ final class PHPScriptExecutionLifecycleTests: XCTestCase {
         await server.stop()
     }
 
+    /// v0.4 directory-index resolution (`index.html`/`index.htm` >
+    /// `index.php` > first `.html` > first `.php` — see
+    /// `StaticFileHandler`'s own doc comment) actually *executes* a
+    /// resolved `.php` index when PHP execution is on, rather than serving
+    /// its source as text — the static side of that same order (PHP
+    /// disabled, or an `.html` candidate wins) is covered directly against
+    /// `route(_:)` in `StaticFileHandlerTests`, since it needs no server or
+    /// executor at all.
+    func testDirectoryRequestExecutesIndexPHPWhenNoHTMLIndexExists() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<?php".write(to: root.appendingPathComponent("index.php"), atomically: true, encoding: .utf8)
+
+        let executor = FakePHPExecutor(behavior: .success(PHPResponse(
+            statusCode: 200,
+            headers: [],
+            body: Data("directory index executed".utf8)
+        )))
+        let server = HTTPServer(router: StaticFileHandler(
+            resolver: SecurePathResolver(root: root),
+            allowDirectoryListing: false,
+            allowPHPExecution: true,
+            phpExecutor: executor
+        ))
+        let port = try await server.start()
+
+        let (data, response) = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/"))
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "directory index executed")
+
+        let lastRequest = await executor.lastRequest
+        let recorded = try XCTUnwrap(lastRequest)
+        XCTAssertEqual(recorded.scriptFilename, root.appendingPathComponent("index.php").path)
+
+        await server.stop()
+    }
+
+    /// Same directory-index resolution, but with directory listing on
+    /// (every profile except Website mode) -- index auto-serving has
+    /// always been Website-mode-only, and that must hold for a `.php`
+    /// index too: the generated listing wins, the executor is never
+    /// invoked.
+    func testDirectoryIndexPHPNeverExecutesWhenDirectoryListingIsOn() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<?php".write(to: root.appendingPathComponent("index.php"), atomically: true, encoding: .utf8)
+
+        let executor = FakePHPExecutor(behavior: .success(PHPResponse(statusCode: 418, headers: [], body: Data())))
+        let server = HTTPServer(router: StaticFileHandler(
+            resolver: SecurePathResolver(root: root),
+            allowDirectoryListing: true,
+            allowPHPExecution: true,
+            phpExecutor: executor
+        ))
+        let port = try await server.start()
+
+        let (_, response) = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/"))
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let recorded = await executor.lastRequest
+        XCTAssertNil(recorded)
+
+        await server.stop()
+    }
+
     /// ADR-0009's capability gating: a `.php` file must round-trip as an
     /// ordinary static file — never executed, same "hide the capability"
     /// convention `allowUploads`/`allowDirectoryListing` already use —

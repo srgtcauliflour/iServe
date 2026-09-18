@@ -2,7 +2,7 @@ import Foundation
 
 /// The v0.1 static site/file router. Every path it serves comes from
 /// `SecurePathResolver`; it never constructs or opens a filesystem path itself,
-/// including for `index.html`/`index.htm` lookups, which are re-resolved through
+/// including for index-candidate lookups, which are re-resolved through
 /// the same resolver rather than appended and opened directly, so an index file
 /// that happens to be a symlink is still subject to the root-containment check.
 ///
@@ -11,11 +11,20 @@ import Foundation
 /// auto-serving an index page is reserved for `allowDirectoryListing ==
 /// false` (`ServerProfile.websiteReadOnly`), the one mode meant for
 /// presenting a site's own pages rather than browsing a folder; see
-/// `respondToDirectory(path:directoryURL:request:)`. A directory request
-/// whose path doesn't already end in "/" is redirected to the
-/// slash-terminated form first — required so the browser's relative links
-/// (both the listing's own entries and any served page's own relative
-/// asset/href URLs) resolve against the directory rather than its parent.
+/// `respondToDirectory(path:directoryURL:request:)`. That resolution order
+/// (v0.4, `resolvedIndexURL`) is `index.html`/`index.htm` > `index.php` >
+/// the first `.html` file > the first `.php` file — an exact index wins
+/// over a same-extension fallback, and HTML wins over PHP at each tier,
+/// matching what a person locally testing a mixed HTML/PHP site expects. A
+/// resolved `.php` index actually *executes* when PHP execution is on and
+/// wired up (`resolvedPHPScriptURL`, checked before `route(_:)` ever runs);
+/// this method only ever serves one statically, the same "hide the
+/// capability" fallback a `.php` file already gets when reached directly.
+/// A directory request whose path doesn't already end in "/" is redirected
+/// to the slash-terminated form first — required so the browser's relative
+/// links (both the listing's own entries and any served page's own
+/// relative asset/href URLs) resolve against the directory rather than its
+/// parent.
 struct StaticFileHandler: HTTPRouter {
     private static let indexCandidates = ["index.html", "index.htm"]
 
@@ -79,22 +88,91 @@ struct StaticFileHandler: HTTPRouter {
 
     /// Shared resolution logic for both `isPHPScriptRequest`/`routePHPScript`:
     /// `nil` whenever this request shouldn't be handled as PHP at all — the
-    /// capability is off, no executor is wired up, the path doesn't resolve
-    /// to an existing `.php` file, or resolution itself failed. `route(_:)`
-    /// deliberately re-resolves its own path rather than sharing this
-    /// result: these are separate `HTTPRouter` requirements (see that
-    /// protocol's doc comment) called *before* `route(_:)`, not a branch
-    /// inside it, so the paths don't share call state.
+    /// capability is off, no executor is wired up, or resolution failed. A
+    /// request that resolves directly to an existing `.php` file is always
+    /// eligible; a request that resolves to a *directory* is only eligible
+    /// when index resolution (`resolvedIndexURL`) picks a `.php` file for
+    /// it — same Website-mode-only, trailing-slash-only rule
+    /// `respondToDirectory` itself already follows, since index
+    /// auto-serving (v0.4: now including a `.php` candidate) has always been
+    /// scoped to that one mode. `route(_:)` deliberately re-resolves its own
+    /// path rather than sharing this result: these are separate `HTTPRouter`
+    /// requirements (see that protocol's doc comment) called *before*
+    /// `route(_:)`, not a branch inside it, so the paths don't share call
+    /// state.
     private func resolvedPHPScriptURL(for request: HTTPRequest) -> URL? {
         guard allowPHPExecution, phpExecutor != nil else { return nil }
         guard let path = Self.path(fromTarget: request.target) else { return nil }
         guard let resolved = try? resolver.resolve(requestPath: path) else { return nil }
-        guard resolved.pathExtension.lowercased() == "php" else { return nil }
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+        guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory) else { return nil }
+        if isDirectory.boolValue {
+            guard !allowDirectoryListing, path.hasSuffix("/") else { return nil }
+            guard let indexURL = resolvedIndexURL(forDirectoryPath: path, directoryURL: resolved),
+                  indexURL.pathExtension.lowercased() == "php" else {
+                return nil // no index, or an .html one -- route(_:) handles both
+            }
+            return indexURL
+        }
+        guard resolved.pathExtension.lowercased() == "php" else { return nil }
+        return resolved
+    }
+
+    /// Directory-index resolution order (v0.4): an exact `index.html`/
+    /// `index.htm`, then `index.php`, then the alphabetically-first `.html`
+    /// file in the directory, then the alphabetically-first `.php` file —
+    /// what a person locally testing a mixed HTML/PHP site would expect.
+    /// `nil` means no index candidate exists at all. Every candidate is
+    /// re-resolved through `resolver.resolve(requestPath:)` before being
+    /// accepted, even the ones discovered by enumerating `directoryURL`'s
+    /// own contents directly: that enumeration only ever produces a bare
+    /// filename, never a path this method opens itself, so a symlink
+    /// pointing outside the served root is still caught by the resolver's
+    /// containment check, same as the fixed `index.html`/`index.htm`
+    /// candidates already were before this method existed.
+    private func resolvedIndexURL(forDirectoryPath path: String, directoryURL: URL) -> URL? {
+        for candidate in Self.indexCandidates {
+            if let url = existingFile(atRequestPath: path + candidate) {
+                return url
+            }
+        }
+        if let url = existingFile(atRequestPath: path + "index.php") {
+            return url
+        }
+        if let name = Self.firstFilename(in: directoryURL, extension: "html"),
+           let url = existingFile(atRequestPath: path + name) {
+            return url
+        }
+        if let name = Self.firstFilename(in: directoryURL, extension: "php"),
+           let url = existingFile(atRequestPath: path + name) {
+            return url
+        }
+        return nil
+    }
+
+    private func existingFile(atRequestPath requestPath: String) -> URL? {
+        guard let url = try? resolver.resolve(requestPath: requestPath) else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
             return nil
         }
-        return resolved
+        return url
+    }
+
+    /// The alphabetically-first (Finder-style, e.g. "2" before "10")
+    /// filename directly inside `directoryURL` matching `extension`,
+    /// skipping subdirectories and hidden files. A bare filename only —
+    /// the caller re-resolves it through `existingFile(atRequestPath:)`
+    /// before opening anything.
+    private static func firstFilename(in directoryURL: URL, extension ext: String) -> String? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        ) else { return nil }
+        return entries
+            .filter { $0.pathExtension.lowercased() == ext && !((try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false) }
+            .map(\.lastPathComponent)
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .first
     }
 
     /// Checked by `HTTPConnection` before reading a POST body byte — see
@@ -139,20 +217,23 @@ struct StaticFileHandler: HTTPRouter {
     /// presenting a site's own pages rather than browsing a folder. Every
     /// other profile (File Sharing, File Drop, Full Access) always shows
     /// the generated listing here, even when the directory happens to
-    /// contain an `index.html`/`index.htm`; a person browsing those modes
-    /// still reaches that page the ordinary way, by clicking its entry in
-    /// the listing, which resolves it as a plain file through `route(_:)`
+    /// contain an index candidate; a person browsing those modes still
+    /// reaches that page the ordinary way, by clicking its entry in the
+    /// listing, which resolves it as a plain file through `route(_:)`
     /// exactly like any other file.
+    ///
+    /// This only ever serves the resolved index *statically* — reached
+    /// when PHP execution is off, no executor is wired up, or resolution
+    /// picked an `.html` candidate. `resolvedPHPScriptURL` (called first,
+    /// from `isPHPScriptRequest`/`routePHPScript`, before `route(_:)` ever
+    /// runs) is what actually executes a resolved `.php` index instead of
+    /// serving its source as text — see that method's doc comment.
     private func respondToDirectory(path: String, directoryURL: URL, request: HTTPRequest) -> HTTPResponse {
         guard allowDirectoryListing else {
-            for candidate in Self.indexCandidates {
-                guard let indexURL = try? resolver.resolve(requestPath: path + candidate) else { continue }
-                var isDirectory: ObjCBool = false
-                if FileManager.default.fileExists(atPath: indexURL.path, isDirectory: &isDirectory), !isDirectory.boolValue {
-                    return fileResponse(for: indexURL, request: request)
-                }
+            guard let indexURL = resolvedIndexURL(forDirectoryPath: path, directoryURL: directoryURL) else {
+                return .notFound()
             }
-            return .notFound()
+            return fileResponse(for: indexURL, request: request)
         }
         return .html(DirectoryListingRenderer.render(directoryURL: directoryURL, requestPath: path, allowUploads: allowUploads))
     }

@@ -270,12 +270,29 @@ size limit, and a non-`.php` POST still reaching upload handling), no PHP
 runtime involved, so it runs on every `ios.yml` test pass, not just the
 occasional `iServeWithPHP` build check.
 
-Still open: sessions, SQLite/PDO wiring, `index.php` routing, file uploads
-*through PHP* (a script receiving an uploaded file via `$_FILES` — distinct
-from the POST-body wiring just landed, which hands PHP the raw body but
-doesn't parse multipart uploads for it), a UI toggle for
-`phpExecutionEnabled`, the PHP diagnostics console, and the
-compatibility/security test suite below.
+Done: directory-index resolution now covers `.php` too, not just
+`index.html`/`index.htm`. Order (`StaticFileHandler.resolvedIndexURL`,
+Website-mode-only — `allowDirectoryListing == false` — exactly like the
+plain-HTML index-serving it extends): `index.html`/`index.htm` >
+`index.php` > the alphabetically-first `.html` file > the
+alphabetically-first `.php` file. A resolved `.php` index actually
+*executes* when PHP execution is on and an executor is wired up
+(`resolvedPHPScriptURL`, checked before `route(_:)` runs at all); serves
+as plain static text otherwise, the same "hide the capability" fallback a
+`.php` file already gets when reached directly. Every enumerated
+candidate is re-resolved through `SecurePathResolver` before being
+accepted, so a symlink inside the directory still can't escape the served
+root. Verified in `Tests/iServeTests/StaticFileHandlerTests.swift` (the
+static side of the ordering — no server or executor needed) and
+`PHPScriptExecutionLifecycleTests.swift` (a resolved `.php` index actually
+executing, and never doing so when directory listing is on).
+
+Still open: sessions, SQLite/PDO wiring, file uploads *through PHP* (a
+script receiving an uploaded file via `$_FILES` — distinct from the
+POST-body wiring already landed, which hands PHP the raw body but doesn't
+parse multipart uploads for it), a UI toggle for `phpExecutionEnabled`,
+the PHP diagnostics console, and the compatibility/security test suite
+below.
 
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a
@@ -296,7 +313,7 @@ Deliverables:
 - Sessions.
 - SQLite/PDO.
 - Selected extensions (subject to feasibility).
-- `index.php` routing.
+- `index.php` routing. Done.
 - PHP diagnostics console.
 - Compatibility/security test suite.
 
