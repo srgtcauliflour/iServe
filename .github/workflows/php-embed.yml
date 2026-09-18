@@ -112,6 +112,35 @@ jobs:
           name: libphp-ios-device-arm64
           path: php-src/libs/libphp.a
 
+      # A curated copy of just the headers iserve_php_bridge.c actually
+      # includes transitively (<sapi/embed/php_embed.h>, <Zend/...>,
+      # <main/...>, <TSRM/...>), preserving php-src's own directory layout
+      # so the same #include paths resolve unchanged. Paired with
+      # libphp.a into one artifact that build-app-with-php-device downloads
+      # later in this same workflow run — never committed to the repo
+      # (ADR-0009: reproducible from source, not a vendored binary blob).
+      - name: Package libphp.a + headers for the iServeWithPHP app target (device)
+        if: success()
+        working-directory: php-src
+        run: |
+          mkdir -p phpkit/lib phpkit/include
+          cp libs/libphp.a phpkit/lib/libphp.a
+          for dir in Zend main TSRM sapi include; do
+            if [ -d "$dir" ]; then
+              find "$dir" -name '*.h' | while read -r f; do
+                mkdir -p "phpkit/include/$(dirname "$f")"
+                cp "$f" "phpkit/include/$f"
+              done
+            fi
+          done
+
+      - name: Upload PHPKit (libphp.a + headers) for iOS device
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpkit-iphoneos
+          path: php-src/phpkit
+
   native-smoke-test:
     name: "Step 2: embed SAPI smoke test (native macOS host)"
     # Deliberately independent of cross-compile-device (own fresh php-src
@@ -303,6 +332,32 @@ jobs:
           name: libphp-ios-simulator-arm64
           path: php-src/libs/libphp.a
 
+      # Same curated header copy as cross-compile-device's own packaging
+      # step (see the comment there) — a separate artifact per platform
+      # since each is configured against a different SDK and the generated
+      # main/php_config.h can differ between them.
+      - name: Package libphp.a + headers for the iServeWithPHP app target (Simulator)
+        if: success()
+        working-directory: php-src
+        run: |
+          mkdir -p phpkit/lib phpkit/include
+          cp libs/libphp.a phpkit/lib/libphp.a
+          for dir in Zend main TSRM sapi include; do
+            if [ -d "$dir" ]; then
+              find "$dir" -name '*.h' | while read -r f; do
+                mkdir -p "phpkit/include/$(dirname "$f")"
+                cp "$f" "phpkit/include/$f"
+              done
+            fi
+          done
+
+      - name: Upload PHPKit (libphp.a + headers) for iOS Simulator
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpkit-iphonesimulator
+          path: php-src/phpkit
+
   device-link-smoke-test:
     name: "Step 4: link smoke test for a real iOS device (build-only)"
     # Reruns cross-compile-device's own device cross-compile, then adds
@@ -412,3 +467,74 @@ jobs:
           path: |
             php-src/embed_smoke_test
             php-src/libs/libphp.a
+
+  build-app-with-php-device:
+    name: "Step 5: build iServeWithPHP app target (iOS device, build-only)"
+    # Builds the real Xcode project — App/, ServerCore/, Handlers/, PHP/,
+    # everything — against cross-compile-device's own libphp.a + headers,
+    # downloaded from that job in this SAME workflow run (never a
+    # cross-workflow artifact fetch, so ios.yml gets no dependency on this
+    # workflow's artifact retention). This is the actual "wire libphp.a and
+    # its headers into the app target" step: proves PHP/Bridge/iserve_php_bridge.c
+    # and PHP/PHPWorker.swift compile and link as part of the real app,
+    # not just a standalone clang invocation like native-smoke-test's.
+    # Build-only, like cross-compile-device itself: a device binary can't
+    # execute on this runner regardless of how it's invoked.
+    needs: cross-compile-device
+    runs-on: macos-15
+    continue-on-error: true
+    steps:
+      - name: Checkout iServe
+        uses: actions/checkout@v4
+
+      - name: Download PHPKit (iOS device)
+        uses: actions/download-artifact@v4
+        with:
+          name: phpkit-iphoneos
+          path: PHP/Vendor/iphoneos
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build iServeWithPHP for iOS device (compile + link only)
+        run: |
+          xcodebuild build \
+            -project iServe.xcodeproj \
+            -scheme iServeWithPHP \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+  build-app-with-php-simulator:
+    name: "Step 6: build iServeWithPHP app target (iOS Simulator)"
+    # Same as build-app-with-php-device but against the Simulator-target
+    # libphp.a — a Simulator build could additionally be run/launched in a
+    # later increment, unlike the device build above.
+    needs: simulator-smoke-test
+    runs-on: macos-15
+    continue-on-error: true
+    steps:
+      - name: Checkout iServe
+        uses: actions/checkout@v4
+
+      - name: Download PHPKit (iOS Simulator)
+        uses: actions/download-artifact@v4
+        with:
+          name: phpkit-iphonesimulator
+          path: PHP/Vendor/iphonesimulator
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build iServeWithPHP for iOS Simulator
+        run: |
+          xcodebuild build \
+            -project iServe.xcodeproj \
+            -scheme iServeWithPHP \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO

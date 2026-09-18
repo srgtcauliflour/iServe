@@ -8,3 +8,7 @@ xcuserdata/
 iServe.xcodeproj/
 __pycache__/
 *.pyc
+# CI-populated only (php-embed.yml downloads libphp.a + headers here to
+# build the iServeWithPHP target) — never committed, per ADR-0009's
+# "reproducible from source, not a vendored binary blob" rule.
+PHP/Vendor/

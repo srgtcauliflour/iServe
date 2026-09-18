@@ -213,25 +213,39 @@ smoke test (actually executed in CI via `xcrun simctl spawn`), and a
 device-target link smoke test (build-only — a device binary can't execute
 on a CI runner). All four green.
 
-In progress: `PHP/Bridge/iserve_php_bridge.c` is a real Swift/C bridge onto
-the embed SAPI — not the stock `php_embed_init`/`php_embed_shutdown`
+Done: `PHP/Bridge/iserve_php_bridge.c` is a real Swift/C bridge onto the
+embed SAPI — not the stock `php_embed_init`/`php_embed_shutdown`
 convenience macros (those are a one-shot, single-request-per-process design),
 but a hand-built module-startup/per-request/module-shutdown split so one
 process can serve many requests without re-running PHP's own module
 initialization each time. It maps GET/POST/cookies/server variables in,
 captures response status/headers/body out, and narrows `open_basedir` to
 each request's own resolved root — all verified for real in CI via
-`native-smoke-test`'s new bridge integration test
+`native-smoke-test`'s bridge integration test
 (`PHP/Bridge/Tests/iserve_bridge_smoke_test.c`), which runs two requests
 back-to-back in one process and checks request/response mapping,
-`open_basedir` enforcement, and `disable_functions` enforcement. `PHPWorker.swift`
-wraps it in a single-worker actor per ADR-0009. Neither is wired into the
-`iServe` app target yet — that needs a CI step to package the cross-compiled
-`libphp.a` together with the php-src headers the bridge includes, and
-`ios.yml` to fetch that artifact before building the app. Once linked in,
-still open: sessions, SQLite/PDO wiring, `index.php` routing, file uploads
-through the bridge, the PHP diagnostics console, and the compatibility/
-security test suite below.
+`open_basedir` enforcement, and `disable_functions` enforcement.
+`PHPWorker.swift` wraps it in a single-worker actor per ADR-0009.
+
+Both are now wired into a real app target — but deliberately not the
+`iServe` target `ios.yml` builds and ships. `project.yml` defines a second,
+CI-only target/scheme, `iServeWithPHP` (same sources plus `PHP/`, linked
+against `libphp.a`), built only by two new `php-embed.yml` jobs
+(`build-app-with-php-device`/`-simulator`) against headers + `libphp.a`
+packaged by that same workflow's own cross-compile jobs, downloaded from
+the same run — never a cross-workflow artifact fetch. This keeps
+ADR-0009's isolation guarantee intact: `ios.yml` and the `iServe` scheme it
+builds are untouched, so PHP's fragile cross-compiled dependency still
+can't break the real app's build/release pipeline, while `iServeWithPHP`
+proves the bridge genuinely compiles and links as part of the full app
+(SwiftUI, ServerCore, Handlers — everything), not just a standalone clang
+invocation.
+
+Still open: actually calling `PHPWorker` from the HTTP request path (right
+now nothing constructs one), sessions, SQLite/PDO wiring, `index.php`
+routing, file uploads through the bridge, the PHP diagnostics console, and
+the compatibility/security test suite below. `iServeWithPHP` builds the
+bridge into the app but doesn't yet exercise it from a real request.
 
 Deliverables:
 - Embedded PHP runtime/bridge.
