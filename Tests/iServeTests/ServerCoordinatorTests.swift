@@ -377,7 +377,7 @@ private final class RecordingServerService: ServerService {
     private(set) var lastProfile: ServerProfile?
     private(set) var lastCredentials: ServerCredentials?
 
-    func start(profile: ServerProfile, credentials: ServerCredentials?) async throws -> UInt16 {
+    func start(profile: ServerProfile, credentials: ServerCredentials?, phpExecutor: (any PHPScriptExecutor)?) async throws -> UInt16 {
         startCallCount += 1
         lastProfile = profile
         lastCredentials = credentials

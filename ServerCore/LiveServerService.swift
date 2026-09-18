@@ -29,13 +29,24 @@ final class LiveServerService: ServerService {
         self.limits = limits
     }
 
-    func start(profile: ServerProfile, credentials: ServerCredentials?) async throws -> UInt16 {
+    func start(profile: ServerProfile, credentials: ServerCredentials?, phpExecutor: (any PHPScriptExecutor)?) async throws -> UInt16 {
         guard httpServer == nil else {
             throw ServiceError.accessDenied
         }
         guard let scopedURL = folders.beginAccess() else {
             throw folders.selectedURL == nil ? ServiceError.noFolderSelected : ServiceError.accessDenied
         }
+
+        // ADR-0009: PHP execution is orthogonal to ServerProfile, not a
+        // profile-derived capability like allowsUploads/allowsWebDAVWrites
+        // -- it additionally requires the caller opted in for this session
+        // AND the app was built with a PHP executor to hand it at all
+        // (nil on the ordinary iServe target). Riding allowsDirectoryListing
+        // rather than a dedicated ServerProfile case, per the ADR's own
+        // framing: "any profile that already allows directory listing can
+        // additionally allow PHP execution of .php files it would
+        // otherwise have served as plain static text."
+        let phpEnabledThisSession = phpExecutor != nil && profile.allowsDirectoryListing
 
         // A mount whose scope can't be acquired right now is silently
         // skipped for this session, per the ADR, rather than failing the
@@ -52,7 +63,9 @@ final class LiveServerService: ServerService {
                 resolver: SecurePathResolver(root: mountURL),
                 allowUploads: false,
                 allowDirectoryListing: profile.allowsDirectoryListing,
-                allowWebDAVWrites: false
+                allowWebDAVWrites: false,
+                allowPHPExecution: phpEnabledThisSession,
+                phpExecutor: phpExecutor
             )
             mounts.append(MountRouter.Mount(name: mount.name, handler: mountHandler))
         }
@@ -63,7 +76,9 @@ final class LiveServerService: ServerService {
             resolver: resolver,
             allowUploads: profile.allowsUploads,
             allowDirectoryListing: profile.allowsDirectoryListing,
-            allowWebDAVWrites: profile.allowsWebDAVWrites
+            allowWebDAVWrites: profile.allowsWebDAVWrites,
+            allowPHPExecution: phpEnabledThisSession,
+            phpExecutor: phpExecutor
         )
         // Always MountRouter, even with zero additional mounts: it's a
         // provably exact pass-through to the primary handler in that case

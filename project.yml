@@ -69,6 +69,97 @@ targets:
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  # Experimental, CI-only: same app plus the v0.4 PHP embed-SAPI bridge
+  # (PHP/) linked in. Deliberately a SEPARATE target/scheme from `iServe`,
+  # never referenced by ios.yml or the `iServe` scheme -- ADR-0009 requires
+  # that PHP's fragile cross-compiled dependency can never be able to break
+  # the real app's build/release pipeline. Only .github/workflows/php-embed.yml
+  # builds this target, against libphp.a + headers packaged by its own
+  # earlier jobs in the same workflow run (never a cross-workflow artifact
+  # fetch, so there's no artifact-retention/staleness coupling into a real
+  # release either). See docs/adr/0009-php-runtime-feasibility.md and
+  # docs/ROADMAP.md's v0.4 section.
+  iServeWithPHP:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - "*.md"
+      - path: ServerCore
+        excludes:
+          - "*.md"
+      - path: FileSystem
+        excludes:
+          - "*.md"
+      - path: Handlers
+        excludes:
+          - "*.md"
+      - path: Transfer
+        excludes:
+          - "*.md"
+      - path: Networking
+        excludes:
+          - "*.md"
+      - path: Logging
+        excludes:
+          - "*.md"
+      - path: PHP
+        excludes:
+          - "*.md"
+          - "Bridge/Tests/**"
+          - "Bridge/include/module.modulemap"
+    dependencies:
+      - package: ZIPFoundation
+      - package: SWCompression
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.srgtcauliflour.iServeWithPHP
+        TARGETED_DEVICE_FAMILY: '1,2'
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: iServe+PHP
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: iServe needs local network access so other devices on your Wi-Fi can connect to the server you start.
+        INFOPLIST_KEY_NSBonjourServices: _http._tcp.
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        # PHP/Bridge/include holds both our own bridge header (whose
+        # module.modulemap is what makes `import PHPBridge` work from
+        # Swift) and, at build time in CI only, a vendored copy of the
+        # php-src headers iserve_php_bridge.c includes
+        # (<sapi/embed/php_embed.h>, <Zend/...>, <main/...>) -- packaged by
+        # php-embed.yml's cross-compile jobs into PHP/Vendor/$(PLATFORM_NAME)/,
+        # never committed to the repo (ADR-0009: reproducible from source,
+        # not a vendored binary blob). $(PLATFORM_NAME) resolves to
+        # iphoneos or iphonesimulator, matching how those jobs name their
+        # artifacts, so the same project.yml covers both without
+        # per-platform target duplication.
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/PHP/Bridge/include
+          - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/include
+          - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/include/main
+          - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/include/Zend
+          - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/include/TSRM
+          - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/include/include
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/lib
+        OTHER_LDFLAGS: -lphp -lresolv -liconv -lm -lsqlite3
+        # php-embed.yml's simulator-smoke-test job cross-compiles libphp.a
+        # for the Simulator SDK as arm64 only (-arch arm64, matching the
+        # Apple Silicon CI runner it also needs to *run* that target on via
+        # xcrun simctl spawn) — but a plain `generic/platform=iOS Simulator`
+        # xcodebuild destination defaults to a universal arm64+x86_64
+        # build, so the linker silently drops every arm64-only libphp.a
+        # object for the x86_64 slice ("found architecture 'arm64',
+        # required architecture 'x86_64'") and fails with dozens of
+        # undefined PHP symbols. Excluding x86_64 for the simulator SDK
+        # matches what libphp.a actually provides.
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
   iServeTests:
     type: bundle.unit-test
     platform: iOS
@@ -90,3 +181,9 @@ schemes:
     test:
       targets: [iServeTests]
       gatherCoverageData: true
+  # CI-only (.github/workflows/php-embed.yml); never built by ios.yml. See
+  # the iServeWithPHP target comment above.
+  iServeWithPHP:
+    build:
+      targets:
+        iServeWithPHP: all

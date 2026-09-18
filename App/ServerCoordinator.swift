@@ -46,6 +46,16 @@ final class ServerCoordinator {
     /// same as `profile`.
     var requiresPassword = false
     var password = ""
+    /// Off by default, and orthogonal to `profile` — ADR-0009's capability
+    /// gating: PHP execution is never implied just by a profile allowing
+    /// directory listing, only by this explicit toggle *and* that profile
+    /// condition both holding (see `LiveServerService.start`). Has no
+    /// effect at all in the ordinary `iServe` build, which never links the
+    /// PHP bridge in (`#if canImport(PHPBridge)` below) — the toggle exists
+    /// there but a `.php` file keeps serving as a plain static file
+    /// regardless. Changing this while running has no effect on the
+    /// current session, same as `profile`/`requiresPassword`.
+    var phpExecutionEnabled = false
     let folders: FolderRootManager
     private let service: any ServerService
     private let ipAddressProvider: @Sendable () -> String?
@@ -53,6 +63,13 @@ final class ServerCoordinator {
     private let deviceNameProvider: @MainActor @Sendable () -> String
     private let bonjourAdvertiser: BonjourAdvertiser
     private(set) var runningPort: UInt16?
+    #if canImport(PHPBridge)
+    /// Only ever non-nil while a session with `phpExecutionEnabled` is
+    /// running, in the `iServeWithPHP` build alone (see `phpExecutionEnabled`'s
+    /// doc comment) — constructed fresh in `start()`, torn down in
+    /// `stopServing()`, exactly like `LiveServerService`'s own `httpServer`.
+    private var phpWorker: PHPWorker?
+    #endif
 
     init(
         service: any ServerService = UnconfiguredServerService(),
@@ -163,12 +180,30 @@ final class ServerCoordinator {
         let credentials = requiresPassword ? ServerCredentials(password: password) : nil
         Task {
             do {
-                let port = try await service.start(profile: profile, credentials: credentials)
+                var phpExecutor: (any PHPScriptExecutor)?
+                #if canImport(PHPBridge)
+                if phpExecutionEnabled {
+                    let worker = PHPWorker()
+                    try await worker.start(limits: Self.phpWorkerLimits())
+                    phpWorker = worker
+                    phpExecutor = worker
+                }
+                #endif
+                let port = try await service.start(profile: profile, credentials: credentials, phpExecutor: phpExecutor)
                 let host = ipAddressProvider() ?? "localhost"
                 state = .running(endpoint: "http://\(host):\(port)/")
                 runningPort = port
                 bonjourAdvertiser.start(name: deviceNameProvider(), port: Int(port))
             } catch {
+                #if canImport(PHPBridge)
+                // Started, but service.start(...) failed afterward -- don't
+                // leave a running PHP module behind a session that never
+                // actually came up.
+                if let worker = phpWorker {
+                    phpWorker = nil
+                    Task { await worker.shutdown() }
+                }
+                #endif
                 state = .error(Self.sanitizedStartFailureMessage(for: error))
             }
         }
@@ -183,7 +218,31 @@ final class ServerCoordinator {
         service.stop()
         bonjourAdvertiser.stop()
         runningPort = nil
+        #if canImport(PHPBridge)
+        if let worker = phpWorker {
+            phpWorker = nil
+            Task { await worker.shutdown() }
+        }
+        #endif
     }
+
+    #if canImport(PHPBridge)
+    /// Conservative fixed defaults for a first working end-to-end path
+    /// (ADR-0009's resource-limits section) — not yet exposed as a setting
+    /// anywhere. `sessionSavePath` is under the app's own container cache
+    /// directory, never a served folder, so a PHP session can't be listed/
+    /// downloaded as if it were served content.
+    private static func phpWorkerLimits() -> PHPWorkerLimits {
+        let sessionsDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("iServe-php-sessions", isDirectory: true)
+        try? FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
+        return PHPWorkerLimits(
+            maxExecutionTimeSeconds: 10,
+            memoryLimitBytes: 64 * 1024 * 1024,
+            sessionSavePath: sessionsDirectory.path
+        )
+    }
+    #endif
 
     private func folderState() -> State {
         folders.selectedURL == nil ? .noFolder : .ready
@@ -206,6 +265,10 @@ final class ServerCoordinator {
             case .listenerFailed(let reason):
                 return "The network listener failed to start (\(reason)). If iServe just asked for Local Network access, allow it in Settings > iServe and try again."
             }
+        #if canImport(PHPBridge)
+        case is PHPWorker.WorkerError:
+            return "The PHP runtime could not be started."
+        #endif
         default:
             return "The server could not be started. Try again."
         }

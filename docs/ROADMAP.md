@@ -202,20 +202,163 @@ Exit gate: large transfers resume correctly, archives remain bounded-memory, and
 ## v0.4 — Web Application Server
 Goal: serve useful self-contained PHP applications.
 
-Precondition: approve PHP feasibility ADR covering runtime integration, extensions, code-signing/distribution and sandbox implications.
+Precondition: approve PHP feasibility ADR covering runtime integration, extensions, code-signing/distribution and sandbox implications. **Done** — see `docs/adr/0009-php-runtime-feasibility.md`.
+
+Done: `.github/workflows/php-embed.yml` (a new, dedicated workflow, kept
+independent of `ios.yml` — every job in it runs `continue-on-error: true`)
+cross-compiles PHP 8.4.2's embed SAPI as `libphp.a` for the iOS device and
+Simulator targets, in four incremental, CI-observed steps: device
+cross-compile, a native-macOS embed-SAPI smoke test, a Simulator-target
+smoke test (actually executed in CI via `xcrun simctl spawn`), and a
+device-target link smoke test (build-only — a device binary can't execute
+on a CI runner). All four green.
+
+Done: `PHP/Bridge/iserve_php_bridge.c` is a real Swift/C bridge onto the
+embed SAPI — not the stock `php_embed_init`/`php_embed_shutdown`
+convenience macros (those are a one-shot, single-request-per-process design),
+but a hand-built module-startup/per-request/module-shutdown split so one
+process can serve many requests without re-running PHP's own module
+initialization each time. It maps GET/POST/cookies/server variables in,
+captures response status/headers/body out, and narrows `open_basedir` to
+each request's own resolved root — all verified for real in CI via
+`native-smoke-test`'s bridge integration test
+(`PHP/Bridge/Tests/iserve_bridge_smoke_test.c`), which runs two requests
+back-to-back in one process and checks request/response mapping,
+`open_basedir` enforcement, and `disable_functions` enforcement.
+`PHPWorker.swift` wraps it in a single-worker actor per ADR-0009.
+
+Both are now wired into a real app target — but deliberately not the
+`iServe` target `ios.yml` builds and ships. `project.yml` defines a second,
+CI-only target/scheme, `iServeWithPHP` (same sources plus `PHP/`, linked
+against `libphp.a`), built only by two new `php-embed.yml` jobs
+(`build-app-with-php-device`/`-simulator`) against headers + `libphp.a`
+packaged by that same workflow's own cross-compile jobs, downloaded from
+the same run — never a cross-workflow artifact fetch. This keeps
+ADR-0009's isolation guarantee intact: `ios.yml` and the `iServe` scheme it
+builds are untouched, so PHP's fragile cross-compiled dependency still
+can't break the real app's build/release pipeline, while `iServeWithPHP`
+proves the bridge genuinely compiles and links as part of the full app
+(SwiftUI, ServerCore, Handlers — everything), not just a standalone clang
+invocation.
+
+Done: `.php` requests now actually reach `PHPWorker` through the real HTTP
+pipeline, GET/HEAD/POST. `ServerCore/PHPScriptExecutor.swift` declares the
+`PHPScriptExecutor` protocol (plus `PHPRequest`/`PHPResponse`) with no
+dependency on the PHP bridge itself, so `Handlers/StaticFileHandler.swift`
+can hold an optional executor and stay part of the ordinary `iServe` target.
+`HTTPRouter` gained `isPHPScriptRequest(_:)` (cheap, synchronous, decides
+before any POST body byte is read — same "decide everything up front"
+discipline `authorizeUpload` already uses) and `routePHPScript(_:body:)`
+(default `nil`, mirroring how each WebDAV method already gets its own
+requirement rather than being folded into `route(_:)`). `HTTPConnection`
+tries the PHP path first for both GET/HEAD and POST, falling back to the
+ordinary static/upload/ZIP-selection paths when it declines — off, no
+executor, or not a `.php` file. A POST body is buffered whole into memory
+by a new `PHPPostState` state machine mirroring `ZipDownloadState` exactly
+(bounded by a new `HTTPServerLimits.maxPHPPostBodyBytes`, deliberately far
+smaller than `maxUploadBytes` since there's no streaming-to-disk step
+here) — not `UploadState`'s multipart-parsing/disk-streaming model, which a
+raw PHP request body has no use for. `ServerCoordinator.phpExecutionEnabled`
+(off by default, orthogonal to `profile` per the ADR) constructs and starts
+a `PHPWorker` under `#if canImport(PHPBridge)` and hands it down through
+`ServerService.start`/`LiveServerService`, gated additionally on
+`profile.allowsDirectoryListing` per the ADR's own framing. Verified for
+real by `Tests/iServeTests/PHPScriptExecutionLifecycleTests.swift` — a fake
+`PHPScriptExecutor` driven through a real `HTTPServer` over loopback
+(GET/HEAD, a buffered POST body, an empty POST body, a body over the new
+size limit, and a non-`.php` POST still reaching upload handling), no PHP
+runtime involved, so it runs on every `ios.yml` test pass, not just the
+occasional `iServeWithPHP` build check.
+
+Done: directory-index resolution now covers `.php` too, not just
+`index.html`/`index.htm`. Order (`StaticFileHandler.resolvedIndexURL`,
+Website-mode-only — `allowDirectoryListing == false` — exactly like the
+plain-HTML index-serving it extends): `index.html`/`index.htm` >
+`index.php` > the alphabetically-first `.html` file > the
+alphabetically-first `.php` file. A resolved `.php` index actually
+*executes* when PHP execution is on and an executor is wired up
+(`resolvedPHPScriptURL`, checked before `route(_:)` runs at all); serves
+as plain static text otherwise, the same "hide the capability" fallback a
+`.php` file already gets when reached directly. Every enumerated
+candidate is re-resolved through `SecurePathResolver` before being
+accepted, so a symlink inside the directory still can't escape the served
+root. Verified in `Tests/iServeTests/StaticFileHandlerTests.swift` (the
+static side of the ordering — no server or executor needed) and
+`PHPScriptExecutionLifecycleTests.swift` (a resolved `.php` index actually
+executing, and never doing so when directory listing is on).
+
+Done: SQLite/PDO — v0.4's own exit gate names "self-contained PHP+SQLite
+applications" explicitly, and neither extension had actually been
+exercised anywhere before now (only compiled into the allowlist per
+ADR-0009). `native-smoke-test`'s configure step now also enables
+`pdo_sqlite`/`sqlite3` (previously only the device/Simulator cross-compile
+jobs did — the one job that can actually *run* PHP hadn't had them at
+all). `PHP/Bridge/Tests/fixtures/sqlite.php` creates a database file
+within `open_basedir`, writes to it and reads it back through both the
+`SQLite3` class and `PDO`'s `sqlite:` DSN; a third request in
+`iserve_bridge_smoke_test.c` exercises it, reusing the same started
+bridge as requests A/B.
+
+Still open: sessions, file uploads *through PHP* (a script receiving an
+uploaded file via `$_FILES` — distinct from the POST-body wiring already
+landed, which hands PHP the raw body but doesn't parse multipart uploads
+for it), a UI toggle for `phpExecutionEnabled`, the PHP diagnostics
+console, and the compatibility/security test suite below.
+
+**Remote content in a served page, clarified (no code change needed):** a
+plain HTML/CSS/JS page iServe serves has always been able to reference a
+remote RSS feed, API, or icon/asset — `fetch()`/`<img src="https://...">`/
+etc. are requests the *browser rendering the page* makes directly to that
+remote host, entirely outside iServe's own process. This server sends no
+`Content-Security-Policy`, CORS, or other response header that would
+restrict that (checked directly — none exists anywhere in this codebase),
+so it already works today whenever the viewing device has its own internet
+connectivity. **PHP scripts reaching the internet is a different, deferred
+question** — see v0.5 below.
 
 Deliverables:
 - Embedded PHP runtime/bridge.
-- Request mapping for GET/POST/cookies/server state/file uploads.
-- Response status/header/body capture.
+- Request mapping for GET/POST/cookies/server state/file uploads. GET/POST
+  body done; file uploads *through PHP* (`$_FILES`) still open (see above).
+- Response status/header/body capture. Done.
 - Sessions.
-- SQLite/PDO.
+- SQLite/PDO. Done.
 - Selected extensions (subject to feasibility).
-- `index.php` routing.
+- `index.php` routing. Done.
 - PHP diagnostics console.
 - Compatibility/security test suite.
 
 Exit gate: representative self-contained PHP+SQLite applications execute reliably without compromising iServe's root/permission boundaries.
+
+## v0.5 — PHP Outbound Networking
+Goal: let a PHP script served by iServe pull from a real internet source —
+an RSS feed, a third-party API, a remotely-hosted icon/asset — for sites
+under active local development that aren't fully self-contained.
+
+Deliberately its own version, not folded into v0.4: ADR-0009 explicitly
+scoped outbound networking (`curl`, `allow_url_fopen`/`allow_url_include`)
+out of v0.4 as a first-cut security boundary, naming it as a future
+amendment rather than baseline scope — see that ADR's "Revisit triggers".
+v0.4's own exit gate ("without compromising iServe's root/permission
+boundaries") was written against a PHP runtime that categorically cannot
+originate network traffic; widening that is a distinct, additional
+capability with its own threat model (SSRF against the device's own LAN,
+DNS rebinding, unbounded outbound requests), not a tweak to land alongside
+v0.4's already-large scope.
+
+Precondition: accept `docs/adr/0010-php-outbound-networking.md` — currently
+a stub naming the open questions (curl vs. stream-wrapper-only, a capability
+toggle layered on top of `phpExecutionEnabled` rather than implied by it,
+an SSRF/local-network denylist and DNS-rebinding defense, resource bounds,
+sanitized remote-fetch error behavior) rather than an accepted design.
+
+Deliverables (pending that ADR's actual decisions):
+- Outbound HTTP(S) capability, off by default, gated separately from `phpExecutionEnabled`.
+- SSRF/local-network-exposure defense (host/IP-range denylist, validated at connect time against DNS-rebinding).
+- Resource bounds on outbound requests (timeout, response size, redirect limit, concurrency).
+- Sanitized failure behavior matching ADR-0009's existing "never leak local detail" rule.
+
+Exit gate: a locally-tested site can call a real external API/RSS feed/asset from PHP, with the same "explicit capability, never implied" and "bounded, never unbounded" discipline this project applies everywhere else, verified by its own test suite before this is considered release-ready.
 
 ## v1.0 — Gold Release
 Goal: production-quality user and developer experience.

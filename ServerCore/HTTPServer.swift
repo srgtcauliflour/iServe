@@ -38,6 +38,16 @@ struct HTTPServerLimits: Sendable {
     /// `PUT` and a browser upload are authorized by different
     /// `ServerProfile` capabilities and could reasonably diverge later.
     var maxWebDAVPutBytes: Int
+    /// Upper bound on a PHP-destined POST body (v0.4,
+    /// `docs/adr/0009-php-runtime-feasibility.md`) — buffered whole into
+    /// memory before being handed to the PHP executor (there is no
+    /// streaming-to-disk step here the way an upload has), so this is
+    /// deliberately far smaller than `maxUploadBytes`: sized for realistic
+    /// form/JSON-API request bodies a script would read, not file
+    /// uploads, and small enough to leave most of the PHP worker's own
+    /// `memory_limit` free for the script itself rather than for just
+    /// holding its own input.
+    var maxPHPPostBodyBytes: Int
     /// Upper bound on the password-only login form's POST body (v0.3,
     /// `docs/adr/0008-password-only-cookie-login.md`) — just a password
     /// and a redirect path, never file content, so this is a small
@@ -73,6 +83,7 @@ struct HTTPServerLimits: Sendable {
         maxZipEntryCount: 500,
         maxZipUncompressedBytes: 4 * 1024 * 1024 * 1024,
         maxWebDAVPutBytes: 4 * 1024 * 1024 * 1024,
+        maxPHPPostBodyBytes: 8 * 1024 * 1024,
         maxLoginBodyBytes: 4 * 1024,
         maxConnectionsPerAddress: 16,
         maxConnectionsPerAddressPerWindow: 120,

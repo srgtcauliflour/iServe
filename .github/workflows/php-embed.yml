@@ -1,0 +1,543 @@
+name: PHP embed SAPI (v0.4, experimental)
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - '.github/workflows/php-embed.yml'
+      - 'PHP/Bridge/**'
+
+# Kept entirely separate from ios.yml on purpose (docs/adr/0009-php-runtime-feasibility.md):
+# cross-compiling PHP's embed SAPI has known-fragile spots even on a plain
+# native macOS build (long-standing upstream php-src issues), so every job
+# here runs with continue-on-error: true and nothing in ios.yml depends on
+# this workflow at all — a red X here must never block an unrelated PR to
+# the app itself. Deliberately incremental and CI-observed: each job below
+# isolates exactly one variable rather than combining "does it cross-compile"
+# and "does it actually run" into one guess.
+#
+# The configure flags, macOS build prerequisites (bison/re2c), and the
+# ext/standard/config.m4 patch below are adapted from a real, already-CI-
+# verified iOS PHP embed SAPI pipeline (an MIT-style open-source reference
+# implementation), not written blind — see docs/adr/0009-php-runtime-feasibility.md
+# for the full citation list.
+
+env:
+  PHP_SRC_REF: php-8.4.2
+
+jobs:
+  cross-compile-device:
+    name: "Step 1: cross-compile libphp.a (iOS device, arm64)"
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout php-src
+        uses: actions/checkout@v4
+        with:
+          repository: php/php-src
+          ref: ${{ env.PHP_SRC_REF }}
+          path: php-src
+
+      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
+        run: |
+          brew install autoconf bison re2c
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      # PHP's own PHP_CHECK_FUNC autoconf macro discards any pre-seeded
+      # cache value for this symbol before checking, so an env override
+      # can't skip the probe — ext/standard/config.m4's own call has to
+      # be removed instead. The symbol isn't available under the iOS SDK;
+      # proc_open.c's already-portable fork()+exec() fallback compiles
+      # once it's never probed for at all. Must run before buildconf,
+      # which regenerates ./configure from the .m4 sources — a patch
+      # applied after buildconf has no effect on the generated script.
+      - name: Patch config.m4 — skip posix_spawn_file_actions_addchdir_np probe (unavailable on iOS)
+        working-directory: php-src
+        run: |
+          sed -i '' 's/AC_CHECK_FUNCS(\[posix_spawn_file_actions_addchdir_np elf_aux_info\])/AC_CHECK_FUNCS([elf_aux_info])/' ext/standard/config.m4
+
+      - name: buildconf (generate ./configure)
+        working-directory: php-src
+        run: ./buildconf --force
+
+      # --host=aarch64-apple-darwin (not a real "-ios" autoconf triple —
+      # autoconf doesn't know iOS as an OS component) is what flips
+      # ./configure into cross-compiling mode; the iOS-specific bits all
+      # come from CC/CFLAGS pointing at `xcrun -sdk iphoneos clang`
+      # instead. Extension set matches ADR-0009's allowlist exactly
+      # (json/hash are compiled into core by default in PHP 8+, so need
+      # no explicit flags); --disable-all + --without-pear + disabling
+      # cli/cgi/phpdbg keeps the surface to embed + that allowlist only.
+      - name: configure (cross-compile for iOS device, arm64)
+        working-directory: php-src
+        run: |
+          export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          export CC="xcrun -sdk iphoneos clang -arch arm64"
+          export CXX="xcrun -sdk iphoneos clang++ -arch arm64"
+          export CFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          export CXXFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          export LDFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          export SQLITE_CFLAGS="-I$IOS_SDK/usr/include"
+          export SQLITE_LIBS="-L$IOS_SDK/usr/lib -lsqlite3"
+          ./configure \
+            --host=aarch64-apple-darwin \
+            --disable-all \
+            --without-pear \
+            --disable-cli \
+            --disable-cgi \
+            --disable-phpdbg \
+            --enable-embed=static \
+            --without-pcre-jit \
+            --enable-session=static \
+            --enable-pdo=static \
+            --with-pdo-sqlite=static \
+            --with-sqlite3=static \
+            --enable-filter=static \
+            --enable-mbstring=static \
+            --disable-mbregex
+
+      - name: make (embed SAPI only)
+        working-directory: php-src
+        run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Check for libphp.a
+        working-directory: php-src
+        run: |
+          find . -name "libphp.a" -exec ls -la {} \;
+          test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
+
+      - name: Upload libphp.a
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libphp-ios-device-arm64
+          path: php-src/libs/libphp.a
+
+      # A curated copy of just the headers iserve_php_bridge.c actually
+      # includes transitively (<sapi/embed/php_embed.h>, <Zend/...>,
+      # <main/...>, <TSRM/...>), preserving php-src's own directory layout
+      # so the same #include paths resolve unchanged. Paired with
+      # libphp.a into one artifact that build-app-with-php-device downloads
+      # later in this same workflow run — never committed to the repo
+      # (ADR-0009: reproducible from source, not a vendored binary blob).
+      - name: Package libphp.a + headers for the iServeWithPHP app target (device)
+        if: success()
+        working-directory: php-src
+        run: |
+          mkdir -p phpkit/lib phpkit/include
+          cp libs/libphp.a phpkit/lib/libphp.a
+          for dir in Zend main TSRM sapi include; do
+            if [ -d "$dir" ]; then
+              find "$dir" -name '*.h' | while read -r f; do
+                mkdir -p "phpkit/include/$(dirname "$f")"
+                cp "$f" "phpkit/include/$f"
+              done
+            fi
+          done
+
+      - name: Upload PHPKit (libphp.a + headers) for iOS device
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpkit-iphoneos
+          path: php-src/phpkit
+
+  native-smoke-test:
+    name: "Step 2: embed SAPI smoke test (native macOS host)"
+    # Deliberately independent of cross-compile-device (own fresh php-src
+    # checkout, own build): a native build (build machine == target) lets
+    # every ./configure check actually execute a real test binary, the
+    # normal non-cross-compiling autoconf path — isolating "does the
+    # embed SAPI's own C API work" from every iOS-SDK-specific risk.
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout iServe (for the PHP bridge source under test)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
+      - name: Checkout php-src
+        uses: actions/checkout@v4
+        with:
+          repository: php/php-src
+          ref: ${{ env.PHP_SRC_REF }}
+          path: php-src
+
+      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
+        run: |
+          brew install autoconf bison re2c
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: buildconf (generate ./configure)
+        working-directory: php-src
+        run: ./buildconf --force
+
+      - name: configure (native macOS build, embed SAPI + session + sqlite)
+        working-directory: php-src
+        run: |
+          ./configure \
+            --disable-all \
+            --without-pear \
+            --disable-cli \
+            --disable-cgi \
+            --disable-phpdbg \
+            --enable-embed=static \
+            --enable-session=static \
+            --enable-pdo=static \
+            --with-pdo-sqlite=static \
+            --with-sqlite3=static
+
+      - name: make
+        working-directory: php-src
+        run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Compile the iServe PHP bridge + its smoke test against libphp.a
+        working-directory: php-src
+        run: |
+          clang -c "$GITHUB_WORKSPACE/iserve/PHP/Bridge/iserve_php_bridge.c" -o iserve_php_bridge.o \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -I"$GITHUB_WORKSPACE/iserve/PHP/Bridge/include" \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+
+          clang -c "$GITHUB_WORKSPACE/iserve/PHP/Bridge/Tests/iserve_bridge_smoke_test.c" -o iserve_bridge_smoke_test.o \
+            -I"$GITHUB_WORKSPACE/iserve/PHP/Bridge/include" \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+
+          clang iserve_php_bridge.o iserve_bridge_smoke_test.o -o iserve_bridge_smoke_test \
+            libs/libphp.a \
+            -lresolv -liconv -lm -lsqlite3
+
+      - name: Run the bridge smoke test — request/response mapping, open_basedir, disable_functions
+        working-directory: php-src
+        run: |
+          ./iserve_bridge_smoke_test "$GITHUB_WORKSPACE/iserve/PHP/Bridge/Tests/fixtures" 2>&1 | tee bridge_smoke_output.txt
+          grep -q "^all checks passed$" bridge_smoke_output.txt || (echo "bridge smoke test failed — see FAIL lines above" && exit 1)
+
+  simulator-smoke-test:
+    name: "Step 3: embed SAPI smoke test (iOS Simulator target)"
+    # Combines what the two jobs above each proved separately: device
+    # cross-compile succeeds, and the embed SAPI's C API actually works.
+    # Neither proved both at once. A Simulator-target binary — unlike a
+    # device binary — runs as an ordinary native process directly on this
+    # Apple Silicon runner's own kernel (same darwin kernel, different
+    # SDK/frameworks, no emulation), so it can be executed here.
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout php-src
+        uses: actions/checkout@v4
+        with:
+          repository: php/php-src
+          ref: ${{ env.PHP_SRC_REF }}
+          path: php-src
+
+      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
+        run: |
+          brew install autoconf bison re2c
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Patch config.m4 — skip posix_spawn_file_actions_addchdir_np probe (unavailable on iOS)
+        working-directory: php-src
+        run: |
+          sed -i '' 's/AC_CHECK_FUNCS(\[posix_spawn_file_actions_addchdir_np elf_aux_info\])/AC_CHECK_FUNCS([elf_aux_info])/' ext/standard/config.m4
+
+      - name: buildconf (generate ./configure)
+        working-directory: php-src
+        run: ./buildconf --force
+
+      - name: configure (cross-compile for iOS Simulator, arm64)
+        working-directory: php-src
+        run: |
+          export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          export CC="xcrun -sdk iphonesimulator clang -arch arm64"
+          export CXX="xcrun -sdk iphonesimulator clang++ -arch arm64"
+          export CFLAGS="-isysroot $SIM_SDK -mios-simulator-version-min=15.0"
+          export CXXFLAGS="-isysroot $SIM_SDK -mios-simulator-version-min=15.0"
+          export LDFLAGS="-isysroot $SIM_SDK -mios-simulator-version-min=15.0"
+          export SQLITE_CFLAGS="-I$SIM_SDK/usr/include"
+          export SQLITE_LIBS="-L$SIM_SDK/usr/lib -lsqlite3"
+          ./configure \
+            --host=aarch64-apple-darwin \
+            --disable-all \
+            --without-pear \
+            --disable-cli \
+            --disable-cgi \
+            --disable-phpdbg \
+            --enable-embed=static \
+            --without-pcre-jit \
+            --enable-session=static \
+            --enable-pdo=static \
+            --with-pdo-sqlite=static \
+            --with-sqlite3=static \
+            --enable-filter=static \
+            --enable-mbstring=static \
+            --disable-mbregex
+
+      - name: make
+        working-directory: php-src
+        run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Check for libphp.a
+        working-directory: php-src
+        run: |
+          find . -name "libphp.a" -exec ls -la {} \;
+          test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
+
+      - name: Write embed SAPI smoke test (C)
+        working-directory: php-src
+        run: |
+          cat > embed_smoke_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          int main(int argc, char **argv) {
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string("echo 'hello from embed SAPI (iOS Simulator target)';", NULL, "embed_smoke_test");
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+
+      - name: Compile + link smoke test against the Simulator-target libphp.a
+        working-directory: php-src
+        run: |
+          export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          xcrun -sdk iphonesimulator clang embed_smoke_test.c -o embed_smoke_test \
+            -isysroot "$SIM_SDK" -mios-simulator-version-min=15.0 -arch arm64 \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            -lresolv -liconv -lm -lsqlite3
+
+      # A Simulator-target binary needs the simulator's own dyld shim
+      # (plain execution from the shell fails with
+      # "DYLD_ROOT_PATH not set for simulator program", and guessing more
+      # dyld env vars by hand is exactly the blind local guessing this
+      # incremental plan exists to avoid). `xcrun simctl spawn` is
+      # Apple's own documented way to run a plain command-line binary
+      # against a simulator runtime — it owns that wiring internally.
+      - name: Boot an iOS Simulator
+        run: |
+          UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}')
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Run smoke test via simctl spawn (owns the dyld_sim wiring)
+        working-directory: php-src
+        run: |
+          xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/embed_smoke_test" | tee smoke_output.txt
+          grep -q "hello from embed SAPI" smoke_output.txt || (echo "embed SAPI did not produce expected output" && exit 1)
+
+      - name: Upload libphp.a
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libphp-ios-simulator-arm64
+          path: php-src/libs/libphp.a
+
+      # Same curated header copy as cross-compile-device's own packaging
+      # step (see the comment there) — a separate artifact per platform
+      # since each is configured against a different SDK and the generated
+      # main/php_config.h can differ between them.
+      - name: Package libphp.a + headers for the iServeWithPHP app target (Simulator)
+        if: success()
+        working-directory: php-src
+        run: |
+          mkdir -p phpkit/lib phpkit/include
+          cp libs/libphp.a phpkit/lib/libphp.a
+          for dir in Zend main TSRM sapi include; do
+            if [ -d "$dir" ]; then
+              find "$dir" -name '*.h' | while read -r f; do
+                mkdir -p "phpkit/include/$(dirname "$f")"
+                cp "$f" "phpkit/include/$f"
+              done
+            fi
+          done
+
+      - name: Upload PHPKit (libphp.a + headers) for iOS Simulator
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpkit-iphonesimulator
+          path: php-src/phpkit
+
+  device-link-smoke-test:
+    name: "Step 4: link smoke test for a real iOS device (build-only)"
+    # Reruns cross-compile-device's own device cross-compile, then adds
+    # simulator-smoke-test's compile+link step against it — but stops
+    # there on purpose: a device binary targets real Apple Silicon inside
+    # an iPhone, not this runner's own macOS kernel, so it can never
+    # execute here regardless of how it's invoked (not a "same kernel,
+    # different SDK" situation the way the Simulator is). Verifying
+    # runtime behavior on a real device stays a manual step for whoever
+    # has one physically in hand.
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout php-src
+        uses: actions/checkout@v4
+        with:
+          repository: php/php-src
+          ref: ${{ env.PHP_SRC_REF }}
+          path: php-src
+
+      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
+        run: |
+          brew install autoconf bison re2c
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Patch config.m4 — skip posix_spawn_file_actions_addchdir_np probe (unavailable on iOS)
+        working-directory: php-src
+        run: |
+          sed -i '' 's/AC_CHECK_FUNCS(\[posix_spawn_file_actions_addchdir_np elf_aux_info\])/AC_CHECK_FUNCS([elf_aux_info])/' ext/standard/config.m4
+
+      - name: buildconf (generate ./configure)
+        working-directory: php-src
+        run: ./buildconf --force
+
+      - name: configure (cross-compile for iOS device, arm64)
+        working-directory: php-src
+        run: |
+          export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          export CC="xcrun -sdk iphoneos clang -arch arm64"
+          export CXX="xcrun -sdk iphoneos clang++ -arch arm64"
+          export CFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          export CXXFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          export LDFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          export SQLITE_CFLAGS="-I$IOS_SDK/usr/include"
+          export SQLITE_LIBS="-L$IOS_SDK/usr/lib -lsqlite3"
+          ./configure \
+            --host=aarch64-apple-darwin \
+            --disable-all \
+            --without-pear \
+            --disable-cli \
+            --disable-cgi \
+            --disable-phpdbg \
+            --enable-embed=static \
+            --without-pcre-jit \
+            --enable-session=static \
+            --enable-pdo=static \
+            --with-pdo-sqlite=static \
+            --with-sqlite3=static \
+            --enable-filter=static \
+            --enable-mbstring=static \
+            --disable-mbregex
+
+      - name: make
+        working-directory: php-src
+        run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Check for libphp.a
+        working-directory: php-src
+        run: |
+          find . -name "libphp.a" -exec ls -la {} \;
+          test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
+
+      - name: Write embed SAPI smoke test (C)
+        working-directory: php-src
+        run: |
+          cat > embed_smoke_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          int main(int argc, char **argv) {
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string("echo 'hello from embed SAPI (iOS device target)';", NULL, "embed_smoke_test");
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+
+      - name: Compile + link smoke test against the device-target libphp.a
+        working-directory: php-src
+        run: |
+          export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun -sdk iphoneos clang embed_smoke_test.c -o embed_smoke_test \
+            -isysroot "$IOS_SDK" -mios-version-min=15.0 -arch arm64 \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            -lresolv -liconv -lm -lsqlite3
+
+      - name: Confirm a real iOS-device Mach-O binary was produced
+        working-directory: php-src
+        run: file embed_smoke_test
+
+      - name: Upload the device-target smoke test binary + libphp.a
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: embed-smoke-test-ios-device-arm64
+          path: |
+            php-src/embed_smoke_test
+            php-src/libs/libphp.a
+
+  build-app-with-php-device:
+    name: "Step 5: build iServeWithPHP app target (iOS device, build-only)"
+    # Builds the real Xcode project — App/, ServerCore/, Handlers/, PHP/,
+    # everything — against cross-compile-device's own libphp.a + headers,
+    # downloaded from that job in this SAME workflow run (never a
+    # cross-workflow artifact fetch, so ios.yml gets no dependency on this
+    # workflow's artifact retention). This is the actual "wire libphp.a and
+    # its headers into the app target" step: proves PHP/Bridge/iserve_php_bridge.c
+    # and PHP/PHPWorker.swift compile and link as part of the real app,
+    # not just a standalone clang invocation like native-smoke-test's.
+    # Build-only, like cross-compile-device itself: a device binary can't
+    # execute on this runner regardless of how it's invoked.
+    needs: cross-compile-device
+    runs-on: macos-15
+    continue-on-error: true
+    steps:
+      - name: Checkout iServe
+        uses: actions/checkout@v4
+
+      - name: Download PHPKit (iOS device)
+        uses: actions/download-artifact@v4
+        with:
+          name: phpkit-iphoneos
+          path: PHP/Vendor/iphoneos
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build iServeWithPHP for iOS device (compile + link only)
+        run: |
+          xcodebuild build \
+            -project iServe.xcodeproj \
+            -scheme iServeWithPHP \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+  build-app-with-php-simulator:
+    name: "Step 6: build iServeWithPHP app target (iOS Simulator)"
+    # Same as build-app-with-php-device but against the Simulator-target
+    # libphp.a — a Simulator build could additionally be run/launched in a
+    # later increment, unlike the device build above.
+    needs: simulator-smoke-test
+    runs-on: macos-15
+    continue-on-error: true
+    steps:
+      - name: Checkout iServe
+        uses: actions/checkout@v4
+
+      - name: Download PHPKit (iOS Simulator)
+        uses: actions/download-artifact@v4
+        with:
+          name: phpkit-iphonesimulator
+          path: PHP/Vendor/iphonesimulator
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build iServeWithPHP for iOS Simulator
+        run: |
+          xcodebuild build \
+            -project iServe.xcodeproj \
+            -scheme iServeWithPHP \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO
