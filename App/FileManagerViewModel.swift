@@ -2,68 +2,209 @@ import Foundation
 import Observation
 import UniformTypeIdentifiers
 
-/// Backs the native in-app file manager screen (v0.3): browse the selected
-/// root on-device, preview/edit files, rename/move/copy/delete, and
+/// Backs the native in-app file manager screen (v0.3): browse the app's own
+/// on-device storage, preview/edit files, rename/move/copy/delete, and
 /// create/extract archives — all separate from the remote HTTP directory
 /// listing a browser client sees, and independent of whether the server is
 /// running.
 ///
-/// Holds its own scoped access to the selected root for the screen's
-/// lifetime via `FolderRootManager.beginAccess()`/`endAccess(_:)`. This is
-/// safe to hold at the same time `LiveServerService` holds its own access
-/// for an active serving session — the underlying security-scoped access
-/// is reference-counted, so the two are independent counts released by
-/// their own matching calls.
+/// Entirely independent of `ServerCoordinator`/`FolderRootManager` (post-v0.3
+/// fix): this used to require a folder already selected in the File Sharing
+/// tab, sharing that folder's security-scoped access, which meant the file
+/// manager couldn't be used at all before a share was set up and had nothing
+/// to do with "your device's files" as a person would expect a file manager
+/// to mean.
+///
+/// It now always opens the app's own sandboxed Documents directory by
+/// default — real, on-device storage that needs no folder picker or
+/// security-scoped bookmark to reach, since the app already owns it
+/// outright. `project.yml` sets `UIFileSharingEnabled`/
+/// `LSSupportsOpeningDocumentsInPlace` so this same folder is reachable
+/// from the Files app ("On My iPhone/iPad" > iServe) and over USB/Wi-Fi
+/// from a Mac. That sandboxed folder is genuinely empty on a fresh
+/// install, though — third-party apps have no access to "the device's"
+/// files at large without a person explicitly granting it (Apple's
+/// sandboxing model has no such thing as an automatic, unscoped "home
+/// directory" to browse) — so `chooseLocation(_:)` lets a person point
+/// this screen at any other folder via the system picker (On My iPhone,
+/// Downloads, iCloud Drive, another app's shared documents, ...), exactly
+/// the same picker/bookmark mechanism `FileSystem/FolderRootManager.swift`
+/// already uses for the shared folder, just remembered under its own,
+/// entirely separate key so the two never collide.
 @MainActor
 @Observable
 final class FileManagerViewModel {
-    private let folders: FolderRootManager
+    private let access: any FolderAccess
+    /// `var`, not `let`: assigning through `bookmarkStore.bookmark = ...`
+    /// is a protocol-requirement setter call on the existential, which
+    /// Swift only allows when the existential itself is mutable — the same
+    /// reason `FolderRootManager.store` is `var` too.
+    private var bookmarkStore: any FolderBookmarkStore
+    /// Overridable only for tests, which need an isolated temporary
+    /// directory rather than the real app container's Documents folder.
+    /// Explicitly `@MainActor`, not a plain `() -> URL`: every member of
+    /// this class is implicitly `@MainActor`-isolated already (the class
+    /// itself is), so `documentsDirectory` below is too — a plain
+    /// non-isolated closure type can't hold it without silently dropping
+    /// that isolation, which the compiler correctly refuses.
+    private let rootProvider: @MainActor () -> URL
+    /// The externally-picked location currently holding security-scoped
+    /// access, if any — tracked separately from `rootURL` so `stop()`
+    /// releases exactly the URL access was actually acquired for, even if
+    /// `rootURL` itself has since changed.
+    private var externalScopedURL: URL?
     private(set) var rootURL: URL?
-    private var scopedURL: URL?
+    /// Whether `rootURL` is the remembered external location rather than
+    /// the app's own Documents directory — lets the UI offer "switch back"
+    /// only when there's somewhere to switch back from.
+    private(set) var isBrowsingExternalLocation = false
     var previewURL: URL?
     var editingTextURL: URL?
     var errorMessage: String?
+    /// A one-line trace of what the *last* `entries(in:)` call actually
+    /// found/failed with — added purely to debug an on-device report that
+    /// an externally-chosen folder listed empty. Not shown anywhere
+    /// permanent; `FileManagerScreen`'s banner surfaces it temporarily.
+    private(set) var lastListingDiagnostic: String?
 
-    init(folders: FolderRootManager) {
-        self.folders = folders
+    init(
+        access: any FolderAccess = SystemFolderAccess(),
+        bookmarkStore: any FolderBookmarkStore = UserDefaultsFolderBookmarkStore(key: "iServe.fileManagerLocationBookmark"),
+        rootProvider: @escaping @MainActor () -> URL = FileManagerViewModel.documentsDirectory
+    ) {
+        self.access = access
+        self.bookmarkStore = bookmarkStore
+        self.rootProvider = rootProvider
     }
 
+    static func documentsDirectory() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    /// Resumes browsing a previously chosen external location if one is
+    /// remembered and still resolves, otherwise falls back to the app's
+    /// own Documents directory — never leaves `rootURL` unset.
     func start() {
-        guard scopedURL == nil else { return }
-        guard let url = folders.beginAccess() else {
-            errorMessage = "Could not access the selected folder."
+        guard rootURL == nil else { return }
+        if let bookmark = bookmarkStore.bookmark,
+           let resolved = try? access.resolveBookmark(bookmark),
+           access.startAccessing(resolved.url) {
+            externalScopedURL = resolved.url
+            rootURL = resolved.url
+            isBrowsingExternalLocation = true
             return
         }
-        scopedURL = url
-        rootURL = url
+        rootURL = rootProvider()
     }
 
     func stop() {
-        guard let scopedURL else { return }
-        self.scopedURL = nil
+        if let externalScopedURL {
+            access.stopAccessing(externalScopedURL)
+        }
+        externalScopedURL = nil
         rootURL = nil
-        folders.endAccess(scopedURL)
+        isBrowsingExternalLocation = false
+    }
+
+    /// Switches to browsing `url` (from the system folder picker) instead
+    /// of the app's own Documents directory, and remembers it so a future
+    /// launch resumes there automatically via `start()` — the closest
+    /// approximation of "just open to my files" iOS actually allows,
+    /// since the very first grant still has to go through that picker.
+    func chooseLocation(_ url: URL) {
+        guard access.startAccessing(url) else {
+            errorMessage = "That location could not be opened. Try again in Files."
+            return
+        }
+        do {
+            try access.validateDirectory(url)
+        } catch {
+            access.stopAccessing(url)
+            errorMessage = "That location could not be opened. Try again in Files."
+            return
+        }
+        guard let bookmark = try? access.makeBookmark(url) else {
+            access.stopAccessing(url)
+            errorMessage = "That location could not be saved. Try again in Files."
+            return
+        }
+        if let externalScopedURL {
+            access.stopAccessing(externalScopedURL)
+        }
+        bookmarkStore.bookmark = bookmark
+        externalScopedURL = url
+        rootURL = url
+        isBrowsingExternalLocation = true
+    }
+
+    /// Forgets the remembered external location for good and switches back
+    /// to the app's own Documents directory.
+    func resetToAppStorage() {
+        if let externalScopedURL {
+            access.stopAccessing(externalScopedURL)
+        }
+        externalScopedURL = nil
+        bookmarkStore.bookmark = nil
+        rootURL = rootProvider()
+        isBrowsingExternalLocation = false
+    }
+
+    /// Mirrors `FolderRootManager.reportPickerFailure(_:)`: a person
+    /// cancelling the picker isn't an error worth surfacing.
+    func reportPickerFailure(_ error: Error) {
+        let cocoaError = error as NSError
+        guard !(cocoaError.domain == NSCocoaErrorDomain &&
+                cocoaError.code == CocoaError.Code.userCancelled.rawValue) else { return }
+        errorMessage = "Files could not open the folder picker. Please try again."
     }
 
     /// Lists a directory's immediate contents, folders first, both groups
     /// alphabetical. Never throws: a listing failure clears to empty and
     /// surfaces through `errorMessage` instead, since a folder view has no
     /// other sensible fallback content.
+    ///
+    /// Goes through `NSFileCoordinator` rather than calling
+    /// `FileManager.contentsOfDirectory` directly: a directory reached via
+    /// an external `chooseLocation(_:)` pick (especially anything under "On
+    /// My iPhone/iPad") is backed by a `NSFileProviderExtension`, and a
+    /// plain, uncoordinated read can race that provider's own
+    /// materialization of its contents — observed on-device as the file
+    /// manager reporting a folder empty immediately after picking it, only
+    /// to show its real contents once something else (even an unrelated
+    /// document-picker interaction elsewhere in the app) happened to let
+    /// the provider finish syncing. A coordinated read is Apple's own
+    /// documented mechanism for making sure that sync has actually
+    /// happened before the listing is trusted; the app's own sandboxed
+    /// Documents directory needs no such coordination, but going through
+    /// it there too costs nothing.
     func entries(in directory: URL) -> [FileManagerEntry] {
-        do {
-            let contents = try FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            )
-            return contents.map(FileManagerEntry.init).sorted { lhs, rhs in
-                if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
-                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        var result: [FileManagerEntry] = []
+        var coordinatorError: NSError?
+        var diagnostic = "no read attempted"
+        let coordinator = NSFileCoordinator()
+        coordinator.coordinate(readingItemAt: directory, options: [], error: &coordinatorError) { coordinatedURL in
+            do {
+                let contents = try FileManager.default.contentsOfDirectory(
+                    at: coordinatedURL,
+                    includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+                    options: [.skipsHiddenFiles]
+                )
+                diagnostic = "\(contents.count) raw item(s) at \(coordinatedURL.path)"
+                result = contents.map(FileManagerEntry.init).sorted { lhs, rhs in
+                    if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+            } catch {
+                diagnostic = "read error: \((error as NSError).localizedDescription)"
+                errorMessage = "This folder could not be read."
             }
-        } catch {
-            errorMessage = "This folder could not be read."
-            return []
         }
+        if let coordinatorError {
+            diagnostic = "coordinator error: \(coordinatorError.localizedDescription)"
+            errorMessage = "This folder could not be read."
+        }
+        lastListingDiagnostic = diagnostic
+        return result
     }
 
     // MARK: - Archives

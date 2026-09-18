@@ -38,6 +38,12 @@ struct HTTPServerLimits: Sendable {
     /// `PUT` and a browser upload are authorized by different
     /// `ServerProfile` capabilities and could reasonably diverge later.
     var maxWebDAVPutBytes: Int
+    /// Upper bound on the password-only login form's POST body (v0.3,
+    /// `docs/adr/0008-password-only-cookie-login.md`) — just a password
+    /// and a redirect path, never file content, so this is a small
+    /// control-plane cap like `maxZipSelectionBytes`, not a transfer-size
+    /// limit.
+    var maxLoginBodyBytes: Int
     /// Upper bound on concurrent connections from a single remote address
     /// (v0.3, `docs/adr/0006-connection-and-rate-limits.md`) — independent
     /// of `maxConcurrentConnections`, so one client can never consume every
@@ -67,6 +73,7 @@ struct HTTPServerLimits: Sendable {
         maxZipEntryCount: 500,
         maxZipUncompressedBytes: 4 * 1024 * 1024 * 1024,
         maxWebDAVPutBytes: 4 * 1024 * 1024 * 1024,
+        maxLoginBodyBytes: 4 * 1024,
         maxConnectionsPerAddress: 16,
         maxConnectionsPerAddressPerWindow: 120,
         addressRateWindow: 10,
@@ -119,6 +126,10 @@ actor HTTPServer {
     /// `nil` (the default) means every request is let through unchecked —
     /// see `ServerCore/ServerCredentials.swift`.
     private let credentials: ServerCredentials?
+    /// Shared across every accepted `HTTPConnection` (v0.3, password-only
+    /// cookie login — `docs/adr/0008-password-only-cookie-login.md`).
+    /// Cleared on `stop()`, never persisted, same as `credentials` itself.
+    private let sessionTokens = SessionTokenStore()
 
     init(
         router: any HTTPRouter = NotFoundRouter(),
@@ -195,6 +206,7 @@ actor HTTPServer {
         }
         connections.removeAll()
         addressTracker.removeAll()
+        await sessionTokens.removeAll()
         if let startContinuation {
             self.startContinuation = nil
             startContinuation.resume(throwing: ServerError.listenerFailed("stopped before ready"))
@@ -225,7 +237,8 @@ actor HTTPServer {
             router: router,
             limits: limits,
             requestLog: requestLog,
-            credentials: credentials
+            credentials: credentials,
+            sessionTokens: sessionTokens
         ) { [weak self] id in
             guard let self else { return }
             Task { await self.remove(id) }

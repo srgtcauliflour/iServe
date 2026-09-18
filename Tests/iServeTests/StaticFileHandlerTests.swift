@@ -32,10 +32,15 @@ final class StaticFileHandlerTests: XCTestCase {
         return HTTPRequest(method: "GET", target: target, httpVersion: "HTTP/1.1", headers: headers)
     }
 
+    /// Index auto-serving is a `ServerProfile.websiteReadOnly`-only
+    /// behavior (`allowDirectoryListing == false`) — see
+    /// `testDirectoryListingModeAlwaysShowsTheListingEvenWithAnIndexFilePresent`
+    /// below for the other three profiles, which always show the listing.
     func testPrefersIndexHtmlOverIndexHtmWhenBothExist() throws {
         try "html".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         try "htm".write(to: root.appendingPathComponent("index.htm"), atomically: true, encoding: .utf8)
-        let response = makeHandler().route(request("/"))
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/"))
         XCTAssertEqual(response.status, 200)
         guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
         XCTAssertEqual(file.url.lastPathComponent, "index.html")
@@ -43,10 +48,34 @@ final class StaticFileHandlerTests: XCTestCase {
 
     func testFallsBackToIndexHtmWhenIndexHtmlIsAbsent() throws {
         try "htm".write(to: root.appendingPathComponent("index.htm"), atomically: true, encoding: .utf8)
-        let response = makeHandler().route(request("/"))
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/"))
         XCTAssertEqual(response.status, 200)
         guard case .file(let file) = response.body else { return XCTFail("expected a file body") }
         XCTAssertEqual(file.url.lastPathComponent, "index.htm")
+    }
+
+    /// File Sharing (the default profile `makeHandler()` represents), File
+    /// Drop, and Full Access all keep `allowDirectoryListing == true` and
+    /// must always show the listing, never auto-serve an index page out
+    /// from under it — a person still reaches that page by clicking its
+    /// entry in the listing (a plain file GET, unaffected by this).
+    func testDirectoryListingModeAlwaysShowsTheListingEvenWithAnIndexFilePresent() throws {
+        try "<html>hi</html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        try "body".write(to: root.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+
+        let response = makeHandler().route(request("/"))
+        XCTAssertEqual(response.status, 200)
+        guard case .data(let data) = response.body else { return XCTFail("expected a generated listing body") }
+        let page = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(page.contains("notes.txt"))
+        XCTAssertTrue(page.contains("index.html"))
+
+        // Clicking the index file's own entry still serves it as a plain file.
+        let fileResponse = makeHandler().route(request("/index.html"))
+        XCTAssertEqual(fileResponse.status, 200)
+        guard case .file(let file) = fileResponse.body else { return XCTFail("expected a file body") }
+        XCTAssertEqual(file.url.lastPathComponent, "index.html")
     }
 
     func testDirectoryWithoutIndexReturnsAGeneratedListing() throws {
@@ -475,7 +504,8 @@ final class StaticFileHandlerTests: XCTestCase {
 
     func testRangeAppliesToAResolvedIndexFileToo() throws {
         try "0123456789".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
-        let response = makeHandler().route(request("/", range: "bytes=0-3"))
+        let handler = StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        let response = handler.route(request("/", range: "bytes=0-3"))
         XCTAssertEqual(response.status, 206)
         XCTAssertEqual(response.headers["Content-Range"], "bytes 0-3/10")
     }

@@ -14,17 +14,83 @@ final class FileManagerViewModelTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    /// `StubFolderAccess` (from `FolderRootManagerTests.swift`) ignores
-    /// whatever URL `select(_:)` is given and always grants scope, so it
-    /// works fine here with a real temporary directory as the root, exactly
-    /// as `LiveServerServiceTests.swift` already relies on.
+    /// `FileManagerViewModel` always resolves to the app's real Documents
+    /// directory in production; tests override `rootProvider` with an
+    /// isolated temporary directory instead, so nothing here touches the
+    /// real device filesystem outside this test's own scratch folder.
+    /// `StubFolderAccess`/`MemoryBookmarkStore` (from
+    /// `FolderRootManagerTests.swift`) keep the "browse another location"
+    /// path entirely in memory too, rather than touching real
+    /// `UserDefaults`/security-scoped bookmarks.
     @MainActor
-    private func makeStartedModel() -> FileManagerViewModel {
-        let folders = FolderRootManager(access: StubFolderAccess(), store: MemoryBookmarkStore())
-        folders.select(root)
-        let model = FileManagerViewModel(folders: folders)
+    private func makeStartedModel(bookmarkStore: MemoryBookmarkStore = MemoryBookmarkStore()) -> FileManagerViewModel {
+        let model = FileManagerViewModel(
+            access: StubFolderAccess(),
+            bookmarkStore: bookmarkStore,
+            rootProvider: { [root] in root! }
+        )
         model.start()
         return model
+    }
+
+    // MARK: - Browsing location (post-v0.3 fix)
+
+    @MainActor
+    func testStartFallsBackToAppStorageWhenNoLocationIsRemembered() {
+        let model = makeStartedModel()
+        XCTAssertEqual(model.rootURL, root)
+        XCTAssertFalse(model.isBrowsingExternalLocation)
+        model.stop()
+    }
+
+    @MainActor
+    func testChooseLocationSwitchesRootAndRemembersABookmark() {
+        let bookmarkStore = MemoryBookmarkStore()
+        let access = StubFolderAccess()
+        let model = FileManagerViewModel(access: access, bookmarkStore: bookmarkStore, rootProvider: { [root] in root! })
+        model.start()
+        XCTAssertNil(bookmarkStore.bookmark)
+
+        let picked = URL(fileURLWithPath: "/private/Downloads")
+        model.chooseLocation(picked)
+
+        XCTAssertEqual(model.rootURL, picked)
+        XCTAssertTrue(model.isBrowsingExternalLocation)
+        XCTAssertEqual(bookmarkStore.bookmark, access.newBookmark)
+        model.stop()
+    }
+
+    @MainActor
+    func testResetToAppStorageForgetsTheBookmarkAndReturnsToTheDefaultRoot() {
+        let bookmarkStore = MemoryBookmarkStore()
+        let model = FileManagerViewModel(access: StubFolderAccess(), bookmarkStore: bookmarkStore, rootProvider: { [root] in root! })
+        model.start()
+        model.chooseLocation(URL(fileURLWithPath: "/private/Downloads"))
+        XCTAssertNotNil(bookmarkStore.bookmark)
+
+        model.resetToAppStorage()
+
+        XCTAssertEqual(model.rootURL, root)
+        XCTAssertFalse(model.isBrowsingExternalLocation)
+        XCTAssertNil(bookmarkStore.bookmark)
+        model.stop()
+    }
+
+    /// A location chosen (and remembered) in an earlier session is resumed
+    /// automatically on the next `start()`, without going through the
+    /// picker again — this is what makes "browse another location" feel
+    /// automatic after the first grant.
+    @MainActor
+    func testStartResumesAPreviouslyChosenExternalLocation() {
+        let access = StubFolderAccess()
+        let bookmarkStore = MemoryBookmarkStore(bookmark: Data([9]))
+        let model = FileManagerViewModel(access: access, bookmarkStore: bookmarkStore, rootProvider: { [root] in root! })
+
+        model.start()
+
+        XCTAssertEqual(model.rootURL, access.url)
+        XCTAssertTrue(model.isBrowsingExternalLocation)
+        model.stop()
     }
 
     @MainActor

@@ -625,3 +625,167 @@ variants (`Assets.xcassets` supports per-appearance app icons via
 matters, but a real design decision (how the mark simplifies to a
 single-color glyph for the tinted case) rather than pure asset generation,
 so it wasn't bundled into this pass.
+
+## v0.3 finishing touches (post-ship polish, before sign-off)
+
+A batch of fixes/features requested after v0.3's initial ship, landed in two
+PRs:
+
+**Password-only cookie login** (`docs/adr/0008-password-only-cookie-login.md`):
+a plain browser `GET`/`HEAD` with no `Authorization` header now gets a
+password-only HTML login page (`Handlers/LoginPageRenderer.swift`) instead
+of the browser's native username+password Basic Auth dialog — the
+"username" field a person saw when connecting to a password-protected
+session never corresponded to anything iServe actually checks. A correct
+password mints a session token (`ServerCore/SessionTokenStore.swift`,
+shared across every connection this server session accepts) delivered as
+an `HttpOnly`/`SameSite=Strict` cookie; a WebDAV/API client that already
+sends an `Authorization` header is completely unaffected and still gets a
+plain `401` on a bad credential, exactly as before. See the ADR for the
+full design, including the redirect-path open-redirect/CRLF-injection
+defenses, and `Tests/iServeTests/LoginLifecycleTests.swift` for the
+end-to-end flow.
+
+**Bottom tab bar** (`App/RootTabView.swift`): the app now opens directly to
+a "Files" tab (`FileManagerScreen`) instead of the server dashboard, with a
+second "File Sharing" tab for folder selection/server profile/the web
+server itself (`ServerDashboard`) — a standard `TabView`, replacing the
+old "Open File Manager" sheet that buried file management behind the
+server screen.
+
+**File manager fixes** (`App/FileManagerScreen.swift`): the multi-select
+`List` was built with `List(selection: $selection)`, a `Set`-backed
+selection binding — which, on-device, intercepts a row's own tap gesture
+for its own selection handling even when the row's content is an
+interactive `NavigationLink`/`Button`. That silently broke opening a
+folder, previewing a file, and building up a selection to
+compress/move/copy at all (delete still worked because it only used a
+per-row swipe action, never the multi-select list). Fixed by dropping
+`List(selection:)` entirely and handling selection by hand — a plain
+tap-to-toggle checkbox row while "Select" mode is on, an ordinary
+`NavigationLink`/preview `Button` otherwise. (A folder row also couldn't
+previously be selected at all even once selection worked, since the old
+code let it navigate regardless of `isSelecting`.) Also added: a "Done"
+exit button on the image/file preview sheet (`QLPreviewController`
+supplies its own only when UIKit presents it directly — embedded here via
+`UIViewControllerRepresentable`, it had no navigation bar and thus no
+visible way to leave besides an undiscoverable swipe-down), and a "File
+Info" sheet (name, kind, size, modified date, containing folder) reached
+via each row's leading swipe actions alongside the existing Rename.
+Folder-to-folder navigation and its "back" affordance are the platform's
+own `NavigationStack` push/pop (auto chevron + edge-swipe-back) — now that
+the selection bug no longer swallows the taps that drive it.
+
+**Index-page auto-serving is now Website/Read-Only-only**
+(`Handlers/StaticFileHandler.swift`): serving a folder's `index.html`
+automatically, instead of the generated directory listing, used to happen
+in every profile whenever the folder happened to contain one — including
+File Sharing, File Drop, and Full Access, which are meant for browsing a
+folder's actual contents. Now `respondToDirectory(path:directoryURL:request:)`
+only auto-serves an index file when `allowDirectoryListing == false`
+(`ServerProfile.websiteReadOnly`); every other profile always shows the
+listing, and a person still reaches the index page the ordinary way — by
+clicking its entry, resolved as a plain file exactly like any other.
+
+**Directory breadcrumbs** (`Handlers/DirectoryListingRenderer.swift`): the
+generated HTML listing now renders a clickable breadcrumb trail ("Home /
+folder / subfolder") above the entry list, so a person browsing File
+Share/File Drop/Full Access from a real browser can jump back to any
+ancestor folder directly instead of relying on the browser's own back
+button (which only ever undoes one navigation, and not after a reload).
+
+**Preview in App for additional mounts** (`App/ServerDashboard.swift`):
+each additional mounted folder (`docs/adr/0007-multiple-mounted-folders.md`)
+now has its own "Preview in App" button next to its address, not just the
+primary shared folder — the dashboard's single `isShowingBrowser` sheet
+flag became a `PreviewTarget?` so any endpoint (primary or a mount) can be
+opened in the in-app browser.
+
+**CRLF-injection check bypassed by grapheme clustering** (`ServerCore/HTTPConnection.swift`):
+`sanitizedRedirectPath(_:)`'s guard rejected a `redirect` value containing
+`"\r"` or `"\n"` via `String.contains`, but Swift's `String` is
+grapheme-cluster-based — `"\r\n"` immediately adjacent (the realistic
+CRLF-injection payload) collapses into a *single* `Character` distinct
+from either alone, so the check silently passed exactly the input it
+existed to catch. A wrong-but-otherwise-valid login POST with
+`redirect=/ok%0D%0AX-Injected%3A%20yes` came back with a real, separate
+`X-Injected: yes` response header rather than falling back to `/`. Caught
+by `LoginLifecycleTests.testRedirectPathIsSanitizedAgainstOpenRedirectAndHeaderInjection`
+once an unrelated bug in that same test (reusing one `URLSession` — and
+therefore its cookie jar — across three successive *successful* logins,
+so the second and third attempts rode in on the first one's session
+cookie and never reached the vulnerable code path at all) was fixed
+first. Fixed by scanning `value.unicodeScalars` for CR/LF instead of a
+`Character`-level `contains`, which sees the two code points individually
+regardless of clustering. Never shipped in a released build.
+
+**File manager decoupled from the File Sharing tab** (`App/FileManagerViewModel.swift`,
+`App/RootTabView.swift`): the file manager used to share `ServerCoordinator.folders`'
+selected root and security-scoped access, so it was unusable — an empty
+"Folder Unavailable" screen — until a folder had been chosen on the File
+Sharing tab, which had nothing to do with what a file manager is for.
+`FileManagerViewModel` no longer takes a `FolderRootManager` at all; it
+always opens the app's own sandboxed Documents directory (`rootProvider`,
+defaulting to `FileManagerViewModel.documentsDirectory()`, overridable only
+by tests), which needs no picker or security-scoped bookmark since the app
+already owns it outright. `project.yml` gained
+`INFOPLIST_KEY_UIFileSharingEnabled`/`INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace`
+so that same folder is reachable from the Files app ("On My iPhone/iPad" >
+iServe) and over USB/Wi-Fi from a Mac — otherwise "your device's files"
+would always start out permanently empty with no way to add anything
+except the web server's own upload feature.
+
+**"Empty folder instead of my device storage" fast follow** (same files, plus
+`FileSystem/FolderAccess.swift`): the app's own Documents directory is real
+on-device storage, but it's genuinely empty on a fresh install — third-party
+iOS apps have no access to "the device's" files at large without a person
+explicitly granting it per folder; there's no automatic, unscoped "home
+directory" to browse the way there is on desktop platforms. Added
+`FileManagerViewModel.chooseLocation(_:)`/`resetToAppStorage()`, reachable
+via a new `locationMenu` in `App/FileManagerScreen.swift`'s toolbar
+("Browse Other Location…"), which opens the exact same system folder
+picker `ServerDashboard`'s "Choose Folder" already uses — On My
+iPhone/iPad, Downloads, iCloud Drive, another app's shared documents, or
+any other folder a person grants. `UserDefaultsFolderBookmarkStore` gained
+a `key` parameter so this remembers its own bookmark
+(`iServe.fileManagerLocationBookmark`) entirely independently of the
+shared folder's own (`iServe.selectedFolderBookmark`); `start()` now tries
+that remembered bookmark first and only falls back to the Documents
+directory if none is saved or it no longer resolves — so the one-time
+picker grant is the only manual step, and every later launch resumes
+automatically.
+
+**A folder chosen via "Browse Other Location" appeared empty until the
+Files tab was fully remounted** (`App/FileManagerScreen.swift`): took three
+attempts to actually find. First suspected (and ruled out, since the
+wiring genuinely has no coupling between the two tabs) a dependency on the
+File Sharing tab's own folder; then suspected (and fixed, but didn't
+change the symptom) `entries(in:)` racing a FileProvider's own
+materialization of an "On My iPhone" folder's contents, addressed by
+reading through `NSFileCoordinator.coordinate(readingItemAt:options:error:byAccessor:)`
+instead of a plain `FileManager.contentsOfDirectory` call. Adding a
+one-line listing diagnostic to the screen (raw item count/real error,
+surfaced right under the location banner) is what finally exposed the
+actual bug: after picking a new location, the diagnostic line reported a
+completely different path than the banner's own "Browsing: ..." line
+above it — proof that `entries(in:)` had been called with a *stale*
+`directory` value.
+
+Root cause: `FileManagerFolderView`'s listing only ever refreshed from
+`.onAppear(perform: refresh)`, which fires once when a view first mounts.
+`chooseLocation(_:)`/`resetToAppStorage()` change `FileManagerViewModel.rootURL`
+while the *same* root `FileManagerFolderView` instance stays mounted (no
+navigation push/pop happens), so SwiftUI just updates its `directory`
+property in place — `onAppear` never fires again, and the file list
+silently keeps showing whatever was loaded for the *previous* directory
+(typically the empty Documents default). Switching to the File Sharing tab
+and back only ever appeared to fix it because that fully tears the Files
+tab down (`stop()` sets `rootURL = nil`) and rebuilds it from scratch
+(`start()` sets a fresh `rootURL`, which is a real "the view didn't exist,
+now it does" transition, correctly re-triggering `onAppear`) — coincidental
+lifecycle timing, never anything to do with the other tab's own folder.
+Fixed by replacing `.onAppear(perform: refresh)` with
+`.task(id: directory) { refresh() }`, which re-runs whenever `directory`
+itself changes, not just on first appearance — the general-purpose fix for
+this whole class of "a SwiftUI view's parameter changed but its cached
+`@State` didn't notice" bug.

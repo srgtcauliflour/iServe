@@ -126,13 +126,39 @@ now uses in place of `UnconfiguredServerService`.
   username is decoded and ignored), and the comparison is constant-time
   (`HTTPConnection.constantTimeEquals`) rather than a plain `==`, which
   would let a remote attacker recover the password one byte at a time
-  from response timing. Missing/wrong credentials get `401` with
-  `WWW-Authenticate: Basic realm="iServe"`, so a browser's own native
-  login prompt handles it — no custom page, no JavaScript. `nil`
-  credentials (the default) mean no check at all — every test predating
-  this still exercises that path. See
-  `docs/adr/0002-http-basic-authentication.md` for why Basic Auth
-  specifically, and the plain-HTTP trade-off it accepts.
+  from response timing. A request that already carries an `Authorization`
+  header gets a plain `401` with `WWW-Authenticate: Basic realm="iServe"`
+  on a missing/wrong credential, unchanged from v0.2 — this is what a
+  WebDAV/API client already knows how to respond to. `nil` credentials
+  (the default) mean no check at all — every test predating this still
+  exercises that path. See `docs/adr/0002-http-basic-authentication.md`
+  for why Basic Auth specifically, and the plain-HTTP trade-off it
+  accepts.
+
+  **Password-only cookie login (v0.3,
+  `docs/adr/0008-password-only-cookie-login.md`):** the one case Basic
+  Auth's own native dialog handles badly — an ordinary browser `GET`/`HEAD`
+  with *no* `Authorization` header at all, and thus no session cookie
+  either — instead gets `Handlers/LoginPageRenderer.swift`'s plain
+  password-only HTML page rather than the browser's built-in
+  username+password prompt (iServe has never checked a username, so that
+  field only ever confused a real person connecting). Its `POST` target,
+  the reserved path `LoginPageRenderer.path` (`/__iserve/login`), is
+  intercepted by `respond(to:leftoverBodyBytes:)` before `router.route(_:)`
+  is ever consulted — it is a control-plane endpoint, never a file. A
+  correct password mints a token via `SessionTokenStore` (an actor shared
+  across every connection this server session accepts, since v0.1 has no
+  HTTP keep-alive — one connection is one request, so a session cookie is
+  the only way a later, separate connection is recognized as "already
+  logged in") and responds `303 See Other` with
+  `Set-Cookie: iserve_session=<token>; Path=/; HttpOnly; SameSite=Strict`
+  back to wherever the client was trying to go (a hidden `redirect` field,
+  sanitized against open-redirect and response-header/CRLF injection by
+  `sanitizedRedirectPath(_:)` before it's ever echoed back). A valid
+  session cookie is checked first, before either Basic Auth or the login
+  path, and is sufficient on its own to reach the router. `SessionTokenStore`
+  is cleared entirely on `HTTPServer.stop()`, exactly like `credentials`
+  itself is never persisted — restarting the server logs every browser out.
 
   **POST uploads (v0.2):** once headers are parsed for a POST,
   `HTTPConnection` authorizes the *whole* request — target is a directory,

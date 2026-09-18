@@ -7,12 +7,18 @@ import XCTest
 /// behavior (index preference, status mapping) lives in `StaticFileHandlerTests`;
 /// these cases are only the ones that need an actual client/server round trip.
 final class StaticFileServingLifecycleTests: XCTestCase {
+    /// Index auto-serving only happens with directory listing off
+    /// (`ServerProfile.websiteReadOnly`) — see `docs/adr` and
+    /// `StaticFileHandlerTests` for the router-level rule; this exercises
+    /// the same thing over a real client/server round trip.
     func testServesIndexHtmlAtRootWithCorrectContentType() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         try "<html>hi</html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
 
-        let server = HTTPServer(router: StaticFileHandler(resolver: SecurePathResolver(root: root)))
+        let server = HTTPServer(
+            router: StaticFileHandler(resolver: SecurePathResolver(root: root), allowDirectoryListing: false)
+        )
         let port = try await server.start()
 
         let (data, response) = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/"))
