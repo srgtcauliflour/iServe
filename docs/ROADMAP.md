@@ -202,7 +202,18 @@ Exit gate: large transfers resume correctly, archives remain bounded-memory, and
 ## v0.4 — Web Application Server
 Goal: serve useful self-contained PHP applications.
 
-Precondition: approve PHP feasibility ADR covering runtime integration, extensions, code-signing/distribution and sandbox implications.
+Precondition: approve PHP feasibility ADR covering runtime integration, extensions, code-signing/distribution and sandbox implications. **Done** — see `docs/adr/0009-php-runtime-feasibility.md`.
+
+In progress: `.github/workflows/php-embed.yml` (a new, dedicated workflow, kept
+independent of `ios.yml` — every job in it runs `continue-on-error: true`)
+cross-compiles PHP 8.4.2's embed SAPI as `libphp.a` for the iOS device and
+Simulator targets, in four incremental, CI-observed steps: device
+cross-compile, a native-macOS embed-SAPI smoke test, a Simulator-target
+smoke test (actually executed in CI via `xcrun simctl spawn`), and a
+device-target link smoke test (build-only — a device binary can't execute
+on a CI runner). Once that's green, next up is the Swift/C bridge
+(`sapi/embed/php_embed.h`'s `php_embed_init`/`zend_eval_string`/
+`php_embed_shutdown`) and request/response mapping.
 
 Deliverables:
 - Embedded PHP runtime/bridge.
