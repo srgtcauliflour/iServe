@@ -149,6 +149,17 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/lib
         OTHER_LDFLAGS: -lphp -lresolv -liconv -lm -lsqlite3
+        # php-embed.yml's simulator-smoke-test job cross-compiles libphp.a
+        # for the Simulator SDK as arm64 only (-arch arm64, matching the
+        # Apple Silicon CI runner it also needs to *run* that target on via
+        # xcrun simctl spawn) — but a plain `generic/platform=iOS Simulator`
+        # xcodebuild destination defaults to a universal arm64+x86_64
+        # build, so the linker silently drops every arm64-only libphp.a
+        # object for the x86_64 slice ("found architecture 'arm64',
+        # required architecture 'x86_64'") and fails with dozens of
+        # undefined PHP symbols. Excluding x86_64 for the simulator SDK
+        # matches what libphp.a actually provides.
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
   iServeTests:
     type: bundle.unit-test
     platform: iOS
