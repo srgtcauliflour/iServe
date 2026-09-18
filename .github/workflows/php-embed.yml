@@ -36,9 +36,9 @@ jobs:
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
 
-      - name: Install bison/re2c (Apple's system bison is too old for PHP)
+      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
         run: |
-          brew install bison re2c
+          brew install autoconf bison re2c
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
       # PHP's own PHP_CHECK_FUNC autoconf macro discards any pre-seeded
@@ -128,9 +128,9 @@ jobs:
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
 
-      - name: Install bison/re2c (Apple's system bison is too old for PHP)
+      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
         run: |
-          brew install bison re2c
+          brew install autoconf bison re2c
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
       - name: buildconf (generate ./configure)
@@ -199,9 +199,9 @@ jobs:
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
 
-      - name: Install bison/re2c (Apple's system bison is too old for PHP)
+      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
         run: |
-          brew install bison re2c
+          brew install autoconf bison re2c
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
       - name: Patch config.m4 — skip posix_spawn_file_actions_addchdir_np probe (unavailable on iOS)
@@ -323,9 +323,9 @@ jobs:
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
 
-      - name: Install bison/re2c (Apple's system bison is too old for PHP)
+      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
         run: |
-          brew install bison re2c
+          brew install autoconf bison re2c
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
       - name: Patch config.m4 — skip posix_spawn_file_actions_addchdir_np probe (unavailable on iOS)
