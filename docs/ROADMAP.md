@@ -299,11 +299,25 @@ within `open_basedir`, writes to it and reads it back through both the
 `iserve_bridge_smoke_test.c` exercises it, reusing the same started
 bridge as requests A/B.
 
-Still open: sessions, file uploads *through PHP* (a script receiving an
-uploaded file via `$_FILES` — distinct from the POST-body wiring already
-landed, which hands PHP the raw body but doesn't parse multipart uploads
-for it), a UI toggle for `phpExecutionEnabled`, the PHP diagnostics
-console, and the compatibility/security test suite below.
+Done: sessions. `iserve_php_bridge_startup`'s `session.save_path` was
+already configured, but nothing had proven a session actually survives
+between requests rather than just starting without error. Requests D/E
+in `iserve_bridge_smoke_test.c` prove it for real: request D's
+`session_start()` result's own `Set-Cookie` header is extracted and fed
+back as request E's `Cookie` header, exactly like a real client's second
+request would, and `$_SESSION['visits']` is confirmed to have persisted
+(`1` then `2`) rather than resetting. Along the way, found and fixed a
+real gap — the test harness never created its own
+`session.save_path` directory (PHP's session extension never creates it
+itself); `PHPWorkerLimits`'/`ServerCoordinator`'s real one already does
+via `FileManager.createDirectory`, but the bridge's own test harness
+hadn't been doing the equivalent.
+
+Still open: file uploads *through PHP* (a script receiving an uploaded
+file via `$_FILES` — distinct from the POST-body wiring already landed,
+which hands PHP the raw body but doesn't parse multipart uploads for
+it), a UI toggle for `phpExecutionEnabled`, the PHP diagnostics console,
+and the compatibility/security test suite below.
 
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a
@@ -321,7 +335,7 @@ Deliverables:
 - Request mapping for GET/POST/cookies/server state/file uploads. GET/POST
   body done; file uploads *through PHP* (`$_FILES`) still open (see above).
 - Response status/header/body capture. Done.
-- Sessions.
+- Sessions. Done.
 - SQLite/PDO. Done.
 - Selected extensions (subject to feasibility).
 - `index.php` routing. Done.
