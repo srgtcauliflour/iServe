@@ -38,7 +38,11 @@ final class PHPScriptExecutionLifecycleTests: XCTestCase {
         XCTAssertEqual(http.value(forHTTPHeaderField: "X-Fake-PHP"), "1")
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "hello from fake PHP")
 
-        let recorded = try XCTUnwrap(await executor.lastRequest)
+        // XCTUnwrap's parameter is a plain (non-async) autoclosure, so the
+        // `await` has to happen in a separate statement first -- it can't
+        // be evaluated inside XCTUnwrap's own closure.
+        let lastRequest = await executor.lastRequest
+        let recorded = try XCTUnwrap(lastRequest)
         XCTAssertEqual(recorded.method, "GET")
         XCTAssertEqual(recorded.queryString, "greeting=hi")
         XCTAssertEqual(recorded.scriptFilename, root.appendingPathComponent("index.php").path)
