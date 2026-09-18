@@ -77,17 +77,16 @@ struct StaticFileHandler: HTTPRouter {
         return fileResponse(for: resolved, request: request)
     }
 
+    /// Shared resolution logic for both `isPHPScriptRequest`/`routePHPScript`:
     /// `nil` whenever this request shouldn't be handled as PHP at all — the
-    /// capability is off, the path doesn't resolve to an existing `.php`
-    /// file, or resolution itself failed — so the caller falls back to
-    /// `route(_:)`'s ordinary static-file handling, which re-resolves the
-    /// same path and reports any error the normal way. Deliberately
-    /// re-resolves rather than sharing `route(_:)`'s result: this is a
-    /// separate `HTTPRouter` requirement (see that protocol's doc comment)
-    /// called *before* `route(_:)`, not a branch inside it, so the two
-    /// paths don't share call state.
-    func routePHPScript(_ request: HTTPRequest) async -> HTTPResponse? {
-        guard allowPHPExecution, let phpExecutor else { return nil }
+    /// capability is off, no executor is wired up, the path doesn't resolve
+    /// to an existing `.php` file, or resolution itself failed. `route(_:)`
+    /// deliberately re-resolves its own path rather than sharing this
+    /// result: these are separate `HTTPRouter` requirements (see that
+    /// protocol's doc comment) called *before* `route(_:)`, not a branch
+    /// inside it, so the paths don't share call state.
+    private func resolvedPHPScriptURL(for request: HTTPRequest) -> URL? {
+        guard allowPHPExecution, phpExecutor != nil else { return nil }
         guard let path = Self.path(fromTarget: request.target) else { return nil }
         guard let resolved = try? resolver.resolve(requestPath: path) else { return nil }
         guard resolved.pathExtension.lowercased() == "php" else { return nil }
@@ -95,18 +94,27 @@ struct StaticFileHandler: HTTPRouter {
         guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
             return nil
         }
+        return resolved
+    }
 
-        // GET/HEAD only for now: HTTPRequest carries no body (v0.1 never
-        // needed one), and a POST body is instead streamed straight to
-        // disk/memory by HTTPConnection's own upload/WebDAV-PUT state
-        // machines rather than ever landing on HTTPRequest — wiring POST
-        // bodies through to php://input needs the same kind of streaming
-        // plumbing those already use, not a body field here. Still open;
-        // see docs/ROADMAP.md's v0.4 section.
+    /// Checked by `HTTPConnection` before reading a POST body byte — see
+    /// `HTTPRouter`'s doc comment for why. Side-effect-free.
+    func isPHPScriptRequest(_ request: HTTPRequest) -> Bool {
+        resolvedPHPScriptURL(for: request) != nil
+    }
+
+    /// `body` is the already-fully-read POST body (buffered by
+    /// `HTTPConnection`'s own PHP-POST state machine, mirroring how it
+    /// already buffers a ZIP-selection POST body — see that state machine's
+    /// doc comment for why a PHP body is buffered rather than streamed to
+    /// disk like an upload), or `nil` for GET/HEAD, which carries none.
+    func routePHPScript(_ request: HTTPRequest, body: Data?) async -> HTTPResponse? {
+        guard let resolved = resolvedPHPScriptURL(for: request), let phpExecutor else { return nil }
         let phpRequest = PHPRequest(
             method: request.method,
             uri: request.target,
             queryString: Self.queryString(fromTarget: request.target),
+            body: body,
             contentType: request.headers["Content-Type"],
             cookieHeader: request.headers["Cookie"],
             scriptFilename: resolved.path,

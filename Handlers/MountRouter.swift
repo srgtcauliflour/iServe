@@ -85,16 +85,25 @@ struct MountRouter: HTTPRouter {
         return handler(named: name).authorizeWebDAVPut(path: rewritten)
     }
 
-    func routePHPScript(_ request: HTTPRequest) async -> HTTPResponse? {
+    func isPHPScriptRequest(_ request: HTTPRequest) -> Bool {
+        guard let path = Self.path(fromTarget: request.target) else { return false }
+        guard let (name, rest) = Self.firstComponent(of: path), additional.contains(where: { $0.name == name }) else {
+            return primary.isPHPScriptRequest(request)
+        }
+        guard !rest.isEmpty else { return false }
+        return handler(named: name).isPHPScriptRequest(Self.rewritten(request, subPath: rest))
+    }
+
+    func routePHPScript(_ request: HTTPRequest, body: Data?) async -> HTTPResponse? {
         guard let path = Self.path(fromTarget: request.target) else { return nil }
         guard let (name, rest) = Self.firstComponent(of: path), additional.contains(where: { $0.name == name }) else {
-            return await primary.routePHPScript(request)
+            return await primary.routePHPScript(request, body: body)
         }
         // A bare mount reference has no PHP file to run -- route(_:) is
         // what issues the same redirect this gets for a plain static
         // request, so just decline here and let that path handle it.
         guard !rest.isEmpty else { return nil }
-        return await handler(named: name).routePHPScript(Self.rewritten(request, subPath: rest))
+        return await handler(named: name).routePHPScript(Self.rewritten(request, subPath: rest), body: body)
     }
 
     /// `MOVE`/`COPY` never cross mounts: the `Destination` header is

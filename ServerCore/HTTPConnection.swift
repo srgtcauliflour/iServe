@@ -35,6 +35,7 @@ actor HTTPConnection {
     private var zipDownloadState: ZipDownloadState?
     private var webDAVPutState: WebDAVPutState?
     private var loginState: LoginState?
+    private var phpPostState: PHPPostState?
     /// A ZIP built for the *current* response, in the app's own temporary
     /// directory rather than the served root. Set just before responding
     /// with it, deleted in `close()` — the one place every termination
@@ -67,6 +68,19 @@ actor HTTPConnection {
     private struct ZipDownloadState {
         let request: HTTPRequest
         let directoryPath: String
+        let contentLength: Int
+        var buffer = Data()
+    }
+
+    /// Everything tracked while accumulating a PHP-destined POST body (v0.4,
+    /// `docs/adr/0009-php-runtime-feasibility.md`) — like `ZipDownloadState`,
+    /// buffered purely in memory (bounded by `limits.maxPHPPostBodyBytes`),
+    /// never streamed to disk the way `UploadState` is: the PHP executor
+    /// gets the whole body as one `Data` value, the same way `php://input`
+    /// would see it, and has no use for a per-part multipart breakdown the
+    /// way an upload's own `FileChunkWriter`s do.
+    private struct PHPPostState {
+        let request: HTTPRequest
         let contentLength: Int
         var buffer = Data()
     }
@@ -138,6 +152,7 @@ actor HTTPConnection {
         discardIncompleteUpload()
         zipDownloadState = nil
         loginState = nil
+        phpPostState = nil
         discardIncompleteWebDAVPut()
         if let pendingZipCleanupURL {
             try? FileManager.default.removeItem(at: pendingZipCleanupURL)
@@ -183,6 +198,9 @@ actor HTTPConnection {
                 guard !didRespond, !didClose else { return }
             } else if loginState != nil {
                 processLoginBytes(data)
+                guard !didRespond, !didClose else { return }
+            } else if phpPostState != nil {
+                processPHPPostBytes(data)
                 guard !didRespond, !didClose else { return }
             } else {
                 do {
@@ -266,13 +284,19 @@ actor HTTPConnection {
             // rather than being folded into route(_:) — see HTTPRouter's
             // doc comment. `nil` (feature off, no executor, not a .php
             // path) falls straight through to the ordinary static path.
-            if let phpResponse = await router.routePHPScript(request) {
+            if let phpResponse = await router.routePHPScript(request, body: nil) {
                 respond(with: phpResponse, suppressBody: request.method == "HEAD", request: request)
             } else {
                 respond(with: router.route(request), suppressBody: request.method == "HEAD", request: request)
             }
         case "POST":
-            if Self.isFormURLEncoded(request.headers["Content-Type"]) {
+            // Checked first, before any body byte is read: a POST headed
+            // for PHP execution must never fall into the ZIP-selection or
+            // upload body readers below — see HTTPRouter's
+            // isPHPScriptRequest(_:) doc comment.
+            if router.isPHPScriptRequest(request) {
+                beginPHPPost(for: request, leftoverBodyBytes: leftoverBodyBytes)
+            } else if Self.isFormURLEncoded(request.headers["Content-Type"]) {
                 beginZipDownload(for: request, leftoverBodyBytes: leftoverBodyBytes)
             } else {
                 beginUpload(for: request, leftoverBodyBytes: leftoverBodyBytes)
@@ -852,6 +876,69 @@ actor HTTPConnection {
         guard let contentType else { return false }
         let base = contentType.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
         return base.caseInsensitiveCompare("application/x-www-form-urlencoded") == .orderedSame
+    }
+
+    // MARK: - PHP script execution, POST (v0.4, docs/adr/0009-php-runtime-feasibility.md)
+
+    /// Called once headers are parsed for a POST `dispatch(_:leftoverBodyBytes:)`
+    /// already confirmed (via `router.isPHPScriptRequest(_:)`, before any
+    /// body byte was read) is headed for PHP execution. Shaped exactly like
+    /// `beginZipDownload`: `Content-Length` present and within
+    /// `limits.maxPHPPostBodyBytes`, buffered purely in memory (no per-part
+    /// parsing, no disk streaming — the PHP executor gets the raw bytes as
+    /// one `Data`, the same way `php://input` would see them). Unlike a ZIP
+    /// selection body, an empty PHP POST body is valid — a script may be
+    /// triggered by a POST with no body at all — so `Content-Length: 0`
+    /// runs immediately rather than being rejected.
+    private func beginPHPPost(for request: HTTPRequest, leftoverBodyBytes: Data) {
+        guard let contentLengthText = request.headers["Content-Length"],
+              let contentLength = Int(contentLengthText), contentLength >= 0 else {
+            respond(with: .lengthRequired(), request: request)
+            return
+        }
+        guard contentLength <= limits.maxPHPPostBodyBytes else {
+            respond(with: .payloadTooLarge(), request: request)
+            return
+        }
+        guard contentLength > 0 else {
+            Task { await self.runPHPPost(request: request, body: Data()) }
+            return
+        }
+
+        phpPostState = PHPPostState(request: request, contentLength: contentLength)
+        guard !leftoverBodyBytes.isEmpty else { return }
+        processPHPPostBytes(leftoverBodyBytes)
+    }
+
+    /// Buffers newly received bytes for the active PHP POST body, bounded to
+    /// at most its declared `Content-Length` regardless of how much more the
+    /// client actually sends — same discipline as `processZipDownloadBytes`.
+    private func processPHPPostBytes(_ data: Data) {
+        guard var state = phpPostState else { return }
+        let remainingAllowed = max(0, state.contentLength - state.buffer.count)
+        state.buffer.append(data.prefix(remainingAllowed))
+        phpPostState = state
+        if state.buffer.count >= state.contentLength {
+            finishPHPPostBody()
+        }
+    }
+
+    private func finishPHPPostBody() {
+        guard let state = phpPostState else { return }
+        phpPostState = nil
+        Task { await self.runPHPPost(request: state.request, body: state.buffer) }
+    }
+
+    /// `router.routePHPScript` returning `nil` here would mean the request
+    /// stopped being PHP-eligible between `isPHPScriptRequest`'s check and
+    /// now (e.g. the file was deleted mid-upload) — an edge case rare enough
+    /// that falling back to a plain `404`, the same "hide the capability"
+    /// response this router gives for a missing file, is a reasonable
+    /// answer rather than a dedicated error path.
+    private func runPHPPost(request: HTTPRequest, body: Data) async {
+        let response = await router.routePHPScript(request, body: body)
+        guard !didRespond, !didClose else { return }
+        respond(with: response ?? .notFound(), request: request)
     }
 
     // MARK: - Password-only cookie login (v0.3, docs/adr/0008-password-only-cookie-login.md)

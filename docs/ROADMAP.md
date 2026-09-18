@@ -242,30 +242,40 @@ proves the bridge genuinely compiles and links as part of the full app
 invocation.
 
 Done: `.php` requests now actually reach `PHPWorker` through the real HTTP
-pipeline, GET/HEAD only for now. `ServerCore/PHPScriptExecutor.swift`
-declares the `PHPScriptExecutor` protocol (plus `PHPRequest`/`PHPResponse`)
-with no dependency on the PHP bridge itself, so `Handlers/StaticFileHandler.swift`
+pipeline, GET/HEAD/POST. `ServerCore/PHPScriptExecutor.swift` declares the
+`PHPScriptExecutor` protocol (plus `PHPRequest`/`PHPResponse`) with no
+dependency on the PHP bridge itself, so `Handlers/StaticFileHandler.swift`
 can hold an optional executor and stay part of the ordinary `iServe` target.
-`HTTPRouter` gained a `routePHPScript(_:)` requirement (default `nil`,
-mirroring how each WebDAV method already gets its own requirement rather
-than being folded into `route(_:)`); `HTTPConnection` tries it first for
-GET/HEAD, falling back to the ordinary static path when it declines — off,
-no executor, or not a `.php` file. `ServerCoordinator.phpExecutionEnabled`
+`HTTPRouter` gained `isPHPScriptRequest(_:)` (cheap, synchronous, decides
+before any POST body byte is read — same "decide everything up front"
+discipline `authorizeUpload` already uses) and `routePHPScript(_:body:)`
+(default `nil`, mirroring how each WebDAV method already gets its own
+requirement rather than being folded into `route(_:)`). `HTTPConnection`
+tries the PHP path first for both GET/HEAD and POST, falling back to the
+ordinary static/upload/ZIP-selection paths when it declines — off, no
+executor, or not a `.php` file. A POST body is buffered whole into memory
+by a new `PHPPostState` state machine mirroring `ZipDownloadState` exactly
+(bounded by a new `HTTPServerLimits.maxPHPPostBodyBytes`, deliberately far
+smaller than `maxUploadBytes` since there's no streaming-to-disk step
+here) — not `UploadState`'s multipart-parsing/disk-streaming model, which a
+raw PHP request body has no use for. `ServerCoordinator.phpExecutionEnabled`
 (off by default, orthogonal to `profile` per the ADR) constructs and starts
 a `PHPWorker` under `#if canImport(PHPBridge)` and hands it down through
 `ServerService.start`/`LiveServerService`, gated additionally on
 `profile.allowsDirectoryListing` per the ADR's own framing. Verified for
 real by `Tests/iServeTests/PHPScriptExecutionLifecycleTests.swift` — a fake
-`PHPScriptExecutor` driven through a real `HTTPServer` over loopback, no PHP
+`PHPScriptExecutor` driven through a real `HTTPServer` over loopback
+(GET/HEAD, a buffered POST body, an empty POST body, a body over the new
+size limit, and a non-`.php` POST still reaching upload handling), no PHP
 runtime involved, so it runs on every `ios.yml` test pass, not just the
 occasional `iServeWithPHP` build check.
 
-Still open: POST bodies (`HTTPRequest` carries none today — v0.1 never
-needed one; wiring `php://input` needs the same kind of streaming state
-machine `HTTPConnection`'s upload/WebDAV-PUT handling already uses, not a
-body field), sessions, SQLite/PDO wiring, `index.php` routing, file uploads
-through the bridge, a UI toggle for `phpExecutionEnabled`, the PHP
-diagnostics console, and the compatibility/security test suite below.
+Still open: sessions, SQLite/PDO wiring, `index.php` routing, file uploads
+*through PHP* (a script receiving an uploaded file via `$_FILES` — distinct
+from the POST-body wiring just landed, which hands PHP the raw body but
+doesn't parse multipart uploads for it), a UI toggle for
+`phpExecutionEnabled`, the PHP diagnostics console, and the
+compatibility/security test suite below.
 
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a
@@ -280,8 +290,8 @@ question** — see v0.5 below.
 
 Deliverables:
 - Embedded PHP runtime/bridge.
-- Request mapping for GET/POST/cookies/server state/file uploads. GET
-  done; POST still open (see above).
+- Request mapping for GET/POST/cookies/server state/file uploads. GET/POST
+  body done; file uploads *through PHP* (`$_FILES`) still open (see above).
 - Response status/header/body capture. Done.
 - Sessions.
 - SQLite/PDO.
