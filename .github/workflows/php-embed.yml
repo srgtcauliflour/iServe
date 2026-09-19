@@ -6,6 +6,10 @@ on:
         description: "Also build a signed iServeWithPHP .ipa for on-device testing"
         type: boolean
         default: false
+      create_release:
+        description: "Publish the signed .ipa as a GitHub release (requires build_ipa)"
+        type: boolean
+        default: false
   push:
     paths:
       - '.github/workflows/php-embed.yml'
@@ -571,15 +575,22 @@ jobs:
     # iServeWithPHP is still never referenced by ios.yml or the real
     # `iServe` scheme/bundle id -- this only produces a separate,
     # separately-bundle-identified .ipa for manually testing the PHP
-    # subsystem on a real device, per ADR-0009's isolation guarantee. Not
-    # published as a GitHub release the way ios.yml's ipa job can be
-    # (ADR-0009 frames this whole subsystem as experimental, not something
-    # that should show up as a release artifact yet) -- downloaded from this
-    # workflow run's own artifacts instead.
+    # subsystem on a real device, per ADR-0009's isolation guarantee.
+    # Optionally published as a GitHub release (create_release: true) --
+    # explicitly requested once v0.4 reached feature-complete, even though
+    # ADR-0009 still frames the underlying subsystem as experimental; the
+    # release notes say so. Downloaded from this workflow run's own
+    # artifacts either way (the "Upload signed IPA" step below), release
+    # or not.
     if: github.event_name == 'workflow_dispatch' && inputs.build_ipa
     needs: [cross-compile-device, build-app-with-php-device]
     runs-on: macos-15
     timeout-minutes: 30
+    # contents: write only so this job can publish a GitHub release when
+    # create_release is set -- mirrors ios.yml's own ipa job exactly; every
+    # other job in this file keeps the repo's default token permissions.
+    permissions:
+      contents: write
     env:
       KEYCHAIN_PATH: /tmp/ios-php-signing.keychain-db
       KEYCHAIN_PASSWORD: temporary-ci-keychain-password
@@ -743,6 +754,34 @@ jobs:
           name: iServeWithPHP-signed-ipa
           path: build/export/*.ipa
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: inputs.create_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*([0-9.]+).*/\1/p' project.yml | head -n1)
+          if [ -z "$version" ]; then
+            echo "Could not read MARKETING_VERSION from project.yml" >&2
+            exit 1
+          fi
+          tag="v${version}"
+          ipa_path=$(ls build/export/*.ipa | head -n1)
+          # The release asset is deliberately named "iServe vX.Y.Z.ipa"
+          # (not the "iServeWithPHP-" prefix the workflow artifact above
+          # uses) -- a separate, explicitly-named copy so the two never
+          # collide and the release asset matches what was asked for.
+          release_asset="build/export/iServe v${version}.ipa"
+          cp "$ipa_path" "$release_asset"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; deleting it (and its tag) so this build replaces it entirely, rather than just swapping the .ipa asset in place."
+            gh release delete "$tag" --yes --cleanup-tag
+          fi
+          gh release create "$tag" "$release_asset" \
+            --target "${{ github.sha }}" \
+            --title "iServe $tag" \
+            --notes "Signed .ipa build for iServe $tag, including the v0.4 PHP subsystem (docs/adr/0009-php-runtime-feasibility.md) -- built from the iServeWithPHP Xcode target/scheme, bundle id com.srgtcauliflour.iServeWithPHP (distinct from the ordinary iServe app's com.srgtcauliflour.iServe). See PHP/README.md for what's included."
 
       - name: Remove temporary keychain
         if: always()
