@@ -325,6 +325,14 @@ int main(int argc, char **argv)
     iserve_php_execute(&request_h, &result_h);
 
     check(result_h.startup_diagnostic == NULL, "request H: no startup diagnostic");
+    // Regression check for a real bug an on-device test caught: PHP's
+    // compiled-in default (upload_max_filesize=2M) silently capped every
+    // upload well under what HTTPServerLimits.maxPHPPostBodyBytes (8MB)
+    // already allows through the transport layer. This fixture's own
+    // upload body is tiny either way, so only the ini value itself proves
+    // the fix -- see iserve_php_bridge_startup's own comment.
+    check(body_contains(&result_h, "upload_max_filesize=8M\n"), "request H: upload_max_filesize is set to 8M, not PHP's 2M default");
+    check(body_contains(&result_h, "post_max_size=8M\n"), "request H: post_max_size is set to 8M");
     check(body_contains(&result_h, "files_isset=yes\n"), "request H: $_FILES populated from a real multipart upload");
     check(body_contains(&result_h, "upload_error=0\n"), "request H: upload_error is UPLOAD_ERR_OK");
     check(body_contains(&result_h, "is_uploaded_file=yes\n"), "request H: is_uploaded_file() recognizes the temp file");

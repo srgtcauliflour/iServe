@@ -325,6 +325,22 @@ int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_
         "session.save_path=%s\n"
         "file_uploads=1\n"
         "upload_tmp_dir=%s\n"
+        // PHP's own compiled-in defaults (post_max_size=8M,
+        // upload_max_filesize=2M) were left unset here originally on the
+        // assumption they roughly matched ServerCore/HTTPServer.swift's
+        // HTTPServerLimits.maxPHPPostBodyBytes (8MB, the real outer bound
+        // -- a body larger than that is already rejected with a 413
+        // before PHP ever runs). That assumption was wrong for
+        // upload_max_filesize specifically: its 2M default silently
+        // capped every file upload well under the 8MB the transport
+        // layer already allows (caught by a real on-device test -- see
+        // the ROADMAP entry this fix is recorded under). Both are set
+        // explicitly here to match maxPHPPostBodyBytes exactly; if that
+        // Swift constant ever changes, these two lines need to change
+        // with it, since nothing currently keeps them in sync
+        // automatically.
+        "post_max_size=8M\n"
+        "upload_max_filesize=8M\n"
         "disable_functions=exec,shell_exec,system,popen,proc_open,proc_close,dl,ini_set,ini_alter,set_time_limit\n",
         max_execution_time_seconds,
         max_execution_time_seconds,

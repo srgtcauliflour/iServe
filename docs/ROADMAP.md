@@ -418,12 +418,25 @@ populated, `is_uploaded_file()`/`move_uploaded_file()` both succeed, and
 the moved file's content matches what was uploaded) and a new Swift-level
 `PHPScriptExecutionLifecycleTests` case proving the raw multipart body
 and its exact `Content-Type` (boundary included) reach the executor
-unparsed. Bounded by the existing `maxPHPPostBodyBytes` (8MB, already
-close to PHP's own compiled-in `post_max_size=8M` default) — a real,
+unparsed. Bounded by the existing `maxPHPPostBodyBytes` (8MB) — a real,
 deliberate v0.4 scope limit: small uploads a script processes itself work
 fine, but this isn't a general large-file-upload feature, since the
 whole body is buffered in memory rather than streamed to disk the way
 the ordinary (non-PHP) upload path is.
+
+**Fixed after real on-device testing**: `upload_max_filesize`/
+`post_max_size` were left at PHP's own compiled-in defaults
+(`upload_max_filesize=2M`, `post_max_size=8M`) on the assumption they
+roughly matched `maxPHPPostBodyBytes`. Wrong for `upload_max_filesize`
+specifically — its 2M default silently capped every upload well under
+the 8MB the transport layer already allows, and the C smoke test's own
+upload body (a few bytes) was nowhere near even that old 2M ceiling, so
+it never exercised the boundary that actually broke. A person testing
+the merged v0.4 build on a real device hit `UPLOAD_ERR_INI_SIZE`
+uploading an ordinary file. Both are now set explicitly to `8M`,
+matching `maxPHPPostBodyBytes`; `iserve_bridge_smoke_test.c`'s request H
+now asserts the ini values themselves (via `ini_get()`), which is what
+actually would have caught this, not a bigger test upload.
 
 Still open: extending the security suite to resource-limit exhaustion
 (`max_execution_time`/`memory_limit` actually terminating a runaway
