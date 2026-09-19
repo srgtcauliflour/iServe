@@ -383,6 +383,16 @@ actually worked. Fixed by moving the file to `PHP/Bridge/Tests/outside/secret.tx
 a true sibling of `fixtures/`, so the traversal attempt now reaches a
 real file genuinely outside the allowed root and is genuinely blocked.
 
+The new `mbstring`/`filter` checks immediately caught a second, real bug
+on their first CI run: `native-smoke-test`'s own `./configure` step
+(job 2, the only job whose binary can actually execute) had never
+enabled `--enable-filter=static`/`--enable-mbstring=static` at all —
+jobs 1/3/4 (the device/Simulator cross-compile jobs, build-only) already
+had them, so ADR-0009's extension-allowlist description was accurate for
+those, but the one job that could actually prove it was silently missing
+the flags. Same shape as the earlier SQLite/PDO gap this ROADMAP already
+records. Fixed by adding the same three flags to job 2's configure step.
+
 Still open: file uploads *through PHP* (a script receiving an uploaded
 file via `$_FILES` — distinct from the POST-body wiring already landed,
 which hands PHP the raw body but doesn't parse multipart uploads for it),
