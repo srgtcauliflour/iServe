@@ -39,14 +39,18 @@ final class LiveServerService: ServerService {
 
         // ADR-0009: PHP execution is orthogonal to ServerProfile, not a
         // profile-derived capability like allowsUploads/allowsWebDAVWrites
-        // -- it additionally requires the caller opted in for this session
-        // AND the app was built with a PHP executor to hand it at all
-        // (nil on the ordinary iServe target). Riding allowsDirectoryListing
-        // rather than a dedicated ServerProfile case, per the ADR's own
-        // framing: "any profile that already allows directory listing can
-        // additionally allow PHP execution of .php files it would
-        // otherwise have served as plain static text."
-        let phpEnabledThisSession = phpExecutor != nil && profile.allowsDirectoryListing
+        // -- it depends only on the caller having opted in for this session
+        // (ServerCoordinator.phpExecutionEnabled) AND the app being built
+        // with a PHP executor to hand it at all (nil on the ordinary iServe
+        // target). It must NOT also require profile.allowsDirectoryListing:
+        // StaticFileHandler's directory-index execution
+        // (resolvedPHPScriptURL) only ever fires when allowDirectoryListing
+        // is *false* (Website mode, where index.php auto-serving lives per
+        // MASTER-SPEC §3.1) -- gating this on allowsDirectoryListing being
+        // true would make that path permanently unreachable, and disable
+        // even a direct GET of a .php file in the one profile meant for
+        // serving a site's own pages.
+        let phpEnabledThisSession = phpExecutor != nil
 
         // A mount whose scope can't be acquired right now is silently
         // skipped for this session, per the ADR, rather than failing the

@@ -116,6 +116,41 @@ final class LiveServerServiceTests: XCTestCase {
         service.stop()
     }
 
+    /// Regression test: `phpEnabledThisSession` must not also require
+    /// `profile.allowsDirectoryListing` -- `.websiteReadOnly` is the one
+    /// profile whose `allowDirectoryListing == false` unlocks
+    /// `StaticFileHandler`'s directory-index auto-serve at all
+    /// (`docs/MASTER-SPEC.md` §3.1), so gating PHP on that flag being
+    /// *true* made `index.php` auto-execution permanently unreachable
+    /// through `LiveServerService.start` even though direct
+    /// `StaticFileHandler` unit tests (which construct it by hand, never
+    /// going through this wiring) looked green. See
+    /// `docs/adr/0009-php-runtime-feasibility.md`'s capability-gating note.
+    @MainActor
+    func testWebsiteReadOnlyProfileExecutesIndexPHPWhenPHPExecutionIsEnabled() async throws {
+        try "<?php".write(to: root.appendingPathComponent("index.php"), atomically: true, encoding: .utf8)
+
+        let access = StubFolderAccess()
+        let folders = FolderRootManager(access: access, store: MemoryBookmarkStore())
+        folders.select(root)
+
+        let executor = LiveServerServiceFakePHPExecutor(response: PHPResponse(
+            statusCode: 200,
+            headers: [],
+            body: Data("website mode executed index.php".utf8)
+        ))
+        let service = LiveServerService(folders: folders)
+        let port = try await service.start(profile: .websiteReadOnly, credentials: nil, phpExecutor: executor)
+
+        let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/")!)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "website mode executed index.php")
+        let recorded = await executor.lastRequest
+        XCTAssertNotNil(recorded, "the executor must actually be invoked for a Website-mode index.php")
+
+        service.stop()
+    }
+
     @MainActor
     func testStartWhenAccessIsDeniedThrowsAndDoesNotLeaveScopeHeld() async {
         let access = StubFolderAccess()
@@ -167,5 +202,22 @@ final class LiveServerServiceTests: XCTestCase {
             }
             try await Task.sleep(nanoseconds: 5_000_000)
         }
+    }
+}
+
+/// Local to this file, distinct from `PHPScriptExecutionLifecycleTests`'
+/// own `FakePHPExecutor` (`private` there) -- this one only needs a fixed
+/// canned response, not `.failure`/behavior branching.
+private actor LiveServerServiceFakePHPExecutor: PHPScriptExecutor {
+    private(set) var lastRequest: PHPRequest?
+    private let response: PHPResponse
+
+    init(response: PHPResponse) {
+        self.response = response
+    }
+
+    func execute(_ request: PHPRequest) async throws -> PHPResponse {
+        lastRequest = request
+        return response
     }
 }

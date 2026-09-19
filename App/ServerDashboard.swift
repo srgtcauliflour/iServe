@@ -234,6 +234,8 @@ struct ServerDashboard: View {
                     .disabled(isBusy || isRunning)
                     .textContentType(.password)
             }
+            Toggle("Run PHP Scripts", isOn: $coordinator.phpExecutionEnabled)
+                .disabled(isBusy || isRunning)
             LabeledContent("Status", value: serverStatusText)
             if isRunning {
                 Button("Stop Server", systemImage: "stop.fill", role: .destructive) {
@@ -271,6 +273,11 @@ struct ServerDashboard: View {
         if coordinator.requiresPassword {
             lines.append(
                 "A password prompt will appear before anyone can connect. iServe has no encryption, so only rely on this on networks you trust — not open/public Wi-Fi."
+            )
+        }
+        if coordinator.phpExecutionEnabled {
+            lines.append(
+                "PHP files (including index.php) will run instead of downloading as plain text. Scripts can only read and write inside the selected folder, can't reach the network or run other programs, and are stopped if they run too long."
             )
         }
         return lines.joined(separator: " ")

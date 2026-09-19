@@ -7,14 +7,18 @@
 // loop (not just a single one-shot script run) actually works.
 //
 // fixtures/smoke.php and fixtures/outside/secret.txt are the request/response
-// mapping and open_basedir/disable_functions checks made concrete; see
-// fixtures/smoke.php for what each assertion below is reading back.
+// mapping and open_basedir/disable_functions checks made concrete (requests
+// A/B); fixtures/sqlite.php proves pdo_sqlite/sqlite3 actually work (request
+// C); fixtures/session.php proves a session persists across requests
+// (requests D/E). See each fixture for what its assertions below are
+// reading back.
 #include "iserve_php_bridge.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 static int g_failures = 0;
 
@@ -56,6 +60,27 @@ static const char *find_header(const iserve_php_result_t *result, const char *na
     return NULL;
 }
 
+// Extracts just the "name=value" pair a Set-Cookie header's value starts
+// with, dropping any trailing "; path=..."/"; HttpOnly" attributes -- a
+// real client's Cookie header on its next request carries only that pair,
+// never the attributes. Returns a caller-owned, malloc'd string (or NULL);
+// the caller must free() it.
+static char *extract_cookie_pair(const char *set_cookie_value)
+{
+    if (!set_cookie_value) {
+        return NULL;
+    }
+    const char *end = strchr(set_cookie_value, ';');
+    size_t length = end ? (size_t)(end - set_cookie_value) : strlen(set_cookie_value);
+    char *pair = malloc(length + 1);
+    if (!pair) {
+        return NULL;
+    }
+    memcpy(pair, set_cookie_value, length);
+    pair[length] = '\0';
+    return pair;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -66,7 +91,10 @@ int main(int argc, char **argv)
     char script_filename[1024];
     snprintf(script_filename, sizeof(script_filename), "%s/smoke.php", fixtures_dir);
 
-    if (iserve_php_bridge_startup(5, 64 * 1024 * 1024, "/tmp/iserve_bridge_smoke_test_sessions") != 0) {
+    const char *sessions_dir = "/tmp/iserve_bridge_smoke_test_sessions";
+    mkdir(sessions_dir, 0700); // Best-effort: PHP's session extension never creates save_path itself.
+
+    if (iserve_php_bridge_startup(5, 64 * 1024 * 1024, sessions_dir) != 0) {
         fprintf(stderr, "FAIL: iserve_php_bridge_startup\n");
         return 1;
     }
@@ -141,6 +169,45 @@ int main(int argc, char **argv)
     check(body_contains(&result_c, "pdo_sqlite_roundtrip=hello from pdo_sqlite"), "request C: pdo_sqlite extension writes and reads back");
 
     iserve_php_free_result(&result_c);
+
+    // Requests D/E: exercise fixtures/session.php — proves a PHP session
+    // actually persists across separate iserve_php_execute() calls (not
+    // just that session_start() runs without error), by feeding request
+    // E the exact session cookie request D's own Set-Cookie header names,
+    // the same way a real client's second request would.
+    char session_script_filename[1024];
+    snprintf(session_script_filename, sizeof(session_script_filename), "%s/session.php", fixtures_dir);
+    iserve_php_request_t request_d = {0};
+    request_d.method = "GET";
+    request_d.uri = "/session.php";
+    request_d.script_filename = session_script_filename;
+    request_d.document_root = fixtures_dir;
+
+    iserve_php_result_t result_d;
+    iserve_php_execute(&request_d, &result_d);
+
+    check(result_d.startup_diagnostic == NULL, "request D: no startup diagnostic");
+    check(body_contains(&result_d, "visits=1"), "request D: fresh session starts at visits=1");
+    char *session_cookie = extract_cookie_pair(find_header(&result_d, "Set-Cookie"));
+    check(session_cookie != NULL, "request D: session_start() sent a Set-Cookie header");
+
+    iserve_php_free_result(&result_d);
+
+    iserve_php_request_t request_e = {0};
+    request_e.method = "GET";
+    request_e.uri = "/session.php";
+    request_e.cookie_header = session_cookie;
+    request_e.script_filename = session_script_filename;
+    request_e.document_root = fixtures_dir;
+
+    iserve_php_result_t result_e;
+    iserve_php_execute(&request_e, &result_e);
+
+    check(result_e.startup_diagnostic == NULL, "request E: no startup diagnostic");
+    check(body_contains(&result_e, "visits=2"), "request E: same session's $_SESSION persisted across requests");
+
+    iserve_php_free_result(&result_e);
+    free(session_cookie);
 
     iserve_php_bridge_shutdown();
 
