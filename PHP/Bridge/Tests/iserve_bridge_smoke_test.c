@@ -10,8 +10,9 @@
 // mapping and open_basedir/disable_functions checks made concrete (requests
 // A/B); fixtures/sqlite.php proves pdo_sqlite/sqlite3 actually work (request
 // C); fixtures/session.php proves a session persists across requests
-// (requests D/E). See each fixture for what its assertions below are
-// reading back.
+// (requests D/E); fixtures/warning.php proves a runtime warning is captured
+// into diagnostic_log without leaking into the response body (request F).
+// See each fixture for what its assertions below are reading back.
 #include "iserve_php_bridge.h"
 
 #include <stdio.h>
@@ -121,6 +122,7 @@ int main(int argc, char **argv)
     check(body_contains(&result_a, "disable_functions_exec=disabled"), "request A: exec() disabled");
     check(body_contains(&result_a, "ini_set_blocked=disabled"), "request A: ini_set() disabled");
     check(body_contains(&result_a, "open_basedir_enforced=yes"), "request A: open_basedir blocks escape to sibling dir");
+    check(result_a.diagnostic_log == NULL, "request A: no diagnostic_log entries for a clean request");
 
     iserve_php_free_result(&result_a);
 
@@ -208,6 +210,32 @@ int main(int argc, char **argv)
 
     iserve_php_free_result(&result_e);
     free(session_cookie);
+
+    // Request F: exercises fixtures/warning.php -- proves a PHP runtime
+    // warning (display_errors=0, so it never reaches the actual response
+    // body) is still captured into out_result->diagnostic_log via
+    // iserve_log_message, the data source for the ROADMAP's "PHP
+    // diagnostics console" deliverable (on-device only, never sent to a
+    // remote client -- see that field's own doc comment).
+    char warning_script_filename[1024];
+    snprintf(warning_script_filename, sizeof(warning_script_filename), "%s/warning.php", fixtures_dir);
+    iserve_php_request_t request_f = {0};
+    request_f.method = "GET";
+    request_f.uri = "/warning.php";
+    request_f.script_filename = warning_script_filename;
+    request_f.document_root = fixtures_dir;
+
+    iserve_php_result_t result_f;
+    iserve_php_execute(&request_f, &result_f);
+
+    check(result_f.startup_diagnostic == NULL, "request F: no startup diagnostic");
+    check(body_contains(&result_f, "before") && body_contains(&result_f, "after"), "request F: script output still runs around the warning");
+    check(result_f.diagnostic_log != NULL, "request F: a triggered warning is captured into diagnostic_log");
+    check(result_f.diagnostic_log != NULL && strstr(result_f.diagnostic_log, "iserve diagnostic marker") != NULL,
+        "request F: diagnostic_log contains the warning message");
+    check(!body_contains(&result_f, "iserve diagnostic marker"), "request F: warning text never leaks into the response body (display_errors=0)");
+
+    iserve_php_free_result(&result_f);
 
     iserve_php_bridge_shutdown();
 

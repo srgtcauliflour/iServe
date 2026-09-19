@@ -81,7 +81,8 @@ public actor PHPWorker: PHPScriptExecutor {
             header_count: 0,
             body: nil,
             body_length: 0,
-            startup_diagnostic: nil
+            startup_diagnostic: nil,
+            diagnostic_log: nil
         )
         bodyBytes.withUnsafeBufferPointer { bodyPointer in
             var cRequest = iserve_php_request_t(
@@ -122,7 +123,9 @@ public actor PHPWorker: PHPScriptExecutor {
             body = Data()
         }
 
-        return PHPResponse(statusCode: Int(result.status_code), headers: headers, body: body)
+        let diagnosticLog = result.diagnostic_log.map { String(cString: $0) }
+
+        return PHPResponse(statusCode: Int(result.status_code), headers: headers, body: body, diagnosticLog: diagnosticLog)
     }
 }
 

@@ -20,6 +20,7 @@ struct ServerDashboard: View {
     @State private var bytesTransferred = 0
     @State private var rejectedConnectionCount = 0
     @State private var recentEntries: [RequestLogEntry] = []
+    @State private var phpDiagnosticEntries: [PHPDiagnosticEntry] = []
     // @Bindable, not `let`: the profile picker and password field need a
     // Binding into coordinator's properties. Plain @Observable property
     // access (as every other property here already uses) still tracks
@@ -80,6 +81,9 @@ struct ServerDashboard: View {
                 if isRunning {
                     alternateAddressesSection
                     recentRequestsSection
+                    if coordinator.phpExecutionEnabled {
+                        phpDiagnosticsSection
+                    }
                 }
             }
             .navigationTitle("iServe")
@@ -125,14 +129,17 @@ struct ServerDashboard: View {
             bytesTransferred = 0
             rejectedConnectionCount = 0
             recentEntries = []
+            phpDiagnosticEntries = []
             return
         }
+        let diagnosticsLog = coordinator.phpDiagnosticsLog
         while !Task.isCancelled {
             let snapshot = await log.snapshot()
             requestCount = snapshot.totalRequests
             bytesTransferred = snapshot.totalBytes
             rejectedConnectionCount = snapshot.rejectedConnections
             recentEntries = snapshot.entries
+            phpDiagnosticEntries = await diagnosticsLog?.snapshot() ?? []
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
@@ -374,6 +381,30 @@ struct ServerDashboard: View {
             }
         }
     }
+
+    /// Only shown while `phpExecutionEnabled` is on -- the ROADMAP's "PHP
+    /// diagnostics console" deliverable: `display_errors` is always off
+    /// (ADR-0009), so a script's warnings/notices/uncaught-exception
+    /// messages are otherwise invisible to whoever is running the server.
+    /// Unlike `recentRequestsSection`, entries are unsanitized (may include
+    /// a local file path) -- fine here since this never leaves the device.
+    @ViewBuilder
+    private var phpDiagnosticsSection: some View {
+        Section {
+            if phpDiagnosticEntries.isEmpty {
+                Text("No PHP diagnostics yet")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(phpDiagnosticEntries.prefix(10)) { entry in
+                    PHPDiagnosticEntryRow(entry: entry)
+                }
+            }
+        } header: {
+            Text("PHP Diagnostics")
+        } footer: {
+            Text("Warnings and errors from your PHP scripts, kept on this device only. Never shown to anyone connecting to the server.")
+        }
+    }
 }
 
 private struct RequestLogEntryRow: View {
@@ -391,6 +422,26 @@ private struct RequestLogEntryRow: View {
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(entry.status < 400 ? Color.secondary : Color.orange)
             }
+            Text(entry.date, style: .time)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct PHPDiagnosticEntryRow: View {
+    let entry: PHPDiagnosticEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text((entry.scriptPath as NSString).lastPathComponent)
+                .font(.callout)
+                .lineLimit(1)
+            Text(entry.message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+                .textSelection(.enabled)
             Text(entry.date, style: .time)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
