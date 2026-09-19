@@ -6,13 +6,19 @@
 // process without re-running startup, proving the persistent-worker request
 // loop (not just a single one-shot script run) actually works.
 //
-// fixtures/smoke.php and fixtures/outside/secret.txt are the request/response
-// mapping and open_basedir/disable_functions checks made concrete (requests
-// A/B); fixtures/sqlite.php proves pdo_sqlite/sqlite3 actually work (request
-// C); fixtures/session.php proves a session persists across requests
-// (requests D/E); fixtures/warning.php proves a runtime warning is captured
-// into diagnostic_log without leaking into the response body (request F).
-// See each fixture for what its assertions below are reading back.
+// fixtures/smoke.php and ../outside/secret.txt (a TRUE sibling of fixtures/,
+// not a subdirectory of it -- see that fixture's own doc comment for a bug
+// this once hid) are the request/response mapping and
+// open_basedir/disable_functions checks made concrete (requests A/B);
+// fixtures/sqlite.php proves pdo_sqlite/sqlite3 actually work (request C);
+// fixtures/session.php proves a session persists across requests (requests
+// D/E); fixtures/warning.php proves a runtime warning is captured into
+// diagnostic_log without leaking into the response body (request F);
+// fixtures/security.php is the compatibility/security test suite
+// (docs/ROADMAP.md's v0.4 deliverable): disabled functions, blocked
+// open_basedir escapes via several different functions, allow_url_fopen/
+// allow_url_include off, and the extension allowlist (request G). See each
+// fixture for what its assertions below are reading back.
 #include "iserve_php_bridge.h"
 
 #include <stdio.h>
@@ -236,6 +242,50 @@ int main(int argc, char **argv)
     check(!body_contains(&result_f, "iserve diagnostic marker"), "request F: warning text never leaks into the response body (display_errors=0)");
 
     iserve_php_free_result(&result_f);
+
+    // Request G: exercises fixtures/security.php -- the ROADMAP's
+    // "compatibility/security test suite" deliverable. Every disabled
+    // function individually (disable_functions has no glob support, so a
+    // typo/omission in any one name is its own independent gap), a real
+    // open_basedir escape via several different filesystem functions (not
+    // just file_get_contents, already covered by request A), allow_url_fopen/
+    // allow_url_include both off, FFI absent, and the smaller allowlisted
+    // extensions (json/mbstring/hash/filter) present.
+    char security_script_filename[1024];
+    snprintf(security_script_filename, sizeof(security_script_filename), "%s/security.php", fixtures_dir);
+    iserve_php_request_t request_g = {0};
+    request_g.method = "GET";
+    request_g.uri = "/security.php";
+    request_g.script_filename = security_script_filename;
+    request_g.document_root = fixtures_dir;
+
+    iserve_php_result_t result_g;
+    iserve_php_execute(&request_g, &result_g);
+
+    check(result_g.startup_diagnostic == NULL, "request G: no startup diagnostic");
+    static const char *disabled_functions[] = {
+        "exec", "shell_exec", "system", "popen", "proc_open", "proc_close", "dl", "ini_set", "ini_alter", "set_time_limit"
+    };
+    for (size_t i = 0; i < sizeof(disabled_functions) / sizeof(disabled_functions[0]); i++) {
+        char expected[128];
+        snprintf(expected, sizeof(expected), "disabled_%s=disabled\n", disabled_functions[i]);
+        char description[160];
+        snprintf(description, sizeof(description), "request G: %s is disabled", disabled_functions[i]);
+        check(body_contains(&result_g, expected), description);
+    }
+    check(body_contains(&result_g, "allow_url_fopen_blocked=yes\n"), "request G: allow_url_fopen blocks a remote file_get_contents");
+    check(body_contains(&result_g, "allow_url_include_blocked=yes\n"), "request G: allow_url_include blocks a remote include");
+    check(body_contains(&result_g, "fopen_blocked=yes\n"), "request G: open_basedir blocks fopen() escape");
+    check(body_contains(&result_g, "is_readable_blocked=yes\n"), "request G: open_basedir blocks is_readable() escape");
+    check(body_contains(&result_g, "opendir_blocked=yes\n"), "request G: open_basedir blocks opendir() escape");
+    check(body_contains(&result_g, "scandir_blocked=yes\n"), "request G: open_basedir blocks scandir() escape");
+    check(body_contains(&result_g, "ffi_unavailable=unavailable\n"), "request G: FFI is not compiled in");
+    check(body_contains(&result_g, "extension_json_available=yes\n"), "request G: json extension available");
+    check(body_contains(&result_g, "extension_mbstring_available=yes\n"), "request G: mbstring extension available");
+    check(body_contains(&result_g, "extension_hash_available=yes\n"), "request G: hash extension available");
+    check(body_contains(&result_g, "extension_filter_available=yes\n"), "request G: filter extension available");
+
+    iserve_php_free_result(&result_g);
 
     iserve_php_bridge_shutdown();
 
