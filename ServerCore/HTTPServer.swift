@@ -41,12 +41,21 @@ struct HTTPServerLimits: Sendable {
     /// Upper bound on a PHP-destined POST body (v0.4,
     /// `docs/adr/0009-php-runtime-feasibility.md`) — buffered whole into
     /// memory before being handed to the PHP executor (there is no
-    /// streaming-to-disk step here the way an upload has), so this is
-    /// deliberately far smaller than `maxUploadBytes`: sized for realistic
-    /// form/JSON-API request bodies a script would read, not file
-    /// uploads, and small enough to leave most of the PHP worker's own
-    /// `memory_limit` free for the script itself rather than for just
-    /// holding its own input.
+    /// streaming-to-disk step here the way an ordinary upload has), so
+    /// this is deliberately far smaller than `maxUploadBytes`: sized for
+    /// realistic form/JSON-API request bodies, and small enough to leave
+    /// most of the PHP worker's own `memory_limit` free for the script
+    /// itself rather than for just holding its own input. This also caps
+    /// how large a `$_FILES` upload *through PHP* can be (v0.4's own
+    /// deliverable) — a real, deliberate v0.4 scope limit: small uploads a
+    /// script processes itself work fine, but a multi-hundred-MB file
+    /// doesn't fit the whole-body-buffered-in-memory design here the way
+    /// it does through the ordinary (streamed-to-disk) upload path.
+    /// Revisiting that would mean teaching PHP's rfc1867 handling to read
+    /// progressively from the connection rather than a single in-memory
+    /// buffer — a larger change, not a tweak to this number. Not
+    /// coincidentally close to PHP's own compiled-in `post_max_size=8M`
+    /// default, which the bridge doesn't override.
     var maxPHPPostBodyBytes: Int
     /// Upper bound on the password-only login form's POST body (v0.3,
     /// `docs/adr/0008-password-only-cookie-login.md`) — just a password

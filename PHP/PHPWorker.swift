@@ -29,11 +29,14 @@ public actor PHPWorker: PHPScriptExecutor {
     public func start(limits: PHPWorkerLimits) throws {
         guard !isStarted else { throw WorkerError.alreadyStarted }
         let result = limits.sessionSavePath.withCString { sessionSavePath in
-            iserve_php_bridge_startup(
-                Int32(limits.maxExecutionTimeSeconds),
-                limits.memoryLimitBytes,
-                sessionSavePath
-            )
+            limits.uploadTmpDir.withCString { uploadTmpDir in
+                iserve_php_bridge_startup(
+                    Int32(limits.maxExecutionTimeSeconds),
+                    limits.memoryLimitBytes,
+                    sessionSavePath,
+                    uploadTmpDir
+                )
+            }
         }
         guard result == 0 else { throw WorkerError.startupFailed() }
         isStarted = true
@@ -136,11 +139,17 @@ public struct PHPWorkerLimits: Sendable {
     /// folder, so a PHP session can't be listed/downloaded as if it were
     /// served content (ADR-0009's filesystem-restrictions section).
     public var sessionSavePath: String
+    /// Absolute path under the app's own container, same reasoning as
+    /// `sessionSavePath` — where a `$_FILES` upload's temporary file is
+    /// written before a script `move_uploaded_file()`s it somewhere inside
+    /// its own `open_basedir` (ADR-0009's filesystem-restrictions section).
+    public var uploadTmpDir: String
 
-    public init(maxExecutionTimeSeconds: Int, memoryLimitBytes: Int, sessionSavePath: String) {
+    public init(maxExecutionTimeSeconds: Int, memoryLimitBytes: Int, sessionSavePath: String, uploadTmpDir: String) {
         self.maxExecutionTimeSeconds = maxExecutionTimeSeconds
         self.memoryLimitBytes = memoryLimitBytes
         self.sessionSavePath = sessionSavePath
+        self.uploadTmpDir = uploadTmpDir
     }
 }
 

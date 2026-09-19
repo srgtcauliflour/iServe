@@ -280,7 +280,7 @@ static sapi_module_struct iserve_sapi_module = {
     STANDARD_SAPI_MODULE_PROPERTIES
 };
 
-int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path)
+int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path, const char *upload_tmp_dir)
 {
     // pcntl_*/posix_* are not covered here because they are simply not
     // compiled in at all (excluded from ADR-0009's extension allowlist) —
@@ -291,6 +291,22 @@ int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_
     // display_errors and max_execution_time are all PHP_INI_ALL — without
     // blocking the setter functions themselves, a script could widen or
     // remove every one of those restrictions at runtime via ini_set().
+    //
+    // upload_tmp_dir is deliberately set even though open_basedir is
+    // narrowed to each request's own document_root: verified against the
+    // real php-8.4.2 source (main/php_open_temporary_file.c) that
+    // rfc1867's own temp-file creation only ever open_basedir-checks the
+    // *fallback* system temp directory (PHP_TMP_FILE_OPEN_BASEDIR_CHECK_ON_FALLBACK),
+    // never an explicitly configured upload_tmp_dir -- so this directory
+    // is written to regardless of open_basedir, exactly like
+    // session.save_path already is, and for the same reason: it lives
+    // under the app's own container, never a served folder, and
+    // move_uploaded_file() (ext/standard/basic_functions.c) only
+    // open_basedir-checks its *destination* argument, not the uploaded
+    // tmp file itself (verified against source, not assumed) -- so a
+    // script can only ever move an upload to somewhere already inside its
+    // own open_basedir, the same boundary every other file write already
+    // has.
     snprintf(g_ini_entries, sizeof(g_ini_entries),
         "html_errors=0\n"
         "display_errors=0\n"
@@ -307,11 +323,14 @@ int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_
         "max_input_time=%d\n"
         "memory_limit=%ld\n"
         "session.save_path=%s\n"
+        "file_uploads=1\n"
+        "upload_tmp_dir=%s\n"
         "disable_functions=exec,shell_exec,system,popen,proc_open,proc_close,dl,ini_set,ini_alter,set_time_limit\n",
         max_execution_time_seconds,
         max_execution_time_seconds,
         memory_limit_bytes,
-        session_save_path ? session_save_path : "");
+        session_save_path ? session_save_path : "",
+        upload_tmp_dir ? upload_tmp_dir : "");
 
     sapi_startup(&iserve_sapi_module);
     iserve_sapi_module.ini_entries = g_ini_entries;
