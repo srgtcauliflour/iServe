@@ -355,10 +355,53 @@ against the real bridge; `PHPScriptExecutionLifecycleTests`/
 `PHPDiagnosticsLogTests` cover the Swift-level wiring and the log actor
 itself with a fake executor.
 
+Done: a first pass of the compatibility/security test suite ADR-0009's
+own "Costs" section calls for ("execute arbitrary code against a selected
+folder" deserves its own dedicated test suite, not just the
+request/response mapping checks `fixtures/smoke.php` already covers).
+New `fixtures/security.php` (request G in `iserve_bridge_smoke_test.c`)
+checks, against the real embed SAPI: every `disable_functions` entry
+individually (`smoke.php` only ever checked `exec`/`ini_set`; there's no
+glob support, so a typo/omission in any other name was an unchecked gap),
+`open_basedir` escapes blocked via `fopen`/`is_readable`/`opendir`/
+`scandir` (not just `file_get_contents`), `allow_url_fopen`/
+`allow_url_include` both off (verified safe for CI against the real
+php-8.4.2 source first — the check happens at stream-wrapper resolution,
+before any DNS/network activity), `FFI` absent, and the smaller
+allowlisted extensions (`json`/`mbstring`/`hash`/`filter`) present.
+
+Building this surfaced a real bug in the *existing* `open_basedir` check
+in `smoke.php`: it had been vacuously passing since the bridge was first
+built. `secret.txt` lived at `fixtures/outside/secret.txt` — a
+subdirectory of `fixtures/` (the request's own `document_root`), not
+actually outside it — while the script computed
+`__DIR__ . '/../outside/secret.txt'`, a path one level higher that simply
+didn't exist. `file_get_contents()` was failing with "no such file"
+before `open_basedir` was ever consulted, not because of it — the
+assertion would have read exactly the same whether or not enforcement
+actually worked. Fixed by moving the file to `PHP/Bridge/Tests/outside/secret.txt`,
+a true sibling of `fixtures/`, so the traversal attempt now reaches a
+real file genuinely outside the allowed root and is genuinely blocked.
+
+The new `mbstring`/`filter` checks immediately caught a second, real bug
+on their first CI run: `native-smoke-test`'s own `./configure` step
+(job 2, the only job whose binary can actually execute) had never
+enabled `--enable-filter=static`/`--enable-mbstring=static` at all —
+jobs 1/3/4 (the device/Simulator cross-compile jobs, build-only) already
+had them, so ADR-0009's extension-allowlist description was accurate for
+those, but the one job that could actually prove it was silently missing
+the flags. Same shape as the earlier SQLite/PDO gap this ROADMAP already
+records. Fixed by adding the same three flags to job 2's configure step.
+
 Still open: file uploads *through PHP* (a script receiving an uploaded
 file via `$_FILES` — distinct from the POST-body wiring already landed,
-which hands PHP the raw body but doesn't parse multipart uploads for
-it) and the compatibility/security test suite below.
+which hands PHP the raw body but doesn't parse multipart uploads for it),
+and extending the security suite to resource-limit exhaustion
+(`max_execution_time`/`memory_limit` actually terminating a runaway
+script) — deferred for now since a real infinite-loop/large-allocation
+test risks hanging or slowing CI if PHP's own interrupt-tick mechanism
+doesn't fire the way a passing test assumes, and deserves its own
+careful, isolated pass rather than being folded in here.
 
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a
