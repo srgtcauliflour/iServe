@@ -60,6 +60,16 @@ typedef struct {
     // ADR-0009's "remote error behavior" (display_errors is always off).
     // For diagnostics only; never send this string to the HTTP client.
     char *startup_diagnostic;
+    // Every message this request passed to the SAPI's log_message hook —
+    // PHP warnings/notices/uncaught-exception fatals (log_errors=1 in the
+    // bridge's own ini, so php_error_cb routes them here since no
+    // error_log path is configured), newline-joined, oldest first, bounded
+    // to a fixed size (see ISERVE_DIAGNOSTIC_LOG_CAPACITY in the .c file) so
+    // a script that errors in a loop can't grow this unboundedly. NULL when
+    // nothing was logged this request. Same rule as startup_diagnostic:
+    // ADR-0009's "remote error behavior" — for on-device diagnostics only,
+    // never sent to the HTTP client.
+    char *diagnostic_log;
 } iserve_php_result_t;
 
 // Runs PHP's module startup once for this process, applying ADR-0009's

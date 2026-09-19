@@ -60,6 +60,12 @@ struct StaticFileHandler: HTTPRouter {
     /// file, exactly like before this existed, regardless of this flag.
     var allowPHPExecution: Bool = false
     var phpExecutor: (any PHPScriptExecutor)? = nil
+    /// Where a PHP response's `diagnosticLog` (a runtime warning/notice/
+    /// uncaught-exception message `display_errors=0` kept out of the actual
+    /// response) is recorded, plus a Swift-level `routePHPScript` failure —
+    /// on-device only, never sent to the client. `nil` is a valid, silent
+    /// no-op (matches every other optional collaborator on this type).
+    var phpDiagnosticsLog: PHPDiagnosticsLog? = nil
 
     func route(_ request: HTTPRequest) -> HTTPResponse {
         guard let path = Self.path(fromTarget: request.target) else { return .badRequest() }
@@ -200,11 +206,15 @@ struct StaticFileHandler: HTTPRouter {
         )
         do {
             let response = try await phpExecutor.execute(phpRequest)
+            if let diagnosticLog = response.diagnosticLog, !diagnosticLog.isEmpty {
+                await phpDiagnosticsLog?.record(scriptPath: phpRequest.scriptFilename, message: diagnosticLog)
+            }
             return Self.httpResponse(fromPHP: response)
         } catch {
             // The real failure reason is for on-device diagnostics only
             // (ADR-0009's "remote error behavior": display_errors is
             // always off) — never surfaced to the client beyond a generic 500.
+            await phpDiagnosticsLog?.record(scriptPath: phpRequest.scriptFilename, message: "PHP executor failed: \(error)")
             return .internalServerError()
         }
     }

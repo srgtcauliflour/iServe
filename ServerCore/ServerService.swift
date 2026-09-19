@@ -7,6 +7,13 @@ protocol ServerService: AnyObject {
     /// stale entries from a previous run.
     var requestLog: RequestLog? { get }
 
+    /// On-device-only log of PHP runtime diagnostics for the current
+    /// session (`docs/ROADMAP.md`'s "PHP diagnostics console" deliverable),
+    /// or `nil` when not running — same fresh-per-session lifecycle as
+    /// `requestLog`. Always non-nil once running, even in a build with no
+    /// PHP executor linked in: it simply never receives any entries there.
+    var phpDiagnosticsLog: PHPDiagnosticsLog? { get }
+
     /// Attempts to start serving and returns the bound local port once the
     /// listener reports ready. Throws (without starting anything) if there is
     /// no folder to serve, scoped access could not be acquired, or the
@@ -47,6 +54,7 @@ final class UnconfiguredServerService: ServerService {
     }
 
     var requestLog: RequestLog? { nil }
+    var phpDiagnosticsLog: PHPDiagnosticsLog? { nil }
 
     func start(profile: ServerProfile, credentials: ServerCredentials?, phpExecutor: (any PHPScriptExecutor)?) async throws -> UInt16 {
         throw ServiceError.unavailable

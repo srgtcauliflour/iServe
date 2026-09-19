@@ -144,16 +144,80 @@ final class PHPScriptExecutionLifecycleTests: XCTestCase {
         await server.stop()
     }
 
+    /// `docs/ROADMAP.md`'s "PHP diagnostics console" deliverable: a
+    /// response's `diagnosticLog` (display_errors=0 kept it out of `body`)
+    /// must reach `PHPDiagnosticsLog`, never the client -- the response
+    /// itself is unaffected either way.
+    func testDiagnosticLogIsRecordedButNeverSentToTheClient() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<?php".write(to: root.appendingPathComponent("index.php"), atomically: true, encoding: .utf8)
+
+        let executor = FakePHPExecutor(behavior: .success(PHPResponse(
+            statusCode: 200,
+            headers: [],
+            body: Data("ok".utf8),
+            diagnosticLog: "Warning: Undefined variable $x in index.php on line 3"
+        )))
+        let diagnosticsLog = PHPDiagnosticsLog()
+        let server = HTTPServer(router: StaticFileHandler(
+            resolver: SecurePathResolver(root: root),
+            allowPHPExecution: true,
+            phpExecutor: executor,
+            phpDiagnosticsLog: diagnosticsLog
+        ))
+        let port = try await server.start()
+
+        let (data, response) = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/index.php"))
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "ok")
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("Undefined variable"))
+
+        let snapshot = await diagnosticsLog.snapshot()
+        let recorded = try XCTUnwrap(snapshot.first)
+        XCTAssertEqual(recorded.message, "Warning: Undefined variable $x in index.php on line 3")
+        XCTAssertEqual(recorded.scriptPath, root.appendingPathComponent("index.php").path)
+
+        await server.stop()
+    }
+
+    /// A `nil`/`""` `diagnosticLog` (the ordinary, clean-run case) must
+    /// never produce a log entry at all.
+    func testCleanExecutionRecordsNoDiagnosticEntry() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<?php".write(to: root.appendingPathComponent("index.php"), atomically: true, encoding: .utf8)
+
+        let executor = FakePHPExecutor(behavior: .success(PHPResponse(statusCode: 200, headers: [], body: Data())))
+        let diagnosticsLog = PHPDiagnosticsLog()
+        let server = HTTPServer(router: StaticFileHandler(
+            resolver: SecurePathResolver(root: root),
+            allowPHPExecution: true,
+            phpExecutor: executor,
+            phpDiagnosticsLog: diagnosticsLog
+        ))
+        let port = try await server.start()
+
+        _ = try await URLSession.shared.data(from: loopbackURL(port: port, path: "/index.php"))
+
+        let snapshot = await diagnosticsLog.snapshot()
+        XCTAssertTrue(snapshot.isEmpty)
+
+        await server.stop()
+    }
+
     func testPHPExecutorFailureMapsToInternalServerErrorWithoutLeakingDetail() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         try "<?php".write(to: root.appendingPathComponent("broken.php"), atomically: true, encoding: .utf8)
 
         let executor = FakePHPExecutor(behavior: .failure(.boom))
+        let diagnosticsLog = PHPDiagnosticsLog()
         let server = HTTPServer(router: StaticFileHandler(
             resolver: SecurePathResolver(root: root),
             allowPHPExecution: true,
-            phpExecutor: executor
+            phpExecutor: executor,
+            phpDiagnosticsLog: diagnosticsLog
         ))
         let port = try await server.start()
 
@@ -161,6 +225,14 @@ final class PHPScriptExecutionLifecycleTests: XCTestCase {
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 500)
         XCTAssertFalse(String(decoding: data, as: UTF8.self).lowercased().contains("boom"))
+
+        // The executor-level failure itself is also worth an on-device
+        // diagnostic entry, even though it's a Swift-level throw rather
+        // than a PHPResponse.diagnosticLog -- same reasoning as the ordinary
+        // diagnostic path: never sent to the client, useful on-device.
+        let snapshot = await diagnosticsLog.snapshot()
+        let recorded = try XCTUnwrap(snapshot.first)
+        XCTAssertTrue(recorded.message.contains("boom"))
 
         await server.stop()
     }

@@ -374,6 +374,7 @@ private final class RecordingServerService: ServerService {
     var startCallCount = 0
     var startResult: Result<UInt16, Error> = .success(8080)
     var requestLog: RequestLog?
+    var phpDiagnosticsLog: PHPDiagnosticsLog?
     private(set) var lastProfile: ServerProfile?
     private(set) var lastCredentials: ServerCredentials?
 

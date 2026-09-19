@@ -51,6 +51,15 @@ static const char *g_remote_addr;
 
 static char g_ini_entries[2048];
 
+// Bounds iserve_log_message's per-request capture (see that function) so a
+// script that warns/errors in a loop can't grow g_capture_diagnostic
+// without limit — this is developer-facing diagnostics text, not something
+// a remote client can turn into unbounded memory growth via a response.
+#define ISERVE_DIAGNOSTIC_LOG_CAPACITY 8192
+
+static iserve_growable_buffer_t g_capture_diagnostic;
+static int g_diagnostic_log_truncated;
+
 static void iserve_reset_capture(void)
 {
     free(g_capture_body.bytes);
@@ -59,31 +68,37 @@ static void iserve_reset_capture(void)
         free(g_capture_headers.items[i].value);
     }
     free(g_capture_headers.items);
+    free(g_capture_diagnostic.bytes);
     memset(&g_capture_body, 0, sizeof(g_capture_body));
     memset(&g_capture_headers, 0, sizeof(g_capture_headers));
+    memset(&g_capture_diagnostic, 0, sizeof(g_capture_diagnostic));
+    g_diagnostic_log_truncated = 0;
 }
 
-static void iserve_append_body(const char *str, size_t str_length)
+// Shared growth logic for any iserve_growable_buffer_t -- g_capture_body
+// (unbounded, the script's own output) and g_capture_diagnostic (bounded,
+// see iserve_log_message) both grow through this.
+static void iserve_buffer_append(iserve_growable_buffer_t *buffer, const char *str, size_t str_length)
 {
-    if (g_capture_body.length + str_length > g_capture_body.capacity) {
-        size_t new_capacity = g_capture_body.capacity ? g_capture_body.capacity * 2 : 4096;
-        while (new_capacity < g_capture_body.length + str_length) {
+    if (buffer->length + str_length > buffer->capacity) {
+        size_t new_capacity = buffer->capacity ? buffer->capacity * 2 : 4096;
+        while (new_capacity < buffer->length + str_length) {
             new_capacity *= 2;
         }
-        unsigned char *grown = realloc(g_capture_body.bytes, new_capacity);
+        unsigned char *grown = realloc(buffer->bytes, new_capacity);
         if (!grown) {
             return; // Out of memory: drop the overflow rather than crash the worker.
         }
-        g_capture_body.bytes = grown;
-        g_capture_body.capacity = new_capacity;
+        buffer->bytes = grown;
+        buffer->capacity = new_capacity;
     }
-    memcpy(g_capture_body.bytes + g_capture_body.length, str, str_length);
-    g_capture_body.length += str_length;
+    memcpy(buffer->bytes + buffer->length, str, str_length);
+    buffer->length += str_length;
 }
 
 static size_t iserve_ub_write(const char *str, size_t str_length)
 {
-    iserve_append_body(str, str_length);
+    iserve_buffer_append(&g_capture_body, str, str_length);
     return str_length;
 }
 
@@ -189,10 +204,38 @@ static void iserve_register_server_variables(zval *track_vars_array)
     }
 }
 
+// Called by PHP itself (via php_error_cb, since the bridge's ini sets
+// log_errors=1 and no error_log path, routing every warning/notice/
+// uncaught-exception-fatal message here) as well as anything else PHP logs
+// through sapi_module.log_message. Captured into g_capture_diagnostic for
+// iserve_php_execute() to hand back as out_result->diagnostic_log —
+// on-device developer diagnostics only, per ADR-0009, never sent to a
+// remote client. Still also written to stderr: useful for this bridge's
+// own CI smoke test output and for debugging outside a full app run.
 static void iserve_log_message(const char *message, int syslog_type_int)
 {
     (void)syslog_type_int;
     fprintf(stderr, "[iServe PHP] %s\n", message);
+
+    if (!message || g_diagnostic_log_truncated) {
+        return;
+    }
+    size_t message_length = strlen(message);
+    // +1 for the newline separator written before every entry after the first.
+    size_t separator_length = g_capture_diagnostic.length > 0 ? 1 : 0;
+    if (g_capture_diagnostic.length + separator_length + message_length > ISERVE_DIAGNOSTIC_LOG_CAPACITY) {
+        static const char truncated_marker[] = "\n[truncated]";
+        size_t remaining = ISERVE_DIAGNOSTIC_LOG_CAPACITY - g_capture_diagnostic.length;
+        if (remaining > sizeof(truncated_marker) - 1) {
+            iserve_buffer_append(&g_capture_diagnostic, truncated_marker, sizeof(truncated_marker) - 1);
+        }
+        g_diagnostic_log_truncated = 1;
+        return;
+    }
+    if (separator_length > 0) {
+        iserve_buffer_append(&g_capture_diagnostic, "\n", 1);
+    }
+    iserve_buffer_append(&g_capture_diagnostic, message, message_length);
 }
 
 static int iserve_startup(sapi_module_struct *sapi_module)
@@ -350,6 +393,18 @@ void iserve_php_execute(const iserve_php_request_t *request, iserve_php_result_t
     out_result->header_count = g_capture_headers.count;
     memset(&g_capture_body, 0, sizeof(g_capture_body));
     memset(&g_capture_headers, 0, sizeof(g_capture_headers));
+
+    // g_capture_diagnostic.bytes is a raw, non-NUL-terminated byte buffer
+    // (same shape as g_capture_body) -- diagnostic_log is a plain C string,
+    // so build a fresh NUL-terminated copy rather than transferring
+    // ownership directly the way body/headers are above.
+    if (g_capture_diagnostic.length > 0) {
+        out_result->diagnostic_log = malloc(g_capture_diagnostic.length + 1);
+        if (out_result->diagnostic_log) {
+            memcpy(out_result->diagnostic_log, g_capture_diagnostic.bytes, g_capture_diagnostic.length);
+            out_result->diagnostic_log[g_capture_diagnostic.length] = '\0';
+        }
+    }
 }
 
 void iserve_php_free_result(iserve_php_result_t *result)
@@ -361,5 +416,6 @@ void iserve_php_free_result(iserve_php_result_t *result)
     }
     free(result->headers);
     free(result->startup_diagnostic);
+    free(result->diagnostic_log);
     memset(result, 0, sizeof(*result));
 }

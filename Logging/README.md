@@ -41,3 +41,32 @@ resetting that budget for a fresh session), and the request-log cases in
 `StaticFileServingLifecycleTests.swift`/`LiveServerServiceTests.swift` (a
 real request recorded through the full `HTTPServer`/`HTTPConnection`
 pipeline, and through a full `LiveServerService` session respectively).
+
+`PHPDiagnosticsLog` (v0.4, `docs/adr/0009-php-runtime-feasibility.md`) is
+the same bounded, most-recent-first shape as `RequestLog`, but for a
+different purpose: `display_errors` is always off in the PHP bridge, so a
+script's warnings/notices/uncaught-exception messages never reach a remote
+client at all — this is the on-device-only surface for them instead
+(`docs/ROADMAP.md`'s "PHP diagnostics console" deliverable). Unlike
+`RequestLogEntry`, `PHPDiagnosticEntry.message` is deliberately
+**unsanitized** — it may include a local file path — since it never leaves
+the device and the real PHP error text is exactly what's useful for
+debugging your own script. `LiveServerService` owns one per session (same
+create-in-`start()`/discard-in-`stop()` lifecycle as `RequestLog`) and
+hands it to `StaticFileHandler`, which records a response's
+`PHPResponse.diagnosticLog` (populated from `PHP/Bridge/iserve_php_bridge.c`'s
+`iserve_log_message` capture, via `PHPWorker`) and, separately, a
+Swift-level `routePHPScript` executor failure. `ServerCoordinator.phpDiagnosticsLog`
+forwards it, and `ServerDashboard` polls it the same way it polls
+`requestLog`, showing a "PHP Diagnostics" section only while
+`phpExecutionEnabled` is on.
+
+Covered by `Tests/iServeTests/PHPDiagnosticsLogTests.swift` (bounding,
+ordering — no networking, mirrors `RequestLogTests.swift`) and the
+diagnostic-log cases in `PHPScriptExecutionLifecycleTests.swift` (a real
+request through `HTTPServer`/`StaticFileHandler` with a fake executor:
+`diagnosticLog` reaching the log but never the response body, a clean run
+recording nothing, and an executor throw also recorded). The bridge's own
+capture is proven against the real embed SAPI by
+`PHP/Bridge/Tests/iserve_bridge_smoke_test.c`'s request F
+(`fixtures/warning.php`).

@@ -96,6 +96,12 @@ final class ServerCoordinator {
     /// The current session's sanitized request telemetry, or `nil` when not running.
     var requestLog: RequestLog? { service.requestLog }
 
+    /// The current session's on-device-only PHP runtime diagnostics, or
+    /// `nil` when not running (`docs/ROADMAP.md`'s "PHP diagnostics
+    /// console" deliverable). Always empty in the ordinary `iServe` build,
+    /// which never has a PHP executor to record anything from.
+    var phpDiagnosticsLog: PHPDiagnosticsLog? { service.phpDiagnosticsLog }
+
     /// Bonjour/mDNS advertisement state for the current session — purely a
     /// discoverability convenience alongside `state`'s IP-based endpoint,
     /// never required for it: a `.failed` advertisement never affects

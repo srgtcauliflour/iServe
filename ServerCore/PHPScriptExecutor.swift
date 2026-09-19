@@ -61,10 +61,18 @@ public struct PHPResponse: Sendable {
     public var statusCode: Int
     public var headers: [(name: String, value: String)]
     public var body: Data
+    /// Runtime warnings/notices/uncaught-exception messages this request
+    /// logged (ADR-0009's `display_errors` is always off, so none of this
+    /// ever reaches `body`) — `nil` when nothing was logged. On-device
+    /// diagnostics only (`docs/ROADMAP.md`'s "PHP diagnostics console"
+    /// deliverable, `Logging/PHPDiagnosticsLog.swift`); never forwarded to
+    /// the HTTP client.
+    public var diagnosticLog: String?
 
-    public init(statusCode: Int, headers: [(name: String, value: String)], body: Data) {
+    public init(statusCode: Int, headers: [(name: String, value: String)], body: Data, diagnosticLog: String? = nil) {
         self.statusCode = statusCode
         self.headers = headers
         self.body = body
+        self.diagnosticLog = diagnosticLog
     }
 }

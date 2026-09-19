@@ -332,11 +332,33 @@ capability-gating note) and covered by a new
 regression test that goes through the real `LiveServerService.start`
 wiring, not a hand-built `StaticFileHandler`.
 
+Done: the PHP diagnostics console. `display_errors` is always off
+(ADR-0009), so a script's warnings/notices/uncaught-exception messages
+were previously invisible to whoever is running the server — only ever
+written to the CI runner's own stderr by the bridge's `log_message` hook,
+never surfaced anywhere in the app. `iserve_php_result_t` gained
+`diagnostic_log` (`PHP/Bridge/iserve_php_bridge.c`'s `iserve_log_message`
+now captures every message it's handed into a bounded, newline-joined
+per-request buffer — `log_errors=1` was already set, so `php_error_cb`
+was already routing warnings/notices/fatals there, just never captured);
+`PHPResponse.diagnosticLog` carries it up to `StaticFileHandler`, which
+records it (and a Swift-level executor failure) into a new
+`Logging/PHPDiagnosticsLog.swift` actor — deliberately *unsanitized*,
+since this is on-device-only and the real error text (possibly including
+a local path) is exactly what's useful for debugging your own script.
+`ServerDashboard` gained a "PHP Diagnostics" section, shown only while
+`phpExecutionEnabled` is on, polling the same way `recentRequestsSection`
+already does. Verified end to end: `iserve_bridge_smoke_test.c`'s request F
+(new `fixtures/warning.php`) proves a real `trigger_error()` call is
+captured into `diagnostic_log` and never leaks into the response body
+against the real bridge; `PHPScriptExecutionLifecycleTests`/
+`PHPDiagnosticsLogTests` cover the Swift-level wiring and the log actor
+itself with a fake executor.
+
 Still open: file uploads *through PHP* (a script receiving an uploaded
 file via `$_FILES` — distinct from the POST-body wiring already landed,
 which hands PHP the raw body but doesn't parse multipart uploads for
-it), the PHP diagnostics console, and the compatibility/security test
-suite below.
+it) and the compatibility/security test suite below.
 
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a

@@ -23,6 +23,7 @@ final class LiveServerService: ServerService {
     /// effect until the next restart, same as `profile`/`credentials`.
     private var scopedMountURLs: [String: URL] = [:]
     private(set) var requestLog: RequestLog?
+    private(set) var phpDiagnosticsLog: PHPDiagnosticsLog?
 
     init(folders: FolderRootManager, limits: HTTPServerLimits = .default) {
         self.folders = folders
@@ -51,6 +52,7 @@ final class LiveServerService: ServerService {
         // even a direct GET of a .php file in the one profile meant for
         // serving a site's own pages.
         let phpEnabledThisSession = phpExecutor != nil
+        let diagnosticsLog = PHPDiagnosticsLog()
 
         // A mount whose scope can't be acquired right now is silently
         // skipped for this session, per the ADR, rather than failing the
@@ -69,7 +71,8 @@ final class LiveServerService: ServerService {
                 allowDirectoryListing: profile.allowsDirectoryListing,
                 allowWebDAVWrites: false,
                 allowPHPExecution: phpEnabledThisSession,
-                phpExecutor: phpExecutor
+                phpExecutor: phpExecutor,
+                phpDiagnosticsLog: diagnosticsLog
             )
             mounts.append(MountRouter.Mount(name: mount.name, handler: mountHandler))
         }
@@ -82,7 +85,8 @@ final class LiveServerService: ServerService {
             allowDirectoryListing: profile.allowsDirectoryListing,
             allowWebDAVWrites: profile.allowsWebDAVWrites,
             allowPHPExecution: phpEnabledThisSession,
-            phpExecutor: phpExecutor
+            phpExecutor: phpExecutor,
+            phpDiagnosticsLog: diagnosticsLog
         )
         // Always MountRouter, even with zero additional mounts: it's a
         // provably exact pass-through to the primary handler in that case
@@ -97,6 +101,7 @@ final class LiveServerService: ServerService {
             self.scopedURL = scopedURL
             self.scopedMountURLs = scopedMountURLs
             self.requestLog = log
+            self.phpDiagnosticsLog = diagnosticsLog
             return port
         } catch {
             folders.endAccess(scopedURL)
@@ -111,6 +116,7 @@ final class LiveServerService: ServerService {
         guard let server = httpServer else { return }
         httpServer = nil
         requestLog = nil
+        phpDiagnosticsLog = nil
         let urlToRelease = scopedURL
         scopedURL = nil
         let mountURLsToRelease = scopedMountURLs
