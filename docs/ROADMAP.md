@@ -436,6 +436,23 @@ other named deliverables (index.php routing, request/response mapping,
 sessions, PDO/SQLite, the PHP toggle UI, the diagnostics console, and
 `$_FILES`) are all done.
 
+Done: a signed, installable `iServeWithPHP` `.ipa` for on-device testing.
+`iServeWithPHP` had been CI-only since it was introduced — build-only
+smoke tests proving it compiles and links, never an actual binary anyone
+could put on a device — so there was previously no way to try any of
+v0.4 for real outside the CI logs. `php-embed.yml` gained an
+`ipa-with-php` job (`workflow_dispatch` with `build_ipa: true`), mirroring
+`ios.yml`'s own signing/export pipeline against the `iServeWithPHP`
+target/bundle id instead, verified working end to end on its first real
+run. Downloaded as that run's `iServeWithPHP-signed-ipa` artifact, not
+published as a GitHub release — ADR-0009 still frames this subsystem as
+experimental, not release material.
+
+**v0.4 status: feature-complete.** Everything named in the v0.4 goal
+("serve useful self-contained PHP applications") is done and verified
+against the real embed SAPI; the only open item is the resource-limit
+exhaustion tests noted above, which don't block using the feature.
+
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a
 remote RSS feed, API, or icon/asset — `fetch()`/`<img src="https://...">`/
