@@ -15,3 +15,6 @@ PHP/Vendor/
 # fixtures/sqlite.php deletes this itself on every run (before and after);
 # ignored too in case a crashed/interrupted run ever leaves one behind.
 PHP/Bridge/Tests/fixtures/*.sqlite
+# fixtures/upload.php deletes this itself on every run (before and after);
+# same reasoning as the .sqlite rule above.
+PHP/Bridge/Tests/fixtures/uploaded-output.txt

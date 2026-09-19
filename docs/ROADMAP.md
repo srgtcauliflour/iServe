@@ -393,15 +393,48 @@ those, but the one job that could actually prove it was silently missing
 the flags. Same shape as the earlier SQLite/PDO gap this ROADMAP already
 records. Fixed by adding the same three flags to job 2's configure step.
 
-Still open: file uploads *through PHP* (a script receiving an uploaded
-file via `$_FILES` — distinct from the POST-body wiring already landed,
-which hands PHP the raw body but doesn't parse multipart uploads for it),
-and extending the security suite to resource-limit exhaustion
+Done: file uploads *through PHP* (`$_FILES`). Verified against the real
+php-8.4.2 source first, since this touches open_basedir in a new way:
+PHP's own rfc1867 multipart handler already dispatches automatically
+through the same content-type-based POST mechanism that already made
+`$_POST` work for urlencoded bodies (our SAPI leaves `treat_data` as
+PHP's own default) — the only missing piece was `upload_tmp_dir`, never
+configured, so PHP was falling back to guessing a system temp directory.
+`iserve_php_bridge_startup` gained an `upload_tmp_dir` parameter (mirrors
+`session_save_path`'s own pattern exactly: a directory under the app's
+own container, never a served folder) — confirmed from
+`main/php_open_temporary_file.c` that PHP's `open_basedir` check on this
+directory only ever applies to its own *fallback* guess, never an
+explicitly configured one, so this works the same way `session.save_path`
+already does; and from `ext/standard/basic_functions.c` that
+`move_uploaded_file()` only `open_basedir`-checks its *destination*
+argument, never the uploaded temp file itself, so a script can only ever
+move an upload to somewhere already inside its own `open_basedir`.
+`PHPWorkerLimits`/`ServerCoordinator.phpWorkerLimits()` thread through a
+real directory the same way sessions already do. Proved end to end by a
+new request H in `iserve_bridge_smoke_test.c` (a real, hand-built
+multipart/form-data body against `fixtures/upload.php`: `$_FILES`
+populated, `is_uploaded_file()`/`move_uploaded_file()` both succeed, and
+the moved file's content matches what was uploaded) and a new Swift-level
+`PHPScriptExecutionLifecycleTests` case proving the raw multipart body
+and its exact `Content-Type` (boundary included) reach the executor
+unparsed. Bounded by the existing `maxPHPPostBodyBytes` (8MB, already
+close to PHP's own compiled-in `post_max_size=8M` default) — a real,
+deliberate v0.4 scope limit: small uploads a script processes itself work
+fine, but this isn't a general large-file-upload feature, since the
+whole body is buffered in memory rather than streamed to disk the way
+the ordinary (non-PHP) upload path is.
+
+Still open: extending the security suite to resource-limit exhaustion
 (`max_execution_time`/`memory_limit` actually terminating a runaway
 script) — deferred for now since a real infinite-loop/large-allocation
 test risks hanging or slowing CI if PHP's own interrupt-tick mechanism
 doesn't fire the way a passing test assumes, and deserves its own
-careful, isolated pass rather than being folded in here.
+careful, isolated pass rather than being folded in here. This is the one
+remaining item from ADR-0009's "Costs" section not yet covered; v0.4's
+other named deliverables (index.php routing, request/response mapping,
+sessions, PDO/SQLite, the PHP toggle UI, the diagnostics console, and
+`$_FILES`) are all done.
 
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a

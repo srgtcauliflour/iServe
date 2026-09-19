@@ -90,10 +90,22 @@ typedef struct {
 //   under a served folder) for session files; may be NULL to leave
 //   sessions using PHP's compiled-in default, which callers should not
 //   rely on.
+// - upload_tmp_dir: absolute path under the app's own container (never
+//   under a served folder, same reasoning as session_save_path) where a
+//   $_FILES upload's temporary file is written by PHP's own rfc1867
+//   multipart handling. Explicitly setting this (rather than leaving PHP
+//   to fall back to its own system-temp-directory guess) is what makes
+//   $_FILES uploads work at all in a predictable, sandboxed location --
+//   see the .c file's own note on why this path is deliberately exempt
+//   from open_basedir (PHP only enforces open_basedir on this directory
+//   when it's the *fallback*, never when explicitly configured, matching
+//   every other SAPI's own behavior). May be NULL to leave PHP's own
+//   fallback in effect, which callers should not rely on -- same caveat
+//   as session_save_path.
 //
 // Returns 0 on success, nonzero on failure. Must be called exactly once,
 // before any call to iserve_php_execute().
-int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path);
+int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path, const char *upload_tmp_dir);
 
 // Runs PHP's module shutdown once for this process. Must be called exactly
 // once, after every call to iserve_php_execute() has returned, and never

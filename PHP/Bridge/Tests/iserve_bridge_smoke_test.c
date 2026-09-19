@@ -17,8 +17,10 @@
 // fixtures/security.php is the compatibility/security test suite
 // (docs/ROADMAP.md's v0.4 deliverable): disabled functions, blocked
 // open_basedir escapes via several different functions, allow_url_fopen/
-// allow_url_include off, and the extension allowlist (request G). See each
-// fixture for what its assertions below are reading back.
+// allow_url_include off, and the extension allowlist (request G);
+// fixtures/upload.php proves a real multipart/form-data body populates
+// $_FILES and move_uploaded_file() works within open_basedir (request H).
+// See each fixture for what its assertions below are reading back.
 #include "iserve_php_bridge.h"
 
 #include <stdio.h>
@@ -100,8 +102,10 @@ int main(int argc, char **argv)
 
     const char *sessions_dir = "/tmp/iserve_bridge_smoke_test_sessions";
     mkdir(sessions_dir, 0700); // Best-effort: PHP's session extension never creates save_path itself.
+    const char *uploads_dir = "/tmp/iserve_bridge_smoke_test_uploads";
+    mkdir(uploads_dir, 0700); // Best-effort: PHP's rfc1867 upload handling never creates upload_tmp_dir itself either.
 
-    if (iserve_php_bridge_startup(5, 64 * 1024 * 1024, sessions_dir) != 0) {
+    if (iserve_php_bridge_startup(5, 64 * 1024 * 1024, sessions_dir, uploads_dir) != 0) {
         fprintf(stderr, "FAIL: iserve_php_bridge_startup\n");
         return 1;
     }
@@ -286,6 +290,48 @@ int main(int argc, char **argv)
     check(body_contains(&result_g, "extension_filter_available=yes\n"), "request G: filter extension available");
 
     iserve_php_free_result(&result_g);
+
+    // Request H: exercises fixtures/upload.php -- the ROADMAP's "$_FILES
+    // uploads through PHP" v0.4 deliverable. A real, hand-built
+    // multipart/form-data body (RFC 1867/2046), so this proves PHP's own
+    // multipart parsing actually fires through our custom SAPI's
+    // read_post callback (not something the bridge implements itself),
+    // that upload_tmp_dir (configured above, outside this request's own
+    // open_basedir -- see iserve_php_bridge_startup's own doc comment for
+    // why that's fine) is where the temp file lands, and that
+    // move_uploaded_file() can move it into fixtures_dir (this request's
+    // document_root/open_basedir).
+    char upload_script_filename[1024];
+    snprintf(upload_script_filename, sizeof(upload_script_filename), "%s/upload.php", fixtures_dir);
+
+    static const char multipart_body[] =
+        "--iServeTestBoundary123\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"hello.txt\"\r\n"
+        "Content-Type: text/plain\r\n"
+        "\r\n"
+        "hello from upload\r\n"
+        "--iServeTestBoundary123--\r\n";
+
+    iserve_php_request_t request_h = {0};
+    request_h.method = "POST";
+    request_h.uri = "/upload.php";
+    request_h.body = (const unsigned char *)multipart_body;
+    request_h.body_length = sizeof(multipart_body) - 1; // exclude the trailing NUL
+    request_h.content_type = "multipart/form-data; boundary=iServeTestBoundary123";
+    request_h.script_filename = upload_script_filename;
+    request_h.document_root = fixtures_dir;
+
+    iserve_php_result_t result_h;
+    iserve_php_execute(&request_h, &result_h);
+
+    check(result_h.startup_diagnostic == NULL, "request H: no startup diagnostic");
+    check(body_contains(&result_h, "files_isset=yes\n"), "request H: $_FILES populated from a real multipart upload");
+    check(body_contains(&result_h, "upload_error=0\n"), "request H: upload_error is UPLOAD_ERR_OK");
+    check(body_contains(&result_h, "is_uploaded_file=yes\n"), "request H: is_uploaded_file() recognizes the temp file");
+    check(body_contains(&result_h, "move_uploaded_file=yes\n"), "request H: move_uploaded_file() succeeds into this request's own document_root");
+    check(body_contains(&result_h, "moved_content=hello from upload\n"), "request H: the moved file's content matches what was uploaded");
+
+    iserve_php_free_result(&result_h);
 
     iserve_php_bridge_shutdown();
 

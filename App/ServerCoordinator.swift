@@ -235,17 +235,21 @@ final class ServerCoordinator {
     #if canImport(PHPBridge)
     /// Conservative fixed defaults for a first working end-to-end path
     /// (ADR-0009's resource-limits section) — not yet exposed as a setting
-    /// anywhere. `sessionSavePath` is under the app's own container cache
-    /// directory, never a served folder, so a PHP session can't be listed/
-    /// downloaded as if it were served content.
+    /// anywhere. `sessionSavePath`/`uploadTmpDir` are both under the app's
+    /// own container cache directory, never a served folder, so a PHP
+    /// session or a still-in-flight upload can't be listed/downloaded as if
+    /// it were served content.
     private static func phpWorkerLimits() -> PHPWorkerLimits {
-        let sessionsDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("iServe-php-sessions", isDirectory: true)
+        let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let sessionsDirectory = cachesDirectory.appendingPathComponent("iServe-php-sessions", isDirectory: true)
+        let uploadsDirectory = cachesDirectory.appendingPathComponent("iServe-php-uploads", isDirectory: true)
         try? FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: uploadsDirectory, withIntermediateDirectories: true)
         return PHPWorkerLimits(
             maxExecutionTimeSeconds: 10,
             memoryLimitBytes: 64 * 1024 * 1024,
-            sessionSavePath: sessionsDirectory.path
+            sessionSavePath: sessionsDirectory.path,
+            uploadTmpDir: uploadsDirectory.path
         )
     }
     #endif

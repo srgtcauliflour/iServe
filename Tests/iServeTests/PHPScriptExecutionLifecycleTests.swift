@@ -322,6 +322,52 @@ final class PHPScriptExecutionLifecycleTests: XCTestCase {
         await server.stop()
     }
 
+    /// `$_FILES` uploads through PHP (v0.4) depend entirely on the raw
+    /// multipart body and its exact `Content-Type` (boundary included)
+    /// reaching the executor unchanged -- PHP's own rfc1867 parsing keys
+    /// off that header. This proves the Swift-side buffering path treats
+    /// a `multipart/form-data` PHP POST no differently than any other
+    /// content type (raw bytes in, nothing parsed/mangled here), and --
+    /// unlike `testNonPHPPostStillReachesUploadHandling`'s non-`.php`
+    /// case -- that it's the PHP path, not the ordinary upload handler,
+    /// that receives it. The actual multipart parsing/`$_FILES`
+    /// population is proved against the real bridge by
+    /// `PHP/Bridge/Tests/iserve_bridge_smoke_test.c`'s request H.
+    func testMultipartPHPPostBodyReachesExecutorUnparsed() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<?php".write(to: root.appendingPathComponent("upload.php"), atomically: true, encoding: .utf8)
+
+        let executor = FakePHPExecutor(behavior: .success(PHPResponse(statusCode: 200, headers: [], body: Data("ok".utf8))))
+        let server = HTTPServer(router: StaticFileHandler(
+            resolver: SecurePathResolver(root: root),
+            allowPHPExecution: true,
+            phpExecutor: executor
+        ))
+        let port = try await server.start()
+
+        let boundary = "iServeTestBoundary123"
+        let multipartText = "--\(boundary)\r\n"
+            + "Content-Disposition: form-data; name=\"file\"; filename=\"hello.txt\"\r\n"
+            + "Content-Type: text/plain\r\n\r\n"
+            + "hello from upload\r\n"
+            + "--\(boundary)--\r\n"
+        let multipartBody = Data(multipartText.utf8)
+        var request = URLRequest(url: loopbackURL(port: port, path: "/upload.php"))
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = multipartBody
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+
+        let lastRequest = await executor.lastRequest
+        let recorded = try XCTUnwrap(lastRequest)
+        XCTAssertEqual(recorded.contentType, "multipart/form-data; boundary=\(boundary)")
+        XCTAssertEqual(recorded.body, multipartBody)
+
+        await server.stop()
+    }
+
     /// An empty PHP POST body is valid (a script may be triggered by a
     /// bare POST with no content) -- unlike an empty ZIP-selection body,
     /// which `beginZipDownload` rejects outright.
