@@ -418,12 +418,25 @@ populated, `is_uploaded_file()`/`move_uploaded_file()` both succeed, and
 the moved file's content matches what was uploaded) and a new Swift-level
 `PHPScriptExecutionLifecycleTests` case proving the raw multipart body
 and its exact `Content-Type` (boundary included) reach the executor
-unparsed. Bounded by the existing `maxPHPPostBodyBytes` (8MB, already
-close to PHP's own compiled-in `post_max_size=8M` default) — a real,
+unparsed. Bounded by the existing `maxPHPPostBodyBytes` (8MB) — a real,
 deliberate v0.4 scope limit: small uploads a script processes itself work
 fine, but this isn't a general large-file-upload feature, since the
 whole body is buffered in memory rather than streamed to disk the way
 the ordinary (non-PHP) upload path is.
+
+**Fixed after real on-device testing**: `upload_max_filesize`/
+`post_max_size` were left at PHP's own compiled-in defaults
+(`upload_max_filesize=2M`, `post_max_size=8M`) on the assumption they
+roughly matched `maxPHPPostBodyBytes`. Wrong for `upload_max_filesize`
+specifically — its 2M default silently capped every upload well under
+the 8MB the transport layer already allows, and the C smoke test's own
+upload body (a few bytes) was nowhere near even that old 2M ceiling, so
+it never exercised the boundary that actually broke. A person testing
+the merged v0.4 build on a real device hit `UPLOAD_ERR_INI_SIZE`
+uploading an ordinary file. Both are now set explicitly to `8M`,
+matching `maxPHPPostBodyBytes`; `iserve_bridge_smoke_test.c`'s request H
+now asserts the ini values themselves (via `ini_get()`), which is what
+actually would have caught this, not a bigger test upload.
 
 Still open: extending the security suite to resource-limit exhaustion
 (`max_execution_time`/`memory_limit` actually terminating a runaway
@@ -435,6 +448,23 @@ remaining item from ADR-0009's "Costs" section not yet covered; v0.4's
 other named deliverables (index.php routing, request/response mapping,
 sessions, PDO/SQLite, the PHP toggle UI, the diagnostics console, and
 `$_FILES`) are all done.
+
+Done: a signed, installable `iServeWithPHP` `.ipa` for on-device testing.
+`iServeWithPHP` had been CI-only since it was introduced — build-only
+smoke tests proving it compiles and links, never an actual binary anyone
+could put on a device — so there was previously no way to try any of
+v0.4 for real outside the CI logs. `php-embed.yml` gained an
+`ipa-with-php` job (`workflow_dispatch` with `build_ipa: true`), mirroring
+`ios.yml`'s own signing/export pipeline against the `iServeWithPHP`
+target/bundle id instead, verified working end to end on its first real
+run. Downloaded as that run's `iServeWithPHP-signed-ipa` artifact, not
+published as a GitHub release — ADR-0009 still frames this subsystem as
+experimental, not release material.
+
+**v0.4 status: feature-complete.** Everything named in the v0.4 goal
+("serve useful self-contained PHP applications") is done and verified
+against the real embed SAPI; the only open item is the resource-limit
+exhaustion tests noted above, which don't block using the feature.
 
 **Remote content in a served page, clarified (no code change needed):** a
 plain HTML/CSS/JS page iServe serves has always been able to reference a
