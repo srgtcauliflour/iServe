@@ -1,0 +1,190 @@
+name: PHP outbound networking (v0.5, experimental)
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - '.github/workflows/php-outbound-networking.yml'
+
+# Kept entirely separate from php-embed.yml on purpose, same reasoning
+# ADR-0009 already established for keeping php-embed.yml separate from
+# ios.yml: v0.5's own build engineering (mbedTLS, then curl against it,
+# eventually wired into ext/curl) is new, unproven ground for this project
+# -- a red X here must never block v0.4's already-stable PHP embed SAPI
+# pipeline, and every job here runs with continue-on-error: true for the
+# same reason those do. Deliberately incremental and CI-observed
+# (docs/adr/0010-php-outbound-networking.md): mbedTLS is proven on its own
+# first, before curl is ever built against it, before curl is ever wired
+# into ext/curl, before that's wired into the real iServeWithPHP app
+# target -- each step isolates exactly one new variable.
+
+env:
+  # mbedTLS 3.6.x LTS (supported with bug-fixes/security fixes until at
+  # least March 2027 per the project's own release page), not the 4.x
+  # line -- 4.x restructured around git submodules (tf-psa-crypto,
+  # framework) that add real checkout/build complexity 3.6.x mostly
+  # avoids. Chosen over OpenSSL/BoringSSL as curl's TLS backend since curl
+  # removed Secure Transport (see ADR-0010's own correction) -- mbedTLS
+  # targets embedded/constrained/mobile builds specifically, with a much
+  # simpler cross-compile story (plain make, no perl/asm codegen steps to
+  # fight in CI) and a smaller footprint than OpenSSL, which matters given
+  # ADR-0009 already flagged app binary size as a real cost.
+  #
+  # 3.6.x DOES still need its own "framework" git submodule initialized --
+  # confirmed by actually building it locally (`make lib` from a plain
+  # clone fails on library/libmbedtls.a specifically, needing
+  # framework/scripts/generate_ssl_debug_helpers.py; initializing the
+  # submodule and rebuilding succeeds and produces a working library, both
+  # verified for real, not assumed from documentation that turned out to
+  # describe release tarballs rather than a git checkout). Every checkout
+  # step below passes `submodules: recursive` for exactly this reason.
+  MBEDTLS_REF: mbedtls-3.6.7
+
+jobs:
+  mbedtls-cross-compile-device:
+    name: "Step 1: cross-compile mbedTLS (iOS device, arm64)"
+    # Build-only, like php-embed.yml's own device cross-compile job: a
+    # device binary targets real Apple Silicon inside an iPhone, not this
+    # runner's own macOS kernel, so it can never execute here regardless
+    # of how it's invoked. Proves the cross-compile itself succeeds and
+    # produces real arm64 object code; mbedtls-native-smoke-test (below)
+    # proves the same source actually works correctly, on a target that
+    # can run it.
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout mbedTLS
+        uses: actions/checkout@v4
+        with:
+          repository: Mbed-TLS/mbedtls
+          ref: ${{ env.MBEDTLS_REF }}
+          path: mbedtls
+          submodules: recursive
+
+      # mbedTLS's own classic Makefile (not the CMake build) respects
+      # CC/AR/CFLAGS overrides directly and needs no buildconf/configure
+      # step at all -- simpler than PHP's own autotools-based cross-compile
+      # jobs. `lib` builds only library/lib{mbedcrypto,x509,mbedtls}.a,
+      # skipping programs/ and tests/ (mbedTLS's own test suite needs a
+      # host that can execute the result -- see the native job below, not
+      # this one). SHARED is left unset, so only static .a archives are
+      # produced, matching how this project links every other dependency.
+      - name: Cross-compile mbedTLS static libraries (iOS device, arm64)
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          make CC="xcrun -sdk iphoneos clang -arch arm64" \
+               AR="xcrun -sdk iphoneos ar" \
+               CFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0 -O2" \
+               lib
+
+      - name: Check for the static libraries
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          for lib in libmbedcrypto.a libmbedx509.a libmbedtls.a; do
+            path="library/$lib"
+            test -f "$path" || (echo "$path not produced" && exit 1)
+            file "$path"
+          done
+
+      # A curated package (static libs + public headers only, not the
+      # whole checkout) for a later curl cross-compile job in this same
+      # workflow to build against -- mirrors php-embed.yml's own PHPKit
+      # packaging step exactly. Never committed to the repo (ADR-0009's
+      # "reproducible from source, not a vendored binary blob" rule
+      # applies here identically).
+      - name: Package mbedTLS static libs + headers for the curl build
+        if: success()
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          mkdir -p mbedtlskit/lib mbedtlskit/include
+          cp library/libmbedcrypto.a library/libmbedx509.a library/libmbedtls.a mbedtlskit/lib/
+          cp -R include/mbedtls mbedtlskit/include/
+          if [ -d include/psa ]; then
+            cp -R include/psa mbedtlskit/include/
+          fi
+
+      - name: Upload mbedTLS (iOS device)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mbedtls-ios-device-arm64
+          path: mbedtls/mbedtlskit
+
+  mbedtls-native-smoke-test:
+    name: "Step 2: mbedTLS smoke test (native macOS host)"
+    # Deliberately independent of mbedtls-cross-compile-device (own fresh
+    # checkout, own build): a native build (build machine == target) can
+    # actually execute here, isolating "does mbedTLS's own crypto code
+    # produce correct output from this checkout/build flags" from every
+    # iOS-SDK-cross-compile-specific risk -- the exact same split
+    # php-embed.yml's cross-compile-device/native-smoke-test jobs already
+    # use for PHP itself. Not running mbedTLS's own upstream test suite
+    # (mature, already tested by its own maintainers on every commit) --
+    # a small custom smoke test proving OUR build/link of it produces a
+    # working binary is the thing actually unproven here, mirroring how
+    # php-embed.yml's own smoke test is custom C, not php-src's own `make
+    # test`.
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout mbedTLS
+        uses: actions/checkout@v4
+        with:
+          repository: Mbed-TLS/mbedtls
+          ref: ${{ env.MBEDTLS_REF }}
+          path: mbedtls
+          submodules: recursive
+
+      - name: Build mbedTLS static libraries (native macOS)
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          make lib
+
+      - name: Write + compile a SHA-256 smoke test
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          cat > smoke_test.c <<'EOF'
+          #include <mbedtls/sha256.h>
+          #include <stdio.h>
+          #include <string.h>
+
+          // Known-answer test: SHA-256("iserve mbedtls smoke test"), computed
+          // independently via `shasum -a 256` rather than trusted from this
+          // same build -- proves OUR build produces a *correct* digest, not
+          // just *a* digest (a subtly broken cross-compile/codegen could
+          // still link and run while producing wrong output).
+          static const char expected_hex[] =
+              "00376f7391fc2fbd6d0504d316425d80a44e3a95ff43786c1b7f39637fb58b69";
+
+          int main(void)
+          {
+              const unsigned char input[] = "iserve mbedtls smoke test";
+              unsigned char digest[32];
+              int rc = mbedtls_sha256(input, strlen((const char *)input), digest, 0);
+              if (rc != 0) {
+                  fprintf(stderr, "FAIL: mbedtls_sha256 returned %d\n", rc);
+                  return 1;
+              }
+
+              char hex[65];
+              for (int i = 0; i < 32; i++) {
+                  snprintf(hex + i * 2, 3, "%02x", digest[i]);
+              }
+              printf("digest=%s\n", hex);
+
+              if (strcmp(hex, expected_hex) != 0) {
+                  fprintf(stderr, "FAIL: digest mismatch, expected %s\n", expected_hex);
+                  return 1;
+              }
+              printf("PASS: digest matches known answer\n");
+              return 0;
+          }
+          EOF
+          clang smoke_test.c -o smoke_test -Iinclude library/libmbedcrypto.a
+          ./smoke_test | tee smoke_output.txt
+          grep -q "^PASS: digest matches known answer$" smoke_output.txt || (echo "mbedTLS smoke test failed" && exit 1)
