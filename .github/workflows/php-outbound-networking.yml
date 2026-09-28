@@ -38,6 +38,10 @@ env:
   # describe release tarballs rather than a git checkout). Every checkout
   # step below passes `submodules: recursive` for exactly this reason.
   MBEDTLS_REF: mbedtls-3.6.7
+  # Current stable as of this writing (confirmed against curl's own
+  # /releases/latest, not assumed) -- the same release ADR-0010's own TLS
+  # backend correction was checked against.
+  CURL_REF: curl-8_22_0
 
 jobs:
   mbedtls-cross-compile-device:
@@ -188,3 +192,267 @@ jobs:
           clang smoke_test.c -o smoke_test -Iinclude library/libmbedcrypto.a
           ./smoke_test | tee smoke_output.txt
           grep -q "^PASS: digest matches known answer$" smoke_output.txt || (echo "mbedTLS smoke test failed" && exit 1)
+
+  curl-cross-compile-device:
+    name: "Step 3: cross-compile curl (iOS device, arm64) against mbedTLS"
+    # Depends on mbedtls-cross-compile-device's own artifact (the same
+    # device-target mbedTLS build, not a fresh one) -- curl has to link
+    # against the exact same target/arch mbedTLS was just proven to
+    # produce, the same "one new variable at a time" reasoning as every
+    # other job in this workflow.
+    needs: mbedtls-cross-compile-device
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout curl
+        uses: actions/checkout@v4
+        with:
+          repository: curl/curl
+          ref: ${{ env.CURL_REF }}
+          path: curl
+
+      # Unlike php-src, curl's git checkout has no buildconf script to
+      # generate ./configure -- confirmed by actually attempting a local
+      # build (`./buildconf` doesn't exist in this checkout; GIT-INFO.md
+      # names `autoreconf -fi` as curl's own documented replacement).
+      # autoconf/automake alone (already used for PHP) aren't enough:
+      # curl's configure.ac calls LT_INIT, so libtool/libtoolize has to be
+      # present too, which php-embed.yml's own brew install line never
+      # needed.
+      - name: Install autoconf/automake/libtool/pkg-config
+        run: brew install autoconf automake libtool pkg-config
+
+      - name: Download mbedTLS (iOS device)
+        uses: actions/download-artifact@v4
+        with:
+          name: mbedtls-ios-device-arm64
+          path: mbedtlskit
+
+      - name: autoreconf (generate ./configure)
+        working-directory: curl
+        run: autoreconf -fi
+
+      # --with-mbedtls=PATH expects PATH/include + PATH/lib -- exactly the
+      # layout mbedtls-cross-compile-device's own packaging step already
+      # produces, confirmed directly against curl's configure.ac rather
+      # than assumed. --without-openssl is explicit (not just omitted)
+      # since a bare --without-ssl conflicts with --with-mbedtls and fails
+      # configure outright -- caught by actually running this configure
+      # line locally (Linux, native, against a locally-built mbedTLS)
+      # before ever trusting it in a cross-compile job here.
+      #
+      # Protocol surface restricted to http/https only, per ADR-0010:
+      # curl uses one --disable-<protocol> flag per protocol (confirmed
+      # against configure.ac), not a single allowlist option. ipfs/ipns
+      # and websockets are enabled by curl's own defaults independent of
+      # the protocol list above (--disable-ipfs / --disable-websockets
+      # are their own separate flags) and are disabled here for the same
+      # "http/https only" reason -- also only found by actually reading
+      # this exact configure run's own summary output locally, not
+      # assumed from the flag name list alone.
+      #
+      # --without-libpsl: curl's Public Suffix List support (used for
+      # stricter cookie-domain matching) hard-fails configure if libpsl
+      # isn't present rather than silently disabling -- not worth adding
+      # a fourth from-source dependency for a cookie-jar refinement this
+      # project doesn't use (PHP scripts here don't get a curl cookie
+      # jar API surface exposed at all, per ADR-0010's resource-bounds
+      # section disabling curl_multi_* and the option-clamping patch).
+      #
+      # HTTP/2 (nghttp2) intentionally NOT wired in yet, despite ADR-0010's
+      # own text mentioning it as part of curl's general capability class
+      # -- it's a fourth from-source dependency, and this workflow's own
+      # discipline is one new variable per step. Revisit once curl itself
+      # (HTTP/1.1, mbedTLS) is proven end-to-end.
+      - name: configure (cross-compile for iOS device, arm64, against mbedTLS)
+        working-directory: curl
+        run: |
+          export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          export CC="xcrun -sdk iphoneos clang -arch arm64"
+          export CFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          export LDFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          ./configure \
+            --host=aarch64-apple-darwin \
+            --with-mbedtls="$GITHUB_WORKSPACE/mbedtlskit" \
+            --without-openssl \
+            --without-libpsl \
+            --disable-shared --enable-static \
+            --disable-ftp --disable-file --disable-ldap --disable-ldaps \
+            --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
+            --disable-pop3 --disable-imap --disable-smtp --disable-gopher \
+            --disable-mqtt --disable-ipfs --disable-websockets
+
+      # Only the library, not the curl CLI tool or docs -- embedding needs
+      # libcurl.a alone, and building just lib/ (confirmed locally to work
+      # as a standalone make target right after configure, no top-level
+      # make needed first) skips real dependencies the CLI tool pulls in
+      # that the library itself doesn't need.
+      - name: make (libcurl only)
+        working-directory: curl
+        run: make -C lib -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Check for libcurl.a
+        working-directory: curl
+        run: |
+          test -f lib/.libs/libcurl.a || (echo "libcurl.a not produced" && exit 1)
+          file lib/.libs/libcurl.a
+
+      # A curated package (libcurl.a + its own public headers + the
+      # mbedTLS static libs it links against, so a later ext/curl build
+      # has everything in one place) -- mirrors mbedtls-cross-compile-device's
+      # own packaging step and php-embed.yml's PHPKit pattern.
+      - name: Package curl static lib + headers for the ext/curl build
+        if: success()
+        run: |
+          mkdir -p curlkit/lib curlkit/include
+          cp curl/lib/.libs/libcurl.a curlkit/lib/
+          cp -R curl/include/curl curlkit/include/
+          cp mbedtlskit/lib/*.a curlkit/lib/
+
+      - name: Upload curl (iOS device)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: curl-ios-device-arm64
+          path: curlkit
+
+  curl-native-smoke-test:
+    name: "Step 4: curl + mbedTLS smoke test (native macOS host, real HTTPS request)"
+    # Deliberately independent of both curl-cross-compile-device and
+    # mbedtls-native-smoke-test (own fresh checkouts, own builds) -- the
+    # same isolation reasoning as every other *-native-smoke-test job in
+    # this project. A native build lets curl's own configure-time checks
+    # actually execute (the normal non-cross-compiling autoconf path),
+    # and -- unlike mbedtls-native-smoke-test's own crypto-only known-
+    # answer test -- this is the step that proves the whole stack works
+    # together: curl, actually linked against mbedTLS, actually performing
+    # a real TLS 1.2/1.3 handshake and HTTP request against a real server,
+    # not just linking cleanly.
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout mbedTLS
+        uses: actions/checkout@v4
+        with:
+          repository: Mbed-TLS/mbedtls
+          ref: ${{ env.MBEDTLS_REF }}
+          path: mbedtls
+          submodules: recursive
+
+      - name: Checkout curl
+        uses: actions/checkout@v4
+        with:
+          repository: curl/curl
+          ref: ${{ env.CURL_REF }}
+          path: curl
+
+      - name: Install autoconf/automake/libtool/pkg-config
+        run: brew install autoconf automake libtool pkg-config
+
+      - name: Build mbedTLS static libraries (native macOS)
+        working-directory: mbedtls
+        run: make lib -j"$(sysctl -n hw.ncpu)"
+
+      - name: Package mbedTLS static libs + headers for curl's --with-mbedtls
+        working-directory: mbedtls
+        run: |
+          mkdir -p mbedtlskit/lib mbedtlskit/include
+          cp library/libmbedcrypto.a library/libmbedx509.a library/libmbedtls.a mbedtlskit/lib/
+          cp -R include/mbedtls mbedtlskit/include/
+          if [ -d include/psa ]; then
+            cp -R include/psa mbedtlskit/include/
+          fi
+
+      - name: autoreconf (generate ./configure)
+        working-directory: curl
+        run: autoreconf -fi
+
+      - name: configure (native macOS build, against mbedTLS)
+        working-directory: curl
+        run: |
+          ./configure \
+            --with-mbedtls="$GITHUB_WORKSPACE/mbedtls/mbedtlskit" \
+            --without-openssl \
+            --without-libpsl \
+            --disable-shared --enable-static \
+            --disable-ftp --disable-file --disable-ldap --disable-ldaps \
+            --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
+            --disable-pop3 --disable-imap --disable-smtp --disable-gopher \
+            --disable-mqtt --disable-ipfs --disable-websockets
+
+      - name: make (libcurl only)
+        working-directory: curl
+        run: make -C lib -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Check for libcurl.a
+        working-directory: curl
+        run: |
+          test -f lib/.libs/libcurl.a || (echo "libcurl.a not produced" && exit 1)
+
+      # Real end-to-end proof, not just "it links": curl_version_info()
+      # confirms the running binary actually reports mbedTLS as its TLS
+      # backend (not a stray system libcurl picked up by accident), then
+      # a real curl_easy_perform() against a real HTTPS server proves the
+      # TLS handshake + HTTP request genuinely work, not just that object
+      # files linked cleanly -- the same "prove OUR build produces
+      # correct behavior" standard mbedtls-native-smoke-test's own known-
+      # answer test already applies to raw crypto output.
+      - name: Write + compile + run a curl+mbedTLS HTTPS smoke test
+        working-directory: curl
+        run: |
+          cat > curl_smoke_test.c <<'EOF'
+          #include <curl/curl.h>
+          #include <stdio.h>
+          #include <string.h>
+
+          static size_t discard(char *ptr, size_t size, size_t nmemb, void *userdata) {
+              (void)ptr; (void)userdata;
+              return size * nmemb;
+          }
+
+          int main(void) {
+              curl_version_info_data *vi = curl_version_info(CURLVERSION_NOW);
+              printf("ssl_version=%s\n", vi->ssl_version ? vi->ssl_version : "(none)");
+              if (!vi->ssl_version || strstr(vi->ssl_version, "mbedTLS") == NULL) {
+                  fprintf(stderr, "FAIL: curl was not built against mbedTLS (ssl_version=%s)\n",
+                          vi->ssl_version ? vi->ssl_version : "(none)");
+                  return 1;
+              }
+
+              CURL *h = curl_easy_init();
+              if (!h) { fprintf(stderr, "FAIL: curl_easy_init returned NULL\n"); return 1; }
+
+              curl_easy_setopt(h, CURLOPT_URL, "https://pypi.org/");
+              curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, discard);
+              curl_easy_setopt(h, CURLOPT_TIMEOUT, 15L);
+              curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+
+              CURLcode rc = curl_easy_perform(h);
+              if (rc != CURLE_OK) {
+                  fprintf(stderr, "FAIL: curl_easy_perform: %s\n", curl_easy_strerror(rc));
+                  curl_easy_cleanup(h);
+                  return 1;
+              }
+
+              long code = 0;
+              curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code);
+              printf("http_status=%ld\n", code);
+              curl_easy_cleanup(h);
+
+              if (code != 200) {
+                  fprintf(stderr, "FAIL: unexpected HTTP status %ld\n", code);
+                  return 1;
+              }
+              printf("PASS: real HTTPS request over mbedTLS succeeded\n");
+              return 0;
+          }
+          EOF
+          clang curl_smoke_test.c -o curl_smoke_test \
+            -Iinclude \
+            lib/.libs/libcurl.a \
+            ../mbedtls/mbedtlskit/lib/libmbedtls.a \
+            ../mbedtls/mbedtlskit/lib/libmbedx509.a \
+            ../mbedtls/mbedtlskit/lib/libmbedcrypto.a \
+            -lz
+          ./curl_smoke_test | tee curl_smoke_output.txt
+          grep -q "^PASS: real HTTPS request over mbedTLS succeeded$" curl_smoke_output.txt || (echo "curl+mbedTLS smoke test failed" && exit 1)
