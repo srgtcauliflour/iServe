@@ -507,17 +507,24 @@ capability with its own threat model (SSRF against the device's own LAN,
 DNS rebinding, unbounded outbound requests), not a tweak to land alongside
 v0.4's already-large scope.
 
-Precondition: accept `docs/adr/0010-php-outbound-networking.md` — currently
-a stub naming the open questions (curl vs. stream-wrapper-only, a capability
-toggle layered on top of `phpExecutionEnabled` rather than implied by it,
-an SSRF/local-network denylist and DNS-rebinding defense, resource bounds,
-sanitized remote-fetch error behavior) rather than an accepted design.
+Precondition: accept `docs/adr/0010-php-outbound-networking.md`. **Done** —
+Accepted 2026-09-28: real `curl` (built from source, not Apple's
+undocumented system `libcurl`), a separate consent toggle layered on top
+of `phpExecutionEnabled`, SSRF/DNS-rebinding defense via a `DYLD_INTERPOSE`d
+`connect()` scoped to only apply during PHP script execution, resource
+bounds enforced the same way, sanitized remote-error behavior extending
+ADR-0009's existing rule. See that ADR for the full design and the
+reasoning behind each choice.
 
-Deliverables (pending that ADR's actual decisions):
-- Outbound HTTP(S) capability, off by default, gated separately from `phpExecutionEnabled`.
-- SSRF/local-network-exposure defense (host/IP-range denylist, validated at connect time against DNS-rebinding).
-- Resource bounds on outbound requests (timeout, response size, redirect limit, concurrency).
-- Sanitized failure behavior matching ADR-0009's existing "never leak local detail" rule.
+Deliverables:
+- New CI job cross-compiling curl from source for iOS device/Simulator (own isolated step, same incremental discipline as the original embed-SAPI bridge work) before it's wired into `ext/curl`.
+- `ext/curl` compiled into `libphp.a`, `--with-secure-transport` for TLS, protocol surface restricted to http/https only.
+- A small, tracked patch to `ext/curl/interface.c`'s `curl_setopt()` silently ignoring `CURLOPT_OPENSOCKETFUNCTION`/`CURLOPT_SOCKOPTFUNCTION`/`CURLOPT_RESOLVE`/`CURLOPT_CONNECT_TO`/`CURLOPT_DNS_SERVERS`/`CURLOPT_INTERFACE` (the options that could bypass the connect-time check below) and clamping (never widening) timeout/redirect-limit options a script tries to loosen.
+- `PHP/Bridge/iserve_php_bridge.c` gains the interposed `connect()` — the SSRF/local-network/DNS-rebinding defense, checked against every connection attempt (including redirect-driven ones) only while a PHP script is actually executing.
+- Response-size cap via `CURLOPT_XFERINFOFUNCTION` (covers unbounded/chunked responses, not just ones with a declared `Content-Length`); `curl_multi_*` added to `disable_functions` (one worker, one request at a time, matching ADR-0009's already-accepted concurrency model).
+- A new, off-by-default "outbound networking" toggle, separate from `phpExecutionEnabled`, in `ServerDashboard`.
+- Blocked/failed outbound attempts surfaced through the existing `PHPDiagnosticsLog` (never the HTTP response).
+- Its own dedicated security test suite proving the denylist actually holds — private-range/loopback/link-local/CGNAT addresses blocked directly *and* via a redirect, and the DNS-rebinding case specifically (a name that resolves differently between an early check and the real connect) — not just "a request to 127.0.0.1 fails."
 
 Exit gate: a locally-tested site can call a real external API/RSS feed/asset from PHP, with the same "explicit capability, never implied" and "bounded, never unbounded" discipline this project applies everywhere else, verified by its own test suite before this is considered release-ready.
 
