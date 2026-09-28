@@ -517,8 +517,8 @@ ADR-0009's existing rule. See that ADR for the full design and the
 reasoning behind each choice.
 
 Deliverables:
-- New CI job cross-compiling curl from source for iOS device/Simulator (own isolated step, same incremental discipline as the original embed-SAPI bridge work) before it's wired into `ext/curl`.
-- `ext/curl` compiled into `libphp.a`, `--with-secure-transport` for TLS, protocol surface restricted to http/https only.
+- New CI job cross-compiling mbedTLS from source for iOS device/Simulator, then curl (linked against it) — each its own isolated step, same incremental discipline as the original embed-SAPI bridge work, before either is wired into `ext/curl`. (mbedTLS, not OpenSSL/Secure Transport: see ADR-0010's own correction — curl removed Secure Transport, and mbedTLS's simpler cross-compile story and smaller footprint fit a mobile build better than OpenSSL would.)
+- `ext/curl` compiled into `libphp.a` against that mbedTLS, protocol surface restricted to http/https only.
 - A small, tracked patch to `ext/curl/interface.c`'s `curl_setopt()` silently ignoring `CURLOPT_OPENSOCKETFUNCTION`/`CURLOPT_SOCKOPTFUNCTION`/`CURLOPT_RESOLVE`/`CURLOPT_CONNECT_TO`/`CURLOPT_DNS_SERVERS`/`CURLOPT_INTERFACE` (the options that could bypass the connect-time check below) and clamping (never widening) timeout/redirect-limit options a script tries to loosen.
 - `PHP/Bridge/iserve_php_bridge.c` gains the interposed `connect()` — the SSRF/local-network/DNS-rebinding defense, checked against every connection attempt (including redirect-driven ones) only while a PHP script is actually executing.
 - Response-size cap via `CURLOPT_XFERINFOFUNCTION` (covers unbounded/chunked responses, not just ones with a declared `Content-Length`); `curl_multi_*` added to `disable_functions` (one worker, one request at a time, matching ADR-0009's already-accepted concurrency model).
