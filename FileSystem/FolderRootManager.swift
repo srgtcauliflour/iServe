@@ -186,16 +186,15 @@ final class FolderRootManager {
 
     /// Acquires scoped access for the *currently* selected root and returns
     /// that exact URL, or `nil` if there is no selected root or access could
-    /// not be granted. The caller — a server session, `App/FileManagerScreen.swift`
-    /// browsing the folder locally, or any other independent access holder —
-    /// must retain this URL and pass it back to `endAccess(_:)` when done; a
-    /// remembered URL alone is never proof that scope is currently held, and
-    /// this call does not itself track whether access remains outstanding.
-    /// Reentrant-safe to call from more than one caller at once: the
-    /// underlying security-scoped access is itself reference-counted, so a
-    /// server session and the file manager screen holding access
-    /// simultaneously just means two independent counts, each released by
-    /// its own matching `endAccess(_:)` call.
+    /// not be granted. The caller — a server session, or any other
+    /// independent access holder — must retain this URL and pass it back to
+    /// `endAccess(_:)` when done; a remembered URL alone is never proof that
+    /// scope is currently held, and this call does not itself track whether
+    /// access remains outstanding. Reentrant-safe to call from more than one
+    /// caller at once: the underlying security-scoped access is itself
+    /// reference-counted, so two independent holders just means two
+    /// independent counts, each released by its own matching
+    /// `endAccess(_:)` call.
     func beginAccess() -> URL? {
         guard let selectedURL, access.startAccessing(selectedURL) else { return nil }
         return selectedURL

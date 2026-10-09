@@ -36,9 +36,8 @@ selected by the time the caller is done (the selection may have changed
 since). `LiveServerService` is one such caller — it must release access only
 after its `HTTPServer` has cancelled its listener and every connection, never
 before. The underlying security-scoped access is reference-counted, so more
-than one independent caller (for example `LiveServerService` serving and
-`App/FileManagerScreen.swift` browsing the same root locally) may hold it at
-once; each just needs its own matching `beginAccess()`/`endAccess(_:)` pair.
+than one independent caller may hold it at once; each just needs its own
+matching `beginAccess()`/`endAccess(_:)` pair.
 Do not use a remembered `selectedURL` alone as proof that scope is currently
 held; only a caller holding a URL returned by `beginAccess()` may treat it as
 scoped.

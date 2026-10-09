@@ -141,8 +141,12 @@ Deliverables:
   increments a new `RequestLog.rejectedConnectionCount`, surfaced on
   `ServerDashboard` once it's non-zero — the "advanced logs" half of this
   deliverable. See `docs/adr/0006-connection-and-rate-limits.md`.
-- Feature-rich in-app sandboxed file manager. Shipped: a native browse
-  screen (`App/FileManagerScreen.swift`), file preview via
+- Feature-rich in-app sandboxed file manager. **Removed** (2026-10-09,
+  `docs/adr/0011-remove-native-file-manager.md`): heading into App Store
+  submission, product scope narrowed to the server alone. The
+  implementation below shipped and worked; it is preserved unchanged on
+  the `experimental` branch, not deleted from history. Shipped: a native
+  browse screen (`App/FileManagerScreen.swift`), file preview via
   `QLPreviewController` (text, images, video, PDF — whatever QuickLook
   itself supports), in-place editing of text-based files (gated on the
   file extension's `UTType` conforming to `.text`), rename/delete (swipe
@@ -517,8 +521,8 @@ ADR-0009's existing rule. See that ADR for the full design and the
 reasoning behind each choice.
 
 Deliverables:
-- New CI job cross-compiling mbedTLS from source for iOS device/Simulator, then curl (linked against it) — each its own isolated step, same incremental discipline as the original embed-SAPI bridge work, before either is wired into `ext/curl`. (mbedTLS, not OpenSSL/Secure Transport: see ADR-0010's own correction — curl removed Secure Transport, and mbedTLS's simpler cross-compile story and smaller footprint fit a mobile build better than OpenSSL would.)
-- `ext/curl` compiled into `libphp.a` against that mbedTLS, protocol surface restricted to http/https only.
+- New CI job cross-compiling mbedTLS from source for iOS device, then curl (linked against it) — each its own isolated step, same incremental discipline as the original embed-SAPI bridge work, before either is wired into `ext/curl`. (mbedTLS, not OpenSSL/Secure Transport: see ADR-0010's own correction — curl removed Secure Transport, and mbedTLS's simpler cross-compile story and smaller footprint fit a mobile build better than OpenSSL would.) **In progress** (`.github/workflows/php-outbound-networking.yml`): mbedTLS 3.6.7 cross-compile (iOS device, arm64) and native smoke test both green in CI. curl 8.22.0, built against that mbedTLS (`--with-mbedtls`, protocol surface restricted to http/https only — every non-http(s) protocol curl supports, including ipfs/websockets, explicitly disabled), verified locally end-to-end on a native host first (a real `curl_easy_perform()` HTTPS request, confirmed via `curl_version_info()` to actually be running over mbedTLS, not a stray system libcurl) before trusting the same configure/build flow in the new `curl-cross-compile-device`/`curl-native-smoke-test` CI jobs — real macOS CI verification of the device cross-compile still pending. HTTP/2 (`nghttp2`) deliberately deferred, not part of this first pass — a fourth from-source dependency, out of scope for "prove curl+mbedTLS builds and works" specifically.
+- `ext/curl` compiled into `libphp.a` against that mbedTLS.
 - A small, tracked patch to `ext/curl/interface.c`'s `curl_setopt()` silently ignoring `CURLOPT_OPENSOCKETFUNCTION`/`CURLOPT_SOCKOPTFUNCTION`/`CURLOPT_RESOLVE`/`CURLOPT_CONNECT_TO`/`CURLOPT_DNS_SERVERS`/`CURLOPT_INTERFACE` (the options that could bypass the connect-time check below) and clamping (never widening) timeout/redirect-limit options a script tries to loosen.
 - `PHP/Bridge/iserve_php_bridge.c` gains the interposed `connect()` — the SSRF/local-network/DNS-rebinding defense, checked against every connection attempt (including redirect-driven ones) only while a PHP script is actually executing.
 - Response-size cap via `CURLOPT_XFERINFOFUNCTION` (covers unbounded/chunked responses, not just ones with a declared `Content-Length`); `curl_multi_*` added to `disable_functions` (one worker, one request at a time, matching ADR-0009's already-accepted concurrency model).
