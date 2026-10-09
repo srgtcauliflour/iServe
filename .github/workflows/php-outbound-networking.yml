@@ -681,11 +681,22 @@ jobs:
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           CURL_PREFIX="$GITHUB_WORKSPACE/curlkit"
           CURL_PC="$CURL_PREFIX/lib/pkgconfig/libcurl.pc"
+          # -framework CoreFoundation -framework SystemConfiguration:
+          # appended by hand, not present in libcurl.pc's own Libs: line
+          # at all (that line only ever has -l/-L tokens, confirmed by
+          # reading it directly) -- a fourth real CI run hit the exact
+          # same Curl_macos_init() issue curl-native-smoke-test's own
+          # fix already traced to these two frameworks, just here at
+          # PHP's own configure-time curl_easy_perform link-check
+          # instead of a later manual smoke-test link. Same root cause
+          # (lib/macos.c, gated on CURL_MACOS_CALL_COPYPROXIES for any
+          # native, non-iOS Apple build -- see that job's own comment
+          # for the full citation), different step hitting it first.
           export LIBS="$(grep '^Libs:' "$CURL_PC" | sed \
             -e 's/^Libs: *//' \
             -e "s#\${prefix}#$CURL_PREFIX#g" \
             -e "s#\${exec_prefix}#$CURL_PREFIX#g" \
-            -e "s#\${libdir}#$CURL_PREFIX/lib#g")"
+            -e "s#\${libdir}#$CURL_PREFIX/lib#g") -framework CoreFoundation -framework SystemConfiguration"
           echo "Resolved LIBS: $LIBS"
           ./configure \
             --disable-all \
