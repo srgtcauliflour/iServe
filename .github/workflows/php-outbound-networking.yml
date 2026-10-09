@@ -262,7 +262,14 @@ jobs:
       # HTTP/2 (nghttp2) intentionally NOT wired in yet, despite ADR-0010's
       # own text mentioning it as part of curl's general capability class
       # -- it's a fourth from-source dependency, and this workflow's own
-      # discipline is one new variable per step. Revisit once curl itself
+      # discipline is one new variable per step. --without-nghttp2 is
+      # explicit, not just an omission: a first real CI run on macOS-14
+      # failed curl-native-smoke-test's own link step with undefined
+      # nghttp2 symbols, because the runner has nghttp2 available via
+      # pkg-config (likely a Homebrew dependency of something else
+      # preinstalled on the image) and curl's configure auto-detects and
+      # links it unless explicitly told not to -- omitting the flag is not
+      # the same as HTTP/2 actually being absent. Revisit once curl itself
       # (HTTP/1.1, mbedTLS) is proven end-to-end.
       - name: configure (cross-compile for iOS device, arm64, against mbedTLS)
         working-directory: curl
@@ -276,6 +283,7 @@ jobs:
             --with-mbedtls="$GITHUB_WORKSPACE/mbedtlskit" \
             --without-openssl \
             --without-libpsl \
+            --without-nghttp2 \
             --disable-shared --enable-static \
             --disable-ftp --disable-file --disable-ldap --disable-ldaps \
             --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
@@ -374,6 +382,7 @@ jobs:
             --with-mbedtls="$GITHUB_WORKSPACE/mbedtls/mbedtlskit" \
             --without-openssl \
             --without-libpsl \
+            --without-nghttp2 \
             --disable-shared --enable-static \
             --disable-ftp --disable-file --disable-ldap --disable-ldaps \
             --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
