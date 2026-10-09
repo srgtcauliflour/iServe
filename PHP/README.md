@@ -56,7 +56,10 @@ into php-src's own `ext/curl/interface.c` by
 `Bridge/patches/curl_setopt_ssrf_guard.py`, the same patch that closes the
 `curl_setopt()`-level ways a script could otherwise route around that
 check, clamps timeout/redirect-limit options, caps response size via a
-response-size-cap `CURLOPT_XFERINFOFUNCTION`, and installs a CA root
+response-size-cap `CURLOPT_XFERINFOFUNCTION` (the threshold decision itself,
+`iserve_curl_response_cap_exceeded()`, lives in its own
+`Bridge/iserve_curl_response_cap.c` so it has a deterministic, no-network
+unit test alongside the policy/toggle ones), and installs a CA root
 bundle via `CURLOPT_CAINFO_BLOB` (generated fresh each build by
 `Bridge/patches/generate_curl_ca_bundle.py` — curl's own CA-bundle
 auto-detection is skipped when cross-compiling). `curl_multi_*` is

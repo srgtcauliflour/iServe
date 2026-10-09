@@ -807,7 +807,7 @@ jobs:
         working-directory: php-src
         run: |
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c iserve_curl_response_cap.c; do
             clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -I. -Imain -IZend -ITSRM -Iinclude \
               -I"$BRIDGE" \
@@ -863,7 +863,7 @@ jobs:
           # own comment for the full citation), the exact same code path
           # that made these two frameworks necessary there.
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang embed_curl_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o embed_curl_test \
+          clang embed_curl_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o embed_curl_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -915,7 +915,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_patch_bypass_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o curl_patch_bypass_test \
+          clang curl_patch_bypass_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o curl_patch_bypass_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -975,7 +975,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_maxredirs_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o curl_maxredirs_test \
+          clang curl_maxredirs_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o curl_maxredirs_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -987,20 +987,26 @@ jobs:
           grep -q "^PASS: MAXREDIRS was clamped despite the script requesting 999999$" curl_maxredirs_output.txt || (echo "CURLOPT_MAXREDIRS clamp test failed" && exit 1)
 
       # Proves the response-size cap (iserve_curl_xferinfo(), injected by
-      # curl_setopt_ssrf_guard.py into _php_curl_set_default_options())
-      # actually aborts an in-progress transfer, not just that the patched
-      # source compiles: httpbin.org/stream-bytes/104857600 (a real
-      # external test service -- iserve_curl_open_socket() now denies
-      # every loopback/private address unconditionally regardless of the
-      # outbound-networking toggle, so a local chunked server is no longer
-      # reachable here at all, the same reason the MAXREDIRS test above
-      # moved to httpbin.org too) streams 100MB with no Content-Length
-      # header (genuine undeclared-length streaming, so CURLOPT_MAXFILESIZE
-      # could never catch it -- only the xferinfo-based cap can), then
-      # confirms curl_exec() fails with CURLE_ABORTED_BY_CALLBACK (42)
-      # having received well under the 100MB the server would have sent if
-      # the cap had not fired, and well above the 50MB cap itself (ruling
-      # out the test merely observing the server's own stream ending).
+      # curl_setopt_ssrf_guard.py into _php_curl_set_default_options(), its
+      # threshold decision factored out into iserve_curl_response_cap.c so
+      # outbound-policy-native-smoke-test's own unit test above can verify
+      # the decision logic deterministically) actually aborts a real
+      # in-progress transfer, not just that the patched source compiles and
+      # the logic is correct in isolation. First tried httpbin.org/stream-bytes
+      # for a genuinely undeclared-length stream, but a real CI run showed
+      # httpbin.org's own stream-bytes endpoint doesn't actually deliver the
+      # requested byte count at all (observed stopping at 100KB regardless
+      # of the requested size) -- an external-service quirk unrelated to
+      # this project's own code, but unusable as a test input either way.
+      # nodejs.org's own official release tarball is used instead: a real,
+      # CDN-backed (Cloudflare), highly available HTTPS download, 87MB (a
+      # declared Content-Length, unlike the httpbin.org attempt -- but this
+      # patch never sets CURLOPT_MAXFILESIZE, so the xferinfo-based cap is
+      # exercised exactly the same regardless of whether a length is
+      # declared). Confirms curl_exec() fails with CURLE_ABORTED_BY_CALLBACK
+      # (42) having received well under the 87MB the server would have sent
+      # if the cap had not fired, and well above the 50MB cap itself (ruling
+      # out the test merely observing the download's own natural end).
       # Also proves a script cannot defeat the cap by trying to
       # replace/disable it via
       # CURLOPT_PROGRESSFUNCTION/CURLOPT_XFERINFOFUNCTION/CURLOPT_NOPROGRESS
@@ -1024,7 +1030,7 @@ jobs:
               iserve_outbound_networking_set_enabled(1);
               PHP_EMBED_START_BLOCK(argc, argv)
               zend_eval_string(
-                  "$ch = curl_init('https://httpbin.org/stream-bytes/104857600');"
+                  "$ch = curl_init('https://nodejs.org/dist/v20.17.0/node-v20.17.0.tar.gz');"
                   "curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function () { return 0; });"
                   "curl_setopt($ch, CURLOPT_XFERINFOFUNCTION, function () { return 0; });"
                   "curl_setopt($ch, CURLOPT_NOPROGRESS, 1);"
@@ -1037,7 +1043,7 @@ jobs:
                   "curl_close($ch);"
                   "echo ($errno === CURLE_ABORTED_BY_CALLBACK"
                   "        && ($received ?? 0) > 40 * 1024 * 1024"
-                  "        && ($received ?? 0) < 90 * 1024 * 1024)"
+                  "        && ($received ?? 0) < 80 * 1024 * 1024)"
                   "    ? 'PASS: response-size cap aborted the transfer despite the override attempt'"
                   "    : 'FAIL: errno=' . $errno . ' received=' . ($received ?? 0);"
                   "echo PHP_EOL;",
@@ -1048,7 +1054,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_response_cap_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o curl_response_cap_test \
+          clang curl_response_cap_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o curl_response_cap_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -1105,7 +1111,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_multi_disabled_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o curl_multi_disabled_test \
+          clang curl_multi_disabled_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o curl_multi_disabled_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -1249,7 +1255,7 @@ jobs:
           path: php-src/phpkit
 
   outbound-policy-native-smoke-test:
-    name: "Step 7: SSRF denylist + outbound-networking toggle unit tests"
+    name: "Step 7: SSRF denylist + outbound-networking toggle + response-cap unit tests"
     # Unlike every job above, this one needs none of mbedTLS/curl/php-src --
     # PHP/Bridge/iserve_outbound_policy.c and iserve_outbound_toggle.c are
     # deliberately pure, portable C with no PHP dependency at all (see their
@@ -1290,3 +1296,17 @@ jobs:
           clang -Wall -Wextra -std=c11 -o /tmp/iserve_toggle_test iserve_outbound_toggle.c Tests/iserve_outbound_toggle_test.c
           /tmp/iserve_toggle_test | tee /tmp/iserve_toggle_test_output.txt
           grep -q "^all checks passed$" /tmp/iserve_toggle_test_output.txt || (echo "outbound-networking toggle test failed" && exit 1)
+
+      # Deterministic, no-network unit test for the response-size-cap
+      # threshold decision itself (iserve_curl_response_cap_exceeded()),
+      # extracted out of the injected xferinfo callback specifically so it
+      # can be verified this way -- php-curl-native-smoke-test's own
+      # "Verify the response-size cap..." step still separately proves the
+      # real curl_exec() integration (the callback is actually wired up and
+      # aborts a real in-progress transfer).
+      - name: Compile + run the response-size-cap unit test
+        working-directory: PHP/Bridge
+        run: |
+          clang -Wall -Wextra -std=c11 -o /tmp/iserve_response_cap_test iserve_curl_response_cap.c Tests/iserve_curl_response_cap_test.c
+          /tmp/iserve_response_cap_test | tee /tmp/iserve_response_cap_test_output.txt
+          grep -q "^all checks passed$" /tmp/iserve_response_cap_test_output.txt || (echo "response-size-cap unit test failed" && exit 1)

@@ -647,7 +647,7 @@ jobs:
         run: |
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c iserve_curl_response_cap.c; do
             clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -I. -Imain -IZend -ITSRM -Iinclude \
               -I"$BRIDGE" \
@@ -659,7 +659,7 @@ jobs:
             -I"$BRIDGE/include" \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
 
-          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_bridge_smoke_test.o \
+          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o iserve_bridge_smoke_test.o \
             -o iserve_bridge_smoke_test \
             libs/libphp.a \
             $(pkg-config --libs libcurl) \
@@ -692,7 +692,7 @@ jobs:
             -I"$BRIDGE/include" \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
 
-          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_bridge_outbound_denylist_test.o \
+          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o iserve_bridge_outbound_denylist_test.o \
             -o iserve_bridge_outbound_denylist_test \
             libs/libphp.a \
             $(pkg-config --libs libcurl) \
@@ -867,7 +867,7 @@ jobs:
         run: |
           export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c iserve_curl_response_cap.c; do
             xcrun -sdk iphonesimulator clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -isysroot "$SIM_SDK" -mios-simulator-version-min=15.0 -arch arm64 \
               -I. -Imain -IZend -ITSRM -Iinclude \
@@ -881,7 +881,7 @@ jobs:
         run: |
           export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          xcrun -sdk iphonesimulator clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o embed_smoke_test \
+          xcrun -sdk iphonesimulator clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o embed_smoke_test \
             -isysroot "$SIM_SDK" -mios-simulator-version-min=15.0 -arch arm64 \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
@@ -1075,7 +1075,7 @@ jobs:
         run: |
           export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c iserve_curl_response_cap.c; do
             xcrun -sdk iphoneos clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -isysroot "$IOS_SDK" -mios-version-min=15.0 -arch arm64 \
               -I. -Imain -IZend -ITSRM -Iinclude \
@@ -1089,7 +1089,7 @@ jobs:
         run: |
           export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          xcrun -sdk iphoneos clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o embed_smoke_test \
+          xcrun -sdk iphoneos clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o embed_smoke_test \
             -isysroot "$IOS_SDK" -mios-version-min=15.0 -arch arm64 \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
