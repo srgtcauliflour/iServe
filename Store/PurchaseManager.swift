@@ -38,7 +38,17 @@ final class PurchaseManager {
     private(set) var isLoading = true
     private(set) var errorMessage: String?
 
-    private var updateListenerTask: Task<Void, Never>?
+    /// `nonisolated(unsafe)`, not plain `private var`: a `@MainActor`
+    /// class's `deinit` runs in a nonisolated context in Swift 6 (it isn't
+    /// guaranteed to run on the main actor), so `deinit` below can't touch
+    /// an actor-isolated stored property directly -- confirmed by a real
+    /// CI compile failure ("main actor-isolated property
+    /// 'updateListenerTask' can not be referenced from a nonisolated
+    /// context"). Safe to opt out of isolation checking for specifically
+    /// this property: `Task.cancel()` is documented thread-safe to call
+    /// from any context, and nothing else ever reads this property's value
+    /// (only assigns it once in `init()`, then cancels it in `deinit`).
+    private nonisolated(unsafe) var updateListenerTask: Task<Void, Never>?
 
     init() {
         updateListenerTask = Self.listenForTransactionUpdates { [weak self] in
