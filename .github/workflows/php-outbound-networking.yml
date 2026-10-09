@@ -524,6 +524,11 @@ jobs:
     runs-on: macos-14
     continue-on-error: true
     steps:
+      - name: Checkout iServe (for the curl_setopt() SSRF-guard patch script)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
       - name: Checkout mbedTLS
         uses: actions/checkout@v4
         with:
@@ -545,6 +550,17 @@ jobs:
           repository: php/php-src
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
+
+      # Small, tracked patch to ext/curl/interface.c (docs/adr/0010), the
+      # same way ADR-0009's own ext/standard/config.m4 patch already works
+      # -- against a fresh upstream checkout, never a maintained fork of
+      # the file. Applied before buildconf, same ordering php-embed.yml's
+      # own posix_spawn probe patch already uses, though for a different
+      # reason here: this patches a .c file buildconf doesn't touch at
+      # all, so the ordering is about doing it as early as possible, not
+      # about buildconf needing it done first.
+      - name: Patch ext/curl/interface.c — silently ignore SSRF-bypass options, clamp timeouts/redirects
+        run: python3 iserve/PHP/Bridge/patches/curl_setopt_ssrf_guard.py php-src/ext/curl/interface.c
 
       # Union of curl's own build prerequisites (autoconf/automake/
       # libtool/pkg-config) and php-embed.yml's own (autoconf/bison/re2c)
@@ -810,6 +826,112 @@ jobs:
           ./embed_curl_test | tee embed_curl_output.txt
           grep -q "^PASS: curl_exec via embed SAPI succeeded$" embed_curl_output.txt || (echo "PHP ext/curl embed SAPI smoke test failed" && exit 1)
 
+      # Proves the curl_setopt_ssrf_guard.py patch actually changed
+      # behavior, not just that the patched source still compiles: a
+      # script setting these four options must get curl_setopt() == true
+      # (not an error a script could use to detect this policy exists)
+      # with no curl_error() -- exactly ADR-0010's "silently ignored"
+      # requirement, verified as real script-observable behavior.
+      - name: Verify curl_setopt() silently accepts the four SSRF-bypass options
+        working-directory: php-src
+        run: |
+          cat > curl_patch_bypass_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          int main(int argc, char **argv) {
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string(
+                  "$ch = curl_init();"
+                  "$r1 = curl_setopt($ch, CURLOPT_RESOLVE, ['example.com:443:1.2.3.4']);"
+                  "$r2 = curl_setopt($ch, CURLOPT_CONNECT_TO, ['example.com:443:1.2.3.4:443']);"
+                  "$r3 = curl_setopt($ch, CURLOPT_DNS_SERVERS, '8.8.8.8');"
+                  "$r4 = curl_setopt($ch, CURLOPT_INTERFACE, 'en0');"
+                  "$err = curl_error($ch);"
+                  "curl_close($ch);"
+                  "echo ($r1 && $r2 && $r3 && $r4 && $err === '')"
+                  "    ? 'PASS: all four SSRF-bypass options silently accepted'"
+                  "    : 'FAIL: r1=' . ($r1?'t':'f') . ' r2=' . ($r2?'t':'f') . ' r3=' . ($r3?'t':'f') . ' r4=' . ($r4?'t':'f') . ' err=' . $err;"
+                  "echo PHP_EOL;",
+                  NULL, "curl_patch_bypass_test"
+              );
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          clang curl_patch_bypass_test.c -o curl_patch_bypass_test \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+          ./curl_patch_bypass_test | tee curl_patch_bypass_output.txt
+          grep -q "^PASS: all four SSRF-bypass options silently accepted$" curl_patch_bypass_output.txt || (echo "curl_setopt() SSRF-bypass-option test failed" && exit 1)
+
+      # Proves the MAXREDIRS clamp is real, enforced behavior, not just
+      # patched source that compiles: starts a real local redirect loop
+      # first (a script asking for 999999 redirects against a server that
+      # never stops redirecting would hang forever if the clamp didn't
+      # actually apply), then confirms curl_exec() fails with
+      # CURLE_TOO_MANY_REDIRECTS (47) at exactly the patched ceiling (10),
+      # despite the script's own CURLOPT_MAXREDIRS asking for far more.
+      - name: Verify CURLOPT_MAXREDIRS is clamped against a real redirect loop
+        working-directory: php-src
+        run: |
+          cat > redirect_server.py <<'EOF'
+          import http.server
+          PORT = 18080
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(302)
+                  self.send_header('Location', f'http://127.0.0.1:{PORT}/')
+                  self.end_headers()
+              def log_message(self, *args):
+                  pass
+          http.server.HTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+          EOF
+          python3 redirect_server.py &
+          REDIRECT_SERVER_PID=$!
+          sleep 1
+
+          cat > curl_maxredirs_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          int main(int argc, char **argv) {
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string(
+                  "$ch = curl_init('http://127.0.0.1:18080/');"
+                  "curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);"
+                  "curl_setopt($ch, CURLOPT_MAXREDIRS, 999999);"
+                  "curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);"
+                  "curl_setopt($ch, CURLOPT_TIMEOUT, 10);"
+                  "curl_exec($ch);"
+                  "$errno = curl_errno($ch);"
+                  "curl_close($ch);"
+                  "echo ($errno === CURLE_TOO_MANY_REDIRECTS)"
+                  "    ? 'PASS: MAXREDIRS was clamped despite the script requesting 999999'"
+                  "    : 'FAIL: expected CURLE_TOO_MANY_REDIRECTS (47), got ' . $errno;"
+                  "echo PHP_EOL;",
+                  NULL, "curl_maxredirs_test"
+              );
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          clang curl_maxredirs_test.c -o curl_maxredirs_test \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+
+          ./curl_maxredirs_test | tee curl_maxredirs_output.txt
+          kill "$REDIRECT_SERVER_PID" 2>/dev/null || true
+          grep -q "^PASS: MAXREDIRS was clamped despite the script requesting 999999$" curl_maxredirs_output.txt || (echo "CURLOPT_MAXREDIRS clamp test failed" && exit 1)
+
   php-curl-cross-compile-device:
     name: "Step 6: cross-compile libphp.a + ext/curl (iOS device, arm64, build-only)"
     # Combines what php-curl-native-smoke-test and curl-cross-compile-device
@@ -823,6 +945,11 @@ jobs:
     runs-on: macos-14
     continue-on-error: true
     steps:
+      - name: Checkout iServe (for the curl_setopt() SSRF-guard patch script)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
       - name: Checkout php-src
         uses: actions/checkout@v4
         with:
@@ -849,6 +976,12 @@ jobs:
         working-directory: php-src
         run: |
           sed -i '' 's/AC_CHECK_FUNCS(\[posix_spawn_file_actions_addchdir_np elf_aux_info\])/AC_CHECK_FUNCS([elf_aux_info])/' ext/standard/config.m4
+
+      # Same patch, same reasoning, as php-curl-native-smoke-test's own
+      # step -- applied here too so both jobs' libphp.a agree on the same
+      # curl_setopt() behavior, not just the native one.
+      - name: Patch ext/curl/interface.c — silently ignore SSRF-bypass options, clamp timeouts/redirects
+        run: python3 iserve/PHP/Bridge/patches/curl_setopt_ssrf_guard.py php-src/ext/curl/interface.c
 
       - name: buildconf (generate ./configure)
         working-directory: php-src
