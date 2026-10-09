@@ -32,19 +32,308 @@ on:
 
 env:
   PHP_SRC_REF: php-8.4.2
+  # docs/adr/0010-php-outbound-networking.md's v0.5 outbound-networking work
+  # (.github/workflows/php-outbound-networking.yml), now proven on real CI
+  # and wired directly into this, the real app-build pipeline, rather than
+  # staying confined to that separate experimental workflow. Same refs that
+  # workflow already pins (kept identical on purpose, not re-derived) — see
+  # its own env block for why each was chosen.
+  MBEDTLS_REF: mbedtls-3.6.7
+  CURL_REF: curl-8_22_0
 
 jobs:
-  cross-compile-device:
-    name: "Step 1: cross-compile libphp.a (iOS device, arm64)"
+  mbedtls-cross-compile-device:
+    name: "Step 0a: cross-compile mbedTLS (iOS device, arm64)"
+    # Identical build, same reasoning, as
+    # php-outbound-networking.yml's own mbedtls-cross-compile-device job —
+    # copied here (not cross-workflow-artifact-fetched; see
+    # build-app-with-php-device's own comment for why this file never
+    # fetches another workflow's artifacts) now that v0.5 is proven enough
+    # to become part of the real app-build pipeline rather than staying
+    # confined to that separate experimental workflow.
     runs-on: macos-14
     continue-on-error: true
     steps:
+      - name: Checkout mbedTLS
+        uses: actions/checkout@v4
+        with:
+          repository: Mbed-TLS/mbedtls
+          ref: ${{ env.MBEDTLS_REF }}
+          path: mbedtls
+          submodules: recursive
+
+      - name: Cross-compile mbedTLS static libraries (iOS device, arm64)
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          make CC="xcrun -sdk iphoneos clang -arch arm64" \
+               AR="xcrun -sdk iphoneos ar" \
+               CFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0 -O2" \
+               lib
+
+      - name: Check for the static libraries
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          for lib in libmbedcrypto.a libmbedx509.a libmbedtls.a; do
+            path="library/$lib"
+            test -f "$path" || (echo "$path not produced" && exit 1)
+            file "$path"
+          done
+
+      - name: Package mbedTLS static libs + headers for the curl build
+        if: success()
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          mkdir -p mbedtlskit/lib mbedtlskit/include
+          cp library/libmbedcrypto.a library/libmbedx509.a library/libmbedtls.a mbedtlskit/lib/
+          cp -R include/mbedtls mbedtlskit/include/
+          if [ -d include/psa ]; then
+            cp -R include/psa mbedtlskit/include/
+          fi
+
+      - name: Upload mbedTLS (iOS device)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mbedtls-ios-device-arm64
+          path: mbedtls/mbedtlskit
+
+  curl-cross-compile-device:
+    name: "Step 0b: cross-compile curl (iOS device, arm64) against mbedTLS"
+    # Identical build, same reasoning, as php-outbound-networking.yml's own
+    # curl-cross-compile-device job — see that job's own comments (and
+    # ADR-0010 itself) for the full reasoning behind every configure flag
+    # below; not re-explained line by line here to avoid drift between two
+    # copies of the same explanation.
+    needs: mbedtls-cross-compile-device
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout curl
+        uses: actions/checkout@v4
+        with:
+          repository: curl/curl
+          ref: ${{ env.CURL_REF }}
+          path: curl
+
+      - name: Install autoconf/automake/libtool/pkg-config
+        run: brew install autoconf automake libtool pkg-config
+
+      - name: Download mbedTLS (iOS device)
+        uses: actions/download-artifact@v4
+        with:
+          name: mbedtls-ios-device-arm64
+          path: mbedtlskit
+
+      - name: autoreconf (generate ./configure)
+        working-directory: curl
+        run: autoreconf -fi
+
+      - name: configure (cross-compile for iOS device, arm64, against mbedTLS)
+        working-directory: curl
+        run: |
+          export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          export CC="xcrun -sdk iphoneos clang -arch arm64"
+          export CFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          export LDFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
+          ./configure \
+            --host=aarch64-apple-darwin \
+            --prefix="$GITHUB_WORKSPACE/curlkit" \
+            --with-mbedtls="$GITHUB_WORKSPACE/mbedtlskit" \
+            --without-openssl \
+            --without-libpsl \
+            --without-nghttp2 \
+            --without-libidn2 \
+            --disable-shared --enable-static \
+            --disable-ftp --disable-file --disable-ldap --disable-ldaps \
+            --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
+            --disable-pop3 --disable-imap --disable-smtp --disable-gopher \
+            --disable-mqtt --disable-ipfs --disable-websockets
+
+      - name: make (libcurl only)
+        working-directory: curl
+        run: make -C lib -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Check for libcurl.a
+        working-directory: curl
+        run: |
+          test -f lib/.libs/libcurl.a || (echo "libcurl.a not produced" && exit 1)
+          file lib/.libs/libcurl.a
+
+      - name: Package curl static lib + headers + pkg-config file for the ext/curl build
+        if: success()
+        run: |
+          mkdir -p curlkit/lib/pkgconfig curlkit/include/curl
+          cp curl/lib/.libs/libcurl.a curlkit/lib/
+          cp curl/libcurl.pc curlkit/lib/pkgconfig/
+          cp curl/include/curl/*.h curlkit/include/curl/
+          cp mbedtlskit/lib/*.a curlkit/lib/
+
+      - name: Upload curl (iOS device)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: curl-ios-device-arm64
+          path: curlkit
+
+  mbedtls-cross-compile-simulator:
+    name: "Step 0c: cross-compile mbedTLS (iOS Simulator, arm64)"
+    # Same build as mbedtls-cross-compile-device, targeting the Simulator
+    # SDK instead — new for this project (php-outbound-networking.yml never
+    # needed a Simulator variant), adapted the same way every existing
+    # device/Simulator job pair in this file already translates (iphoneos ->
+    # iphonesimulator, -mios-version-min -> -mios-simulator-version-min).
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout mbedTLS
+        uses: actions/checkout@v4
+        with:
+          repository: Mbed-TLS/mbedtls
+          ref: ${{ env.MBEDTLS_REF }}
+          path: mbedtls
+          submodules: recursive
+
+      - name: Cross-compile mbedTLS static libraries (iOS Simulator, arm64)
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          make CC="xcrun -sdk iphonesimulator clang -arch arm64" \
+               AR="xcrun -sdk iphonesimulator ar" \
+               CFLAGS="-isysroot $SIM_SDK -mios-simulator-version-min=15.0 -O2" \
+               lib
+
+      - name: Check for the static libraries
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          for lib in libmbedcrypto.a libmbedx509.a libmbedtls.a; do
+            path="library/$lib"
+            test -f "$path" || (echo "$path not produced" && exit 1)
+            file "$path"
+          done
+
+      - name: Package mbedTLS static libs + headers for the curl build
+        if: success()
+        working-directory: mbedtls
+        run: |
+          set -euo pipefail
+          mkdir -p mbedtlskit/lib mbedtlskit/include
+          cp library/libmbedcrypto.a library/libmbedx509.a library/libmbedtls.a mbedtlskit/lib/
+          cp -R include/mbedtls mbedtlskit/include/
+          if [ -d include/psa ]; then
+            cp -R include/psa mbedtlskit/include/
+          fi
+
+      - name: Upload mbedTLS (iOS Simulator)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mbedtls-ios-simulator-arm64
+          path: mbedtls/mbedtlskit
+
+  curl-cross-compile-simulator:
+    name: "Step 0d: cross-compile curl (iOS Simulator, arm64) against mbedTLS"
+    # Same build as curl-cross-compile-device, targeting the Simulator SDK
+    # instead -- same translation as mbedtls-cross-compile-simulator above.
+    needs: mbedtls-cross-compile-simulator
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout curl
+        uses: actions/checkout@v4
+        with:
+          repository: curl/curl
+          ref: ${{ env.CURL_REF }}
+          path: curl
+
+      - name: Install autoconf/automake/libtool/pkg-config
+        run: brew install autoconf automake libtool pkg-config
+
+      - name: Download mbedTLS (iOS Simulator)
+        uses: actions/download-artifact@v4
+        with:
+          name: mbedtls-ios-simulator-arm64
+          path: mbedtlskit
+
+      - name: autoreconf (generate ./configure)
+        working-directory: curl
+        run: autoreconf -fi
+
+      - name: configure (cross-compile for iOS Simulator, arm64, against mbedTLS)
+        working-directory: curl
+        run: |
+          export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          export CC="xcrun -sdk iphonesimulator clang -arch arm64"
+          export CFLAGS="-isysroot $SIM_SDK -mios-simulator-version-min=15.0"
+          export LDFLAGS="-isysroot $SIM_SDK -mios-simulator-version-min=15.0"
+          ./configure \
+            --host=aarch64-apple-darwin \
+            --prefix="$GITHUB_WORKSPACE/curlkit" \
+            --with-mbedtls="$GITHUB_WORKSPACE/mbedtlskit" \
+            --without-openssl \
+            --without-libpsl \
+            --without-nghttp2 \
+            --without-libidn2 \
+            --disable-shared --enable-static \
+            --disable-ftp --disable-file --disable-ldap --disable-ldaps \
+            --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
+            --disable-pop3 --disable-imap --disable-smtp --disable-gopher \
+            --disable-mqtt --disable-ipfs --disable-websockets
+
+      - name: make (libcurl only)
+        working-directory: curl
+        run: make -C lib -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Check for libcurl.a
+        working-directory: curl
+        run: |
+          test -f lib/.libs/libcurl.a || (echo "libcurl.a not produced" && exit 1)
+          file lib/.libs/libcurl.a
+
+      - name: Package curl static lib + headers + pkg-config file for the ext/curl build
+        if: success()
+        run: |
+          mkdir -p curlkit/lib/pkgconfig curlkit/include/curl
+          cp curl/lib/.libs/libcurl.a curlkit/lib/
+          cp curl/libcurl.pc curlkit/lib/pkgconfig/
+          cp curl/include/curl/*.h curlkit/include/curl/
+          cp mbedtlskit/lib/*.a curlkit/lib/
+
+      - name: Upload curl (iOS Simulator)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: curl-ios-simulator-arm64
+          path: curlkit
+
+  cross-compile-device:
+    name: "Step 1: cross-compile libphp.a + ext/curl (iOS device, arm64)"
+    needs: curl-cross-compile-device
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout iServe (for the curl_setopt() SSRF-guard patch script)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
       - name: Checkout php-src
         uses: actions/checkout@v4
         with:
           repository: php/php-src
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
+
+      - name: Download curl (iOS device)
+        uses: actions/download-artifact@v4
+        with:
+          name: curl-ios-device-arm64
+          path: curlkit
 
       - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
         run: |
@@ -64,6 +353,14 @@ jobs:
         run: |
           sed -i '' 's/AC_CHECK_FUNCS(\[posix_spawn_file_actions_addchdir_np elf_aux_info\])/AC_CHECK_FUNCS([elf_aux_info])/' ext/standard/config.m4
 
+      # Same tracked patch php-outbound-networking.yml's own
+      # php-curl-cross-compile-device job already applies (docs/adr/0010) --
+      # see curl_setopt_ssrf_guard.py's own header comment for the full
+      # list of what it closes off. Applied before buildconf, same
+      # ordering as every other patch in this job.
+      - name: Patch ext/curl/interface.c — silently ignore SSRF-bypass options, clamp timeouts/redirects
+        run: python3 iserve/PHP/Bridge/patches/curl_setopt_ssrf_guard.py php-src/ext/curl/interface.c
+
       - name: buildconf (generate ./configure)
         working-directory: php-src
         run: ./buildconf --force
@@ -76,7 +373,7 @@ jobs:
       # (json/hash are compiled into core by default in PHP 8+, so need
       # no explicit flags); --disable-all + --without-pear + disabling
       # cli/cgi/phpdbg keeps the surface to embed + that allowlist only.
-      - name: configure (cross-compile for iOS device, arm64)
+      - name: configure (cross-compile for iOS device, arm64, + ext/curl)
         working-directory: php-src
         run: |
           export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -87,6 +384,7 @@ jobs:
           export LDFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
           export SQLITE_CFLAGS="-I$IOS_SDK/usr/include"
           export SQLITE_LIBS="-L$IOS_SDK/usr/lib -lsqlite3"
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           ./configure \
             --host=aarch64-apple-darwin \
             --disable-all \
@@ -102,17 +400,23 @@ jobs:
             --with-sqlite3=static \
             --enable-filter=static \
             --enable-mbstring=static \
-            --disable-mbregex
+            --disable-mbregex \
+            --with-curl
+
+      - name: Check ext/curl was actually detected (not silently skipped)
+        working-directory: php-src
+        run: grep -q "^#define HAVE_CURL 1$" main/php_config.h || (echo "ext/curl was not enabled -- check the configure log above" && exit 1)
 
       - name: make (embed SAPI only)
         working-directory: php-src
         run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
 
-      - name: Check for libphp.a
+      - name: Check for libphp.a and the curl_init symbol
         working-directory: php-src
         run: |
           find . -name "libphp.a" -exec ls -la {} \;
           test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
+          nm libs/libphp.a 2>/dev/null | grep -q "zif_curl_init" || (echo "zif_curl_init not found in libphp.a -- ext/curl did not actually link in" && exit 1)
 
       - name: Upload libphp.a
         if: success()
@@ -128,12 +432,26 @@ jobs:
       # libphp.a into one artifact that build-app-with-php-device downloads
       # later in this same workflow run — never committed to the repo
       # (ADR-0009: reproducible from source, not a vendored binary blob).
-      - name: Package libphp.a + headers for the iServeWithPHP app target (device)
+      #
+      # Also bundles libcurl.a + the three mbedTLS static libs (downloaded
+      # above, already built against this exact device target) into the
+      # SAME lib/ directory as libphp.a: ext/curl's own compiled object
+      # code lives inside libphp.a, but libphp.a is only ever an archive of
+      # OUR object files -- it never absorbs libcurl.a's own object files
+      # into itself, confirmed directly by php-curl-native-smoke-test's own
+      # final link step (in php-outbound-networking.yml) still needing an
+      # explicit `pkg-config --libs libcurl` even with libphp.a already on
+      # the link line. The real app build (build-app-with-php-device) needs
+      # all four archives present to link a final executable, exactly like
+      # that native smoke test does.
+      - name: Package libphp.a + curl + mbedTLS + headers for the iServeWithPHP app target (device)
         if: success()
         working-directory: php-src
         run: |
           mkdir -p phpkit/lib phpkit/include
           cp libs/libphp.a phpkit/lib/libphp.a
+          cp "$GITHUB_WORKSPACE"/curlkit/lib/libcurl.a phpkit/lib/
+          cp "$GITHUB_WORKSPACE"/curlkit/lib/libmbedtls.a "$GITHUB_WORKSPACE"/curlkit/lib/libmbedx509.a "$GITHUB_WORKSPACE"/curlkit/lib/libmbedcrypto.a phpkit/lib/
           for dir in Zend main TSRM sapi include; do
             if [ -d "$dir" ]; then
               find "$dir" -name '*.h' | while read -r f; do
@@ -143,7 +461,7 @@ jobs:
             fi
           done
 
-      - name: Upload PHPKit (libphp.a + headers) for iOS device
+      - name: Upload PHPKit (libphp.a + curl + mbedTLS + headers) for iOS device
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -151,12 +469,19 @@ jobs:
           path: php-src/phpkit
 
   native-smoke-test:
-    name: "Step 2: embed SAPI smoke test (native macOS host)"
+    name: "Step 2: embed SAPI + ext/curl smoke test (native macOS host)"
     # Deliberately independent of cross-compile-device (own fresh php-src
-    # checkout, own build): a native build (build machine == target) lets
-    # every ./configure check actually execute a real test binary, the
-    # normal non-cross-compiling autoconf path — isolating "does the
-    # embed SAPI's own C API work" from every iOS-SDK-specific risk.
+    # checkout, own build, own fresh mbedTLS/curl build too): a native
+    # build (build machine == target) lets every ./configure check
+    # actually execute a real test binary, the normal non-cross-compiling
+    # autoconf path — isolating "does the embed SAPI's own C API work"
+    # from every iOS-SDK-specific risk. This is also the one job in this
+    # file that compiles and runs the REAL iserve_php_bridge.c +
+    # iserve_outbound_*.c files together end to end (not a standalone
+    # test program), so it's the real place ADR-0010's SSRF/resource-bound
+    # defenses get proven against a genuinely linked bridge+curl+mbedTLS
+    # build, not just the isolated unit tests
+    # php-outbound-networking.yml's own jobs already cover.
     runs-on: macos-14
     continue-on-error: true
     steps:
@@ -165,6 +490,21 @@ jobs:
         with:
           path: iserve
 
+      - name: Checkout mbedTLS
+        uses: actions/checkout@v4
+        with:
+          repository: Mbed-TLS/mbedtls
+          ref: ${{ env.MBEDTLS_REF }}
+          path: mbedtls
+          submodules: recursive
+
+      - name: Checkout curl
+        uses: actions/checkout@v4
+        with:
+          repository: curl/curl
+          ref: ${{ env.CURL_REF }}
+          path: curl
+
       - name: Checkout php-src
         uses: actions/checkout@v4
         with:
@@ -172,18 +512,83 @@ jobs:
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
 
-      - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
+      - name: Patch ext/curl/interface.c — silently ignore SSRF-bypass options, clamp timeouts/redirects
+        run: python3 iserve/PHP/Bridge/patches/curl_setopt_ssrf_guard.py php-src/ext/curl/interface.c
+
+      - name: Install build prerequisites
         run: |
-          brew install autoconf bison re2c
+          brew install autoconf automake libtool pkg-config bison re2c
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Build mbedTLS static libraries (native macOS)
+        working-directory: mbedtls
+        run: make lib -j"$(sysctl -n hw.ncpu)"
+
+      - name: Package mbedTLS static libs + headers for curl's --with-mbedtls
+        working-directory: mbedtls
+        run: |
+          mkdir -p mbedtlskit/lib mbedtlskit/include
+          cp library/libmbedcrypto.a library/libmbedx509.a library/libmbedtls.a mbedtlskit/lib/
+          cp -R include/mbedtls mbedtlskit/include/
+          if [ -d include/psa ]; then
+            cp -R include/psa mbedtlskit/include/
+          fi
+
+      - name: autoreconf (generate ./configure)
+        working-directory: curl
+        run: autoreconf -fi
+
+      - name: configure curl (native macOS build, against mbedTLS)
+        working-directory: curl
+        run: |
+          ./configure \
+            --prefix="$GITHUB_WORKSPACE/curlkit" \
+            --with-mbedtls="$GITHUB_WORKSPACE/mbedtls/mbedtlskit" \
+            --without-openssl \
+            --without-libpsl \
+            --without-nghttp2 \
+            --without-libidn2 \
+            --disable-shared --enable-static \
+            --disable-ftp --disable-file --disable-ldap --disable-ldaps \
+            --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
+            --disable-pop3 --disable-imap --disable-smtp --disable-gopher \
+            --disable-mqtt --disable-ipfs --disable-websockets
+
+      - name: make curl (libcurl only)
+        working-directory: curl
+        run: make -C lib -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
+
+      - name: Package curl static lib + headers + pkg-config file
+        run: |
+          mkdir -p curlkit/lib/pkgconfig curlkit/include/curl
+          cp curl/lib/.libs/libcurl.a curlkit/lib/
+          cp curl/libcurl.pc curlkit/lib/pkgconfig/
+          cp curl/include/curl/*.h curlkit/include/curl/
+          cp mbedtls/mbedtlskit/lib/*.a curlkit/lib/
 
       - name: buildconf (generate ./configure)
         working-directory: php-src
         run: ./buildconf --force
 
-      - name: configure (native macOS build, embed SAPI + session + sqlite + filter/mbstring)
+      # Same LIBS-resolution approach php-outbound-networking.yml's own
+      # php-curl-native-smoke-test job already settled on after three real
+      # CI failures there (see that job's own comment for the full
+      # debugging history) — reading libcurl.pc's Libs: line directly
+      # rather than trusting pkg-config's own --libs output, which came
+      # back incomplete on this exact runner for a reason never fully
+      # diagnosed.
+      - name: configure (native macOS build, embed SAPI + session + sqlite + filter/mbstring + ext/curl)
         working-directory: php-src
         run: |
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          CURL_PREFIX="$GITHUB_WORKSPACE/curlkit"
+          CURL_PC="$CURL_PREFIX/lib/pkgconfig/libcurl.pc"
+          export LIBS="$(grep '^Libs:' "$CURL_PC" | sed \
+            -e 's/^Libs: *//' \
+            -e "s#\${prefix}#$CURL_PREFIX#g" \
+            -e "s#\${exec_prefix}#$CURL_PREFIX#g" \
+            -e "s#\${libdir}#$CURL_PREFIX/lib#g") -framework CoreFoundation -framework SystemConfiguration"
+          echo "Resolved LIBS: $LIBS"
           ./configure \
             --disable-all \
             --without-pear \
@@ -197,51 +602,92 @@ jobs:
             --with-sqlite3=static \
             --enable-filter=static \
             --enable-mbstring=static \
-            --disable-mbregex
+            --disable-mbregex \
+            --with-curl
+
+      - name: Check ext/curl was actually detected (not silently skipped)
+        working-directory: php-src
+        run: grep -q "^#define HAVE_CURL 1$" main/php_config.h || (echo "ext/curl was not enabled -- check the configure log above" && exit 1)
 
       - name: make
         working-directory: php-src
         run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
 
-      - name: Compile the iServe PHP bridge + its smoke test against libphp.a
+      - name: Check for libphp.a and the curl_init symbol
         working-directory: php-src
         run: |
-          clang -c "$GITHUB_WORKSPACE/iserve/PHP/Bridge/iserve_php_bridge.c" -o iserve_php_bridge.o \
-            -I. -Imain -IZend -ITSRM -Iinclude \
-            -I"$GITHUB_WORKSPACE/iserve/PHP/Bridge/include" \
+          test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
+          nm libs/libphp.a 2>/dev/null | grep -q "zif_curl_init" || (echo "zif_curl_init not found in libphp.a -- ext/curl did not actually link in" && exit 1)
+
+      # Compiles every PHP/Bridge/*.c file the real iServeWithPHP app
+      # target links in (see project.yml's iServeWithPHP sources), not
+      # just iserve_php_bridge.c alone — iserve_outbound_interpose.c in
+      # particular only ever gets compiled for real on a job like this one
+      # (an actual Apple target); php-outbound-networking.yml's own
+      # outbound-policy-native-smoke-test job proves the same file in
+      # isolation, this one proves it linked into the real bridge+curl
+      # combination it's meant to protect.
+      - name: Compile the iServe PHP bridge (+ outbound-networking defenses) + its smoke test against libphp.a + curl + mbedTLS
+        working-directory: php-src
+        run: |
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_guard.c iserve_outbound_toggle.c iserve_outbound_interpose.c; do
+            clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
+              -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE/include" \
+              -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+          done
+
+          clang -c "$BRIDGE/Tests/iserve_bridge_smoke_test.c" -o iserve_bridge_smoke_test.o \
+            -I"$BRIDGE/include" \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
 
-          clang -c "$GITHUB_WORKSPACE/iserve/PHP/Bridge/Tests/iserve_bridge_smoke_test.c" -o iserve_bridge_smoke_test.o \
-            -I"$GITHUB_WORKSPACE/iserve/PHP/Bridge/include" \
-            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
-
-          clang iserve_php_bridge.o iserve_bridge_smoke_test.o -o iserve_bridge_smoke_test \
+          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_guard.o iserve_outbound_toggle.o iserve_outbound_interpose.o iserve_bridge_smoke_test.o \
+            -o iserve_bridge_smoke_test \
             libs/libphp.a \
-            -lresolv -liconv -lm -lsqlite3
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
 
-      - name: Run the bridge smoke test — request/response mapping, open_basedir, disable_functions
+      - name: Run the bridge smoke test — request/response mapping, open_basedir, disable_functions, outbound networking
         working-directory: php-src
         run: |
           ./iserve_bridge_smoke_test "$GITHUB_WORKSPACE/iserve/PHP/Bridge/Tests/fixtures" 2>&1 | tee bridge_smoke_output.txt
           grep -q "^all checks passed$" bridge_smoke_output.txt || (echo "bridge smoke test failed — see FAIL lines above" && exit 1)
 
   simulator-smoke-test:
-    name: "Step 3: embed SAPI smoke test (iOS Simulator target)"
+    name: "Step 3: embed SAPI + ext/curl smoke test (iOS Simulator target)"
     # Combines what the two jobs above each proved separately: device
     # cross-compile succeeds, and the embed SAPI's C API actually works.
     # Neither proved both at once. A Simulator-target binary — unlike a
     # device binary — runs as an ordinary native process directly on this
     # Apple Silicon runner's own kernel (same darwin kernel, different
-    # SDK/frameworks, no emulation), so it can be executed here.
+    # SDK/frameworks, no emulation), so it can be executed here -- which
+    # also makes this the one cross-compiled-for-a-real-Apple-target job
+    # in this file that can actually run a real curl_exec() over the
+    # network, not just link one.
+    needs: curl-cross-compile-simulator
     runs-on: macos-14
     continue-on-error: true
     steps:
+      - name: Checkout iServe (for the curl_setopt() SSRF-guard patch script)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
       - name: Checkout php-src
         uses: actions/checkout@v4
         with:
           repository: php/php-src
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
+
+      - name: Download curl (iOS Simulator)
+        uses: actions/download-artifact@v4
+        with:
+          name: curl-ios-simulator-arm64
+          path: curlkit
 
       - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
         run: |
@@ -253,11 +699,14 @@ jobs:
         run: |
           sed -i '' 's/AC_CHECK_FUNCS(\[posix_spawn_file_actions_addchdir_np elf_aux_info\])/AC_CHECK_FUNCS([elf_aux_info])/' ext/standard/config.m4
 
+      - name: Patch ext/curl/interface.c — silently ignore SSRF-bypass options, clamp timeouts/redirects
+        run: python3 iserve/PHP/Bridge/patches/curl_setopt_ssrf_guard.py php-src/ext/curl/interface.c
+
       - name: buildconf (generate ./configure)
         working-directory: php-src
         run: ./buildconf --force
 
-      - name: configure (cross-compile for iOS Simulator, arm64)
+      - name: configure (cross-compile for iOS Simulator, arm64, + ext/curl)
         working-directory: php-src
         run: |
           export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
@@ -268,6 +717,7 @@ jobs:
           export LDFLAGS="-isysroot $SIM_SDK -mios-simulator-version-min=15.0"
           export SQLITE_CFLAGS="-I$SIM_SDK/usr/include"
           export SQLITE_LIBS="-L$SIM_SDK/usr/lib -lsqlite3"
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           ./configure \
             --host=aarch64-apple-darwin \
             --disable-all \
@@ -283,19 +733,32 @@ jobs:
             --with-sqlite3=static \
             --enable-filter=static \
             --enable-mbstring=static \
-            --disable-mbregex
+            --disable-mbregex \
+            --with-curl
+
+      - name: Check ext/curl was actually detected (not silently skipped)
+        working-directory: php-src
+        run: grep -q "^#define HAVE_CURL 1$" main/php_config.h || (echo "ext/curl was not enabled -- check the configure log above" && exit 1)
 
       - name: make
         working-directory: php-src
         run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
 
-      - name: Check for libphp.a
+      - name: Check for libphp.a and the curl_init symbol
         working-directory: php-src
         run: |
           find . -name "libphp.a" -exec ls -la {} \;
           test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
+          nm libs/libphp.a 2>/dev/null | grep -q "zif_curl_init" || (echo "zif_curl_init not found in libphp.a -- ext/curl did not actually link in" && exit 1)
 
-      - name: Write embed SAPI smoke test (C)
+      # Unlike device-link-smoke-test's own bare hello-world (a device
+      # binary can never execute on this runner regardless), this job CAN
+      # run what it builds -- so this smoke test also does a real
+      # curl_exec() over the network, the same end-to-end proof
+      # php-outbound-networking.yml's own php-curl-native-smoke-test job
+      # already holds the native build to, now confirmed on an actual
+      # cross-compiled Apple target for the first time.
+      - name: Write embed SAPI + curl smoke test (C)
         working-directory: php-src
         run: |
           cat > embed_smoke_test.c <<'EOF'
@@ -303,21 +766,37 @@ jobs:
 
           int main(int argc, char **argv) {
               PHP_EMBED_START_BLOCK(argc, argv)
-              zend_eval_string("echo 'hello from embed SAPI (iOS Simulator target)';", NULL, "embed_smoke_test");
+              zend_eval_string(
+                  "echo 'hello from embed SAPI (iOS Simulator target)' . PHP_EOL;"
+                  "$ch = curl_init('https://pypi.org/');"
+                  "curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);"
+                  "curl_setopt($ch, CURLOPT_TIMEOUT, 15);"
+                  "$body = curl_exec($ch);"
+                  "$code = curl_getinfo($ch, CURLINFO_HTTP_CODE);"
+                  "$err = curl_error($ch);"
+                  "curl_close($ch);"
+                  "echo ($code === 200 && strlen((string)$body) > 0 && $err === '')"
+                  "    ? 'PASS: curl_exec via embed SAPI succeeded (Simulator target)'"
+                  "    : 'FAIL: code=' . $code . ' len=' . strlen((string)$body) . ' err=' . $err;"
+                  "echo PHP_EOL;",
+                  NULL, "embed_smoke_test"
+              );
               PHP_EMBED_END_BLOCK()
               return 0;
           }
           EOF
 
-      - name: Compile + link smoke test against the Simulator-target libphp.a
+      - name: Compile + link smoke test against the Simulator-target libphp.a + curl
         working-directory: php-src
         run: |
           export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           xcrun -sdk iphonesimulator clang embed_smoke_test.c -o embed_smoke_test \
             -isysroot "$SIM_SDK" -mios-simulator-version-min=15.0 -arch arm64 \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
+            $(pkg-config --libs libcurl) \
             -lresolv -liconv -lm -lsqlite3
 
       # A Simulator-target binary needs the simulator's own dyld shim
@@ -339,6 +818,7 @@ jobs:
         run: |
           xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/embed_smoke_test" | tee smoke_output.txt
           grep -q "hello from embed SAPI" smoke_output.txt || (echo "embed SAPI did not produce expected output" && exit 1)
+          grep -q "^PASS: curl_exec via embed SAPI succeeded (Simulator target)$" smoke_output.txt || (echo "curl_exec via embed SAPI (Simulator target) failed" && exit 1)
 
       - name: Upload libphp.a
         if: success()
@@ -350,13 +830,16 @@ jobs:
       # Same curated header copy as cross-compile-device's own packaging
       # step (see the comment there) — a separate artifact per platform
       # since each is configured against a different SDK and the generated
-      # main/php_config.h can differ between them.
-      - name: Package libphp.a + headers for the iServeWithPHP app target (Simulator)
+      # main/php_config.h can differ between them. Also bundles libcurl.a +
+      # mbedTLS libs alongside libphp.a, same reasoning as that step too.
+      - name: Package libphp.a + curl + mbedTLS + headers for the iServeWithPHP app target (Simulator)
         if: success()
         working-directory: php-src
         run: |
           mkdir -p phpkit/lib phpkit/include
           cp libs/libphp.a phpkit/lib/libphp.a
+          cp "$GITHUB_WORKSPACE"/curlkit/lib/libcurl.a phpkit/lib/
+          cp "$GITHUB_WORKSPACE"/curlkit/lib/libmbedtls.a "$GITHUB_WORKSPACE"/curlkit/lib/libmbedx509.a "$GITHUB_WORKSPACE"/curlkit/lib/libmbedcrypto.a phpkit/lib/
           for dir in Zend main TSRM sapi include; do
             if [ -d "$dir" ]; then
               find "$dir" -name '*.h' | while read -r f; do
@@ -366,7 +849,7 @@ jobs:
             fi
           done
 
-      - name: Upload PHPKit (libphp.a + headers) for iOS Simulator
+      - name: Upload PHPKit (libphp.a + curl + mbedTLS + headers) for iOS Simulator
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -383,15 +866,27 @@ jobs:
     # different SDK" situation the way the Simulator is). Verifying
     # runtime behavior on a real device stays a manual step for whoever
     # has one physically in hand.
+    needs: curl-cross-compile-device
     runs-on: macos-14
     continue-on-error: true
     steps:
+      - name: Checkout iServe (for the curl_setopt() SSRF-guard patch script)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
       - name: Checkout php-src
         uses: actions/checkout@v4
         with:
           repository: php/php-src
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
+
+      - name: Download curl (iOS device)
+        uses: actions/download-artifact@v4
+        with:
+          name: curl-ios-device-arm64
+          path: curlkit
 
       - name: Install autoconf/bison/re2c (Apple's system bison is too old for PHP; autoconf isn't preinstalled)
         run: |
@@ -403,11 +898,14 @@ jobs:
         run: |
           sed -i '' 's/AC_CHECK_FUNCS(\[posix_spawn_file_actions_addchdir_np elf_aux_info\])/AC_CHECK_FUNCS([elf_aux_info])/' ext/standard/config.m4
 
+      - name: Patch ext/curl/interface.c — silently ignore SSRF-bypass options, clamp timeouts/redirects
+        run: python3 iserve/PHP/Bridge/patches/curl_setopt_ssrf_guard.py php-src/ext/curl/interface.c
+
       - name: buildconf (generate ./configure)
         working-directory: php-src
         run: ./buildconf --force
 
-      - name: configure (cross-compile for iOS device, arm64)
+      - name: configure (cross-compile for iOS device, arm64, + ext/curl)
         working-directory: php-src
         run: |
           export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -418,6 +916,7 @@ jobs:
           export LDFLAGS="-isysroot $IOS_SDK -mios-version-min=15.0"
           export SQLITE_CFLAGS="-I$IOS_SDK/usr/include"
           export SQLITE_LIBS="-L$IOS_SDK/usr/lib -lsqlite3"
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           ./configure \
             --host=aarch64-apple-darwin \
             --disable-all \
@@ -433,17 +932,23 @@ jobs:
             --with-sqlite3=static \
             --enable-filter=static \
             --enable-mbstring=static \
-            --disable-mbregex
+            --disable-mbregex \
+            --with-curl
+
+      - name: Check ext/curl was actually detected (not silently skipped)
+        working-directory: php-src
+        run: grep -q "^#define HAVE_CURL 1$" main/php_config.h || (echo "ext/curl was not enabled -- check the configure log above" && exit 1)
 
       - name: make
         working-directory: php-src
         run: make -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -200
 
-      - name: Check for libphp.a
+      - name: Check for libphp.a and the curl_init symbol
         working-directory: php-src
         run: |
           find . -name "libphp.a" -exec ls -la {} \;
           test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
+          nm libs/libphp.a 2>/dev/null | grep -q "zif_curl_init" || (echo "zif_curl_init not found in libphp.a -- ext/curl did not actually link in" && exit 1)
 
       - name: Write embed SAPI smoke test (C)
         working-directory: php-src
@@ -459,15 +964,17 @@ jobs:
           }
           EOF
 
-      - name: Compile + link smoke test against the device-target libphp.a
+      - name: Compile + link smoke test against the device-target libphp.a + curl
         working-directory: php-src
         run: |
           export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           xcrun -sdk iphoneos clang embed_smoke_test.c -o embed_smoke_test \
             -isysroot "$IOS_SDK" -mios-version-min=15.0 -arch arm64 \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
+            $(pkg-config --libs libcurl) \
             -lresolv -liconv -lm -lsqlite3
 
       - name: Confirm a real iOS-device Mach-O binary was produced

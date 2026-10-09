@@ -138,7 +138,27 @@ targets:
           - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/include/include
         LIBRARY_SEARCH_PATHS:
           - $(PROJECT_DIR)/PHP/Vendor/$(PLATFORM_NAME)/lib
-        OTHER_LDFLAGS: -lphp -lresolv -liconv -lm -lsqlite3
+        # -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz:
+        # docs/adr/0010-php-outbound-networking.md's v0.5 outbound-networking
+        # work. ext/curl's own compiled object code lives inside libphp.a,
+        # but libphp.a is only ever an archive of php-src's OWN object
+        # files -- it never absorbs libcurl.a's object files into itself
+        # (confirmed directly: php-outbound-networking.yml's own
+        # php-curl-native-smoke-test job still needs an explicit
+        # `pkg-config --libs libcurl` at its final link step even with
+        # libphp.a already on the link line), so this final app link needs
+        # all four archives (built by php-embed.yml's own cross-compile
+        # jobs and bundled alongside libphp.a in the same
+        # PHP/Vendor/$(PLATFORM_NAME)/lib directory) explicitly too. Order
+        # matters here, not just presence: this is the exact order that
+        # same job's own real, already-proven link line uses (-lphp first,
+        # then curl, then mbedTLS's own three libraries in their real
+        # dependency order, then zlib) -- Apple's ld64 resolves a static
+        # archive's symbols close to a single pass over this list, so a
+        # library providing symbols another one references has to appear
+        # at or after the point something has already asked for them, not
+        # before.
+        OTHER_LDFLAGS: -lphp -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lresolv -liconv -lm -lsqlite3
         # php-embed.yml's simulator-smoke-test job cross-compiles libphp.a
         # for the Simulator SDK as arm64 only (-arch arm64, matching the
         # Apple Silicon CI runner it also needs to *run* that target on via
