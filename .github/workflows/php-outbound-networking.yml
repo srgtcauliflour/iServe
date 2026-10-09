@@ -1229,11 +1229,18 @@ jobs:
           /tmp/iserve_guard_test | tee /tmp/iserve_guard_test_output.txt
           grep -q "^all checks passed$" /tmp/iserve_guard_test_output.txt || (echo "execution-window guard test failed" && exit 1)
 
+      - name: Compile + run the outbound-networking toggle unit test
+        working-directory: PHP/Bridge
+        run: |
+          clang -Wall -Wextra -std=c11 -o /tmp/iserve_toggle_test iserve_outbound_toggle.c Tests/iserve_outbound_toggle_test.c
+          /tmp/iserve_toggle_test | tee /tmp/iserve_toggle_test_output.txt
+          grep -q "^all checks passed$" /tmp/iserve_toggle_test_output.txt || (echo "outbound-networking toggle test failed" && exit 1)
+
       - name: Compile + run the real DYLD_INTERPOSE'd connect() smoke test
         working-directory: PHP/Bridge
         run: |
           clang -Wall -Wextra -std=c11 -o /tmp/iserve_interpose_test \
-            iserve_outbound_policy.c iserve_outbound_guard.c iserve_outbound_interpose.c \
+            iserve_outbound_policy.c iserve_outbound_guard.c iserve_outbound_toggle.c iserve_outbound_interpose.c \
             Tests/iserve_outbound_diagnostics_test_stub.c Tests/iserve_outbound_interpose_test.c
           /tmp/iserve_interpose_test | tee /tmp/iserve_interpose_test_output.txt
           grep -q "^all checks passed$" /tmp/iserve_interpose_test_output.txt || (echo "interposed connect() smoke test failed" && exit 1)

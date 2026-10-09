@@ -102,10 +102,18 @@ typedef struct {
 //   every other SAPI's own behavior). May be NULL to leave PHP's own
 //   fallback in effect, which callers should not rely on -- same caveat
 //   as session_save_path.
+// - outbound_networking_enabled: docs/adr/0010-php-outbound-networking.md's
+//   "Consent: a separate toggle" -- 0 (the default/recommended value)
+//   means every outbound connection a script's own curl handle attempts
+//   is refused, independent of iserve_outbound_policy.c's denylist;
+//   nonzero allows connections to non-denylisted addresses. Layered on
+//   top of, never implied by, PHP execution being enabled at all. Only
+//   meaningful in builds that actually link ext/curl in; harmless to pass
+//   either value otherwise.
 //
 // Returns 0 on success, nonzero on failure. Must be called exactly once,
 // before any call to iserve_php_execute().
-int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path, const char *upload_tmp_dir);
+int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path, const char *upload_tmp_dir, int outbound_networking_enabled);
 
 // Runs PHP's module shutdown once for this process. Must be called exactly
 // once, after every call to iserve_php_execute() has returned, and never

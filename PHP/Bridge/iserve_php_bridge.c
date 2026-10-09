@@ -22,6 +22,7 @@
 
 #include "include/iserve_outbound_diagnostics.h"
 #include "include/iserve_outbound_guard.h"
+#include "include/iserve_outbound_toggle.h"
 
 #include <sapi/embed/php_embed.h>
 #include <Zend/zend_stream.h>
@@ -296,8 +297,16 @@ static sapi_module_struct iserve_sapi_module = {
     STANDARD_SAPI_MODULE_PROPERTIES
 };
 
-int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path, const char *upload_tmp_dir)
+int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path, const char *upload_tmp_dir, int outbound_networking_enabled)
 {
+    // docs/adr/0010-php-outbound-networking.md's "Consent: a separate
+    // toggle" -- off by default, layered on top of (never implied by)
+    // PHP execution itself being enabled at all. Set once, here, for the
+    // life of this session; iserve_outbound_interpose.c's interposed
+    // connect() consults it on every connection attempt a script's own
+    // curl handle makes.
+    iserve_outbound_networking_set_enabled(outbound_networking_enabled);
+
     // pcntl_*/posix_* are not covered here because they are simply not
     // compiled in at all (excluded from ADR-0009's extension allowlist) —
     // disable_functions only accepts exact, literal function names, it has

@@ -105,7 +105,7 @@ int main(int argc, char **argv)
     const char *uploads_dir = "/tmp/iserve_bridge_smoke_test_uploads";
     mkdir(uploads_dir, 0700); // Best-effort: PHP's rfc1867 upload handling never creates upload_tmp_dir itself either.
 
-    if (iserve_php_bridge_startup(5, 64 * 1024 * 1024, sessions_dir, uploads_dir) != 0) {
+    if (iserve_php_bridge_startup(5, 64 * 1024 * 1024, sessions_dir, uploads_dir, 0) != 0) {
         fprintf(stderr, "FAIL: iserve_php_bridge_startup\n");
         return 1;
     }

@@ -14,6 +14,10 @@
 //     portable, independently unit-tested).
 //   - iserve_outbound_guard.c tracks WHEN the check applies (also pure and
 //     portable, independently unit-tested).
+//   - iserve_outbound_toggle.c tracks WHETHER outbound networking is
+//     allowed at all this session (also pure and portable, independently
+//     unit-tested) -- off by default, a separate consent toggle layered
+//     on top of phpExecutionEnabled, never implied by it.
 //   - This file is the one piece that is genuinely platform-specific and
 //     can only be proven by actually linking and running it on a real
 //     Apple target -- see .github/workflows/php-outbound-networking.yml
@@ -37,13 +41,21 @@
 #include "include/iserve_outbound_diagnostics.h"
 #include "include/iserve_outbound_guard.h"
 #include "include/iserve_outbound_policy.h"
+#include "include/iserve_outbound_toggle.h"
 
 #include <errno.h>
 #include <sys/socket.h>
 
 static int iserve_interposed_connect(int socket_fd, const struct sockaddr *address, socklen_t address_len)
 {
-    if (iserve_outbound_guard_is_active() && iserve_outbound_is_denied_sockaddr(address, address_len)) {
+    // Not two independent checks short-circuited together: when the
+    // session-level toggle is off (the default), every destination is
+    // treated as denied, not just the ones iserve_outbound_policy.c's
+    // denylist names -- a script must not be able to tell "outbound
+    // networking is off" apart from "that specific address is denied"
+    // from the failure alone (ADR-0010's "remote error behavior" rule).
+    if (iserve_outbound_guard_is_active() &&
+        (!iserve_outbound_networking_is_enabled() || iserve_outbound_is_denied_sockaddr(address, address_len))) {
         // An ordinary connection-refused-style failure -- curl already
         // knows how to handle this (curl_easy_perform() returns a normal
         // CURLE_COULDNT_CONNECT, no crash, nothing that reveals *why* the

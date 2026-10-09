@@ -243,6 +243,10 @@ struct ServerDashboard: View {
             }
             Toggle("Run PHP Scripts", isOn: $coordinator.phpExecutionEnabled)
                 .disabled(isBusy || isRunning)
+            if coordinator.phpExecutionEnabled {
+                Toggle("Allow Network Access", isOn: $coordinator.outboundNetworkingEnabled)
+                    .disabled(isBusy || isRunning)
+            }
             LabeledContent("Status", value: serverStatusText)
             if isRunning {
                 Button("Stop Server", systemImage: "stop.fill", role: .destructive) {
@@ -284,8 +288,15 @@ struct ServerDashboard: View {
         }
         if coordinator.phpExecutionEnabled {
             lines.append(
-                "PHP files (including index.php) will run instead of downloading as plain text. Scripts can only read and write inside the selected folder, can't reach the network or run other programs, and are stopped if they run too long."
+                "PHP files (including index.php) will run instead of downloading as plain text. Scripts can only read and write inside the selected folder, can't run other programs, and are stopped if they run too long."
             )
+            if coordinator.outboundNetworkingEnabled {
+                lines.append(
+                    "Scripts can also make their own web requests (for a remote API, RSS feed, or asset) — never to this device, your home network, or other devices on it, only to the open internet."
+                )
+            } else {
+                lines.append("Scripts can't reach the network.")
+            }
         }
         return lines.joined(separator: " ")
     }

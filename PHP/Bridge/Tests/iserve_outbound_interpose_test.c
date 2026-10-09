@@ -14,6 +14,7 @@
 // while the guard is active, is the only way to actually prove this
 // mechanism is the thing doing the blocking.
 #include "../include/iserve_outbound_guard.h"
+#include "../include/iserve_outbound_toggle.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -73,6 +74,15 @@ int main(void)
     expect("connect() to a real listening loopback socket succeeds when the guard is inactive", rc_before, 0);
     close(client_before);
 
+    // The denylist/public-address assertions below are about
+    // iserve_outbound_policy.c's own classification logic, so they need
+    // the session-level toggle explicitly ON first -- otherwise every
+    // destination would be blocked regardless of the denylist, and the
+    // "public address is allowed" assertion below would pass for the
+    // wrong reason. The off-by-default behavior itself is proved
+    // separately, at the end of this test, with the toggle OFF again.
+    iserve_outbound_networking_set_enabled(1);
+
     // Guard active: the exact same real, listening loopback socket must
     // now be refused -- the socket is still demonstrably accepting
     // connections (just proved above), so this can only be our own
@@ -110,6 +120,19 @@ int main(void)
         g_failures++;
     }
     close(client_public);
+
+    // Toggle OFF (the default, docs/adr/0010-php-outbound-networking.md's
+    // "Consent: a separate toggle"): the exact same real, non-denylisted
+    // public address just proved reachable above must now be refused too
+    // -- proving the off-by-default state blocks everything, not just the
+    // denylisted ranges iserve_outbound_policy.c names.
+    iserve_outbound_networking_set_enabled(0);
+    int client_public_disabled = socket(AF_INET, SOCK_STREAM, 0);
+    int rc_public_disabled = connect(client_public_disabled, (struct sockaddr *)&public_addr, sizeof(public_addr));
+    int errno_public_disabled = errno;
+    expect("a real public address is refused while outbound networking is off by default", rc_public_disabled, -1);
+    expect("the refusal is ECONNREFUSED, same as a denylisted address", errno_public_disabled, ECONNREFUSED);
+    close(client_public_disabled);
 
     iserve_outbound_guard_end();
     close(server_fd);
