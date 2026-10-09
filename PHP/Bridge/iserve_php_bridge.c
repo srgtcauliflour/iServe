@@ -308,6 +308,19 @@ int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_
     // blocking the setter functions themselves, a script could widen or
     // remove every one of those restrictions at runtime via ini_set().
     //
+    // The 11 curl_multi_* functions (docs/adr/0010-php-outbound-networking.md)
+    // are disabled outright rather than threaded through the same
+    // per-handle policy as curl_setopt()/curl_exec(): CurlMultiHandle
+    // (verified against ext/curl/curl.stub.php) is an opaque class with no
+    // PHP-visible methods of its own, so blocking these 11 function names
+    // closes off multi-handle usage completely, with no OO-call bypass
+    // left to find. The policy already patched into curl_setopt()/
+    // _php_curl_set_default_options() (curl_setopt_ssrf_guard.py) still
+    // governs every individual handle these functions would otherwise
+    // have driven concurrently; disabling them here just removes the
+    // concurrency itself, which is its own, separate resource-bound this
+    // single-worker bridge was never designed to arbitrate between.
+    //
     // upload_tmp_dir is deliberately set even though open_basedir is
     // narrowed to each request's own document_root: verified against the
     // real php-8.4.2 source (main/php_open_temporary_file.c) that
@@ -357,7 +370,10 @@ int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_
         // automatically.
         "post_max_size=8M\n"
         "upload_max_filesize=8M\n"
-        "disable_functions=exec,shell_exec,system,popen,proc_open,proc_close,dl,ini_set,ini_alter,set_time_limit\n",
+        "disable_functions=exec,shell_exec,system,popen,proc_open,proc_close,dl,ini_set,ini_alter,set_time_limit,"
+        "curl_multi_init,curl_multi_add_handle,curl_multi_remove_handle,curl_multi_select,curl_multi_exec,"
+        "curl_multi_getcontent,curl_multi_info_read,curl_multi_close,curl_multi_errno,curl_multi_strerror,"
+        "curl_multi_setopt\n",
         max_execution_time_seconds,
         max_execution_time_seconds,
         memory_limit_bytes,

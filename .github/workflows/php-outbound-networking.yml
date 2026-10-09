@@ -932,6 +932,132 @@ jobs:
           kill "$REDIRECT_SERVER_PID" 2>/dev/null || true
           grep -q "^PASS: MAXREDIRS was clamped despite the script requesting 999999$" curl_maxredirs_output.txt || (echo "CURLOPT_MAXREDIRS clamp test failed" && exit 1)
 
+      # Proves the response-size cap (iserve_curl_xferinfo(), injected by
+      # curl_setopt_ssrf_guard.py into _php_curl_set_default_options())
+      # actually aborts an in-progress transfer, not just that the patched
+      # source compiles: starts a real local server streaming a chunked,
+      # unbounded response (no Content-Length for CURLOPT_MAXFILESIZE to
+      # ever catch), then confirms curl_exec() fails with
+      # CURLE_ABORTED_BY_CALLBACK (42) having received nowhere near what
+      # the server would have sent if left running. Also proves a script
+      # cannot defeat the cap by trying to replace/disable it via
+      # CURLOPT_PROGRESSFUNCTION/CURLOPT_XFERINFOFUNCTION/CURLOPT_NOPROGRESS
+      # -- all three are the "silently ignored" options this same patch
+      # blocks, so the cap must still fire despite the script's attempt.
+      - name: Verify the response-size cap aborts an unbounded chunked download
+        working-directory: php-src
+        run: |
+          cat > chunked_server.py <<'EOF'
+          import http.server
+          PORT = 18081
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/octet-stream')
+                  self.send_header('Transfer-Encoding', 'chunked')
+                  self.end_headers()
+                  chunk = b'A' * 65536
+                  header = b'%x\r\n' % len(chunk)
+                  try:
+                      for _ in range(160000):  # ~10GB if never capped
+                          self.wfile.write(header + chunk + b'\r\n')
+                  except Exception:
+                      pass
+              def log_message(self, *args):
+                  pass
+          http.server.HTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+          EOF
+          python3 chunked_server.py &
+          CHUNKED_SERVER_PID=$!
+          sleep 1
+
+          cat > curl_response_cap_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          int main(int argc, char **argv) {
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string(
+                  "$ch = curl_init('http://127.0.0.1:18081/');"
+                  "curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function () { return 0; });"
+                  "curl_setopt($ch, CURLOPT_XFERINFOFUNCTION, function () { return 0; });"
+                  "curl_setopt($ch, CURLOPT_NOPROGRESS, 1);"
+                  "curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) {"
+                  "    global $received; $received = ($received ?? 0) + strlen($data); return strlen($data);"
+                  "});"
+                  "curl_exec($ch);"
+                  "$errno = curl_errno($ch);"
+                  "curl_close($ch);"
+                  "echo ($errno === CURLE_ABORTED_BY_CALLBACK && ($received ?? 0) < 200 * 1024 * 1024)"
+                  "    ? 'PASS: response-size cap aborted the transfer despite the override attempt'"
+                  "    : 'FAIL: errno=' . $errno . ' received=' . ($received ?? 0);"
+                  "echo PHP_EOL;",
+                  NULL, "curl_response_cap_test"
+              );
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          clang curl_response_cap_test.c -o curl_response_cap_test \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+
+          ./curl_response_cap_test | tee curl_response_cap_output.txt
+          kill "$CHUNKED_SERVER_PID" 2>/dev/null || true
+          grep -q "^PASS: response-size cap aborted the transfer despite the override attempt$" curl_response_cap_output.txt || (echo "response-size cap test failed" && exit 1)
+
+      # Proves the 11 curl_multi_* functions (docs/adr/0010, "Resource
+      # bounds" -- Concurrency) are genuinely blocked when a build matches
+      # production: iserve_php_bridge.c's own disable_functions ini value,
+      # applied via a real php.ini/PHPRC (the mechanism disable_functions
+      # actually uses -- it's read once at module startup, never settable
+      # at runtime), not re-derived or assumed to match.
+      - name: Verify the 11 curl_multi_* functions are blocked by disable_functions
+        working-directory: php-src
+        run: |
+          mkdir -p ini_test_dir
+          cat > ini_test_dir/php.ini <<'EOF'
+          disable_functions=curl_multi_init,curl_multi_add_handle,curl_multi_remove_handle,curl_multi_select,curl_multi_exec,curl_multi_getcontent,curl_multi_info_read,curl_multi_close,curl_multi_errno,curl_multi_strerror,curl_multi_setopt
+          EOF
+
+          cat > curl_multi_disabled_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          int main(int argc, char **argv) {
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string(
+                  "$fns = ['curl_multi_init', 'curl_multi_add_handle', 'curl_multi_remove_handle',"
+                  "        'curl_multi_select', 'curl_multi_exec', 'curl_multi_getcontent',"
+                  "        'curl_multi_info_read', 'curl_multi_close', 'curl_multi_errno',"
+                  "        'curl_multi_strerror', 'curl_multi_setopt'];"
+                  "$all_blocked = true;"
+                  "foreach ($fns as $fn) { $all_blocked = $all_blocked && !function_exists($fn); }"
+                  "echo $all_blocked"
+                  "    ? 'PASS: all 11 curl_multi_* functions are blocked'"
+                  "    : 'FAIL: at least one curl_multi_* function is still available';"
+                  "echo PHP_EOL;",
+                  NULL, "curl_multi_disabled_test"
+              );
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          clang curl_multi_disabled_test.c -o curl_multi_disabled_test \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+
+          PHPRC="$PWD/ini_test_dir" ./curl_multi_disabled_test | tee curl_multi_disabled_output.txt
+          grep -q "^PASS: all 11 curl_multi_\* functions are blocked$" curl_multi_disabled_output.txt || (echo "curl_multi_* disable_functions test failed" && exit 1)
+
   php-curl-cross-compile-device:
     name: "Step 6: cross-compile libphp.a + ext/curl (iOS device, arm64, build-only)"
     # Combines what php-curl-native-smoke-test and curl-cross-compile-device
