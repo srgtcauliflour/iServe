@@ -1,8 +1,13 @@
 // SSRF / local-network / DNS-rebinding defense for PHP-originated outbound
 // connections (docs/adr/0010-php-outbound-networking.md). Interposes the C
 // library's connect() via DYLD_INTERPOSE -- a standard, documented Apple
-// linker mechanism (<mach-o/dyld-interposing.h>), not a novel technique
-// invented for this project.
+// linker mechanism, not a novel technique invented for this project. Uses
+// a vendored copy of the DYLD_INTERPOSE macro (include/iserve_dyld_interpose.h)
+// rather than including <mach-o/dyld-interposing.h> directly -- that header
+// is not reliably present on every SDK/toolchain installation (confirmed by
+// a real compile failure on this project's own macos-14 CI runner); see
+// that header's own comment for why vendoring it changes nothing about the
+// mechanism itself.
 //
 // Deliberately split from the logic it depends on:
 //   - iserve_outbound_policy.c decides WHICH addresses are denied (pure,
@@ -13,8 +18,8 @@
 //     can only be proven by actually linking and running it on a real
 //     Apple target -- see .github/workflows/php-outbound-networking.yml
 //     for that verification, which this sandbox's own Linux toolchain
-//     cannot provide (DYLD_INTERPOSE and <mach-o/dyld-interposing.h> do
-//     not exist outside Apple's own linker).
+//     cannot provide (the __DATA,__interpose section DYLD_INTERPOSE
+//     relies on is a Mach-O/dyld concept with no Linux/ELF equivalent).
 //
 // ADR-0010's own reasoning for why this -- not a hostname-string denylist,
 // not a one-time DNS lookup -- is the only sound enforcement point: any
@@ -28,12 +33,12 @@
 // without needing separate handling.
 #ifdef __APPLE__
 
+#include "include/iserve_dyld_interpose.h"
 #include "include/iserve_outbound_diagnostics.h"
 #include "include/iserve_outbound_guard.h"
 #include "include/iserve_outbound_policy.h"
 
 #include <errno.h>
-#include <mach-o/dyld-interposing.h>
 #include <sys/socket.h>
 
 static int iserve_interposed_connect(int socket_fd, const struct sockaddr *address, socklen_t address_len)

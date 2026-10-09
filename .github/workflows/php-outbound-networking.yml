@@ -1108,6 +1108,6 @@ jobs:
         run: |
           clang -Wall -Wextra -std=c11 -o /tmp/iserve_interpose_test \
             iserve_outbound_policy.c iserve_outbound_guard.c iserve_outbound_interpose.c \
-            Tests/iserve_outbound_interpose_test.c
+            Tests/iserve_outbound_diagnostics_test_stub.c Tests/iserve_outbound_interpose_test.c
           /tmp/iserve_interpose_test | tee /tmp/iserve_interpose_test_output.txt
           grep -q "^all checks passed$" /tmp/iserve_interpose_test_output.txt || (echo "interposed connect() smoke test failed" && exit 1)
