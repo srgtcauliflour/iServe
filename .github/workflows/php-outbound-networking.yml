@@ -1191,25 +1191,29 @@ jobs:
           path: php-src/phpkit
 
   outbound-policy-native-smoke-test:
-    name: "Step 7: SSRF denylist + interposed connect() smoke test (native macOS host)"
+    name: "Step 7: SSRF denylist + outbound-networking toggle unit tests"
     # Unlike every job above, this one needs none of mbedTLS/curl/php-src --
-    # PHP/Bridge/iserve_outbound_policy.c and iserve_outbound_guard.c are
+    # PHP/Bridge/iserve_outbound_policy.c and iserve_outbound_toggle.c are
     # deliberately pure, portable C with no PHP dependency at all (see their
-    # own header comments), and iserve_outbound_interpose.c only needs a
-    # real Apple linker, not a built libcurl, to prove DYLD_INTERPOSE
-    # actually works. A plain macos-14 checkout-and-compile job, no PHPKit/
+    # own header comments). A plain checkout-and-compile job, no PHPKit/
     # curlkit/mbedtlskit artifacts involved.
     #
-    # Three jobs' worth of proof in one, each isolating what it alone can
-    # prove: the denylist's own classification logic (portable, already
-    # verified on Linux too, not just here), the execution-window guard's
-    # own begin/end/is-active bookkeeping (same), and -- the one piece
-    # neither of those can touch -- whether DYLD_INTERPOSE genuinely
-    # intercepts a real connect() call on a real Apple target at all. The
-    # third test deliberately starts a real listening loopback server
-    # first specifically so "connect() failed" can be attributed to this
-    # mechanism actually blocking it, not to nothing having been there to
-    # refuse the connection naturally -- see that test file's own comment.
+    # Previously also compiled+ran a standalone DYLD_INTERPOSE'd connect()
+    # test here (iserve_outbound_interpose.c, since removed): a real macOS
+    # CI run proved that mechanism fundamentally cannot work the way it was
+    # built -- dyld only processes a __DATA,__interpose section from a
+    # loaded *dylib*, never the main executable every iServe target links
+    # this code directly into (confirmed against Apple's own open-source
+    # dyld, RuntimeState.cpp's buildInterposingTables()). Replaced with
+    # curl's own CURLOPT_OPENSOCKETFUNCTION (iserve_curl_open_socket(),
+    # injected directly into php-src's own ext/curl/interface.c by
+    # curl_setopt_ssrf_guard.py) -- a portable mechanism with no
+    # Mach-O/dyld dependency, so its own real integration test
+    # (iserve_bridge_outbound_denylist_test.c, in php-embed.yml's
+    # native-smoke-test job, where the real bridge+curl build already
+    # lives) can run on any host this project builds curl on, not just a
+    # real Apple target. This job keeps only the two still-standalone,
+    # portable unit tests below.
     runs-on: macos-14
     continue-on-error: true
     steps:
@@ -1222,25 +1226,9 @@ jobs:
           /tmp/iserve_policy_test | tee /tmp/iserve_policy_test_output.txt
           grep -q "^all checks passed$" /tmp/iserve_policy_test_output.txt || (echo "denylist policy test failed" && exit 1)
 
-      - name: Compile + run the execution-window guard unit test
-        working-directory: PHP/Bridge
-        run: |
-          clang -Wall -Wextra -std=c11 -o /tmp/iserve_guard_test iserve_outbound_guard.c Tests/iserve_outbound_guard_test.c
-          /tmp/iserve_guard_test | tee /tmp/iserve_guard_test_output.txt
-          grep -q "^all checks passed$" /tmp/iserve_guard_test_output.txt || (echo "execution-window guard test failed" && exit 1)
-
       - name: Compile + run the outbound-networking toggle unit test
         working-directory: PHP/Bridge
         run: |
           clang -Wall -Wextra -std=c11 -o /tmp/iserve_toggle_test iserve_outbound_toggle.c Tests/iserve_outbound_toggle_test.c
           /tmp/iserve_toggle_test | tee /tmp/iserve_toggle_test_output.txt
           grep -q "^all checks passed$" /tmp/iserve_toggle_test_output.txt || (echo "outbound-networking toggle test failed" && exit 1)
-
-      - name: Compile + run the real DYLD_INTERPOSE'd connect() smoke test
-        working-directory: PHP/Bridge
-        run: |
-          clang -Wall -Wextra -std=c11 -o /tmp/iserve_interpose_test \
-            iserve_outbound_policy.c iserve_outbound_guard.c iserve_outbound_toggle.c iserve_outbound_interpose.c \
-            Tests/iserve_outbound_diagnostics_test_stub.c Tests/iserve_outbound_interpose_test.c
-          /tmp/iserve_interpose_test | tee /tmp/iserve_interpose_test_output.txt
-          grep -q "^all checks passed$" /tmp/iserve_interpose_test_output.txt || (echo "interposed connect() smoke test failed" && exit 1)

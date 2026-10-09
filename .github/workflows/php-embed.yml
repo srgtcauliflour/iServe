@@ -621,18 +621,20 @@ jobs:
 
       # Compiles every PHP/Bridge/*.c file the real iServeWithPHP app
       # target links in (see project.yml's iServeWithPHP sources), not
-      # just iserve_php_bridge.c alone — iserve_outbound_interpose.c in
-      # particular only ever gets compiled for real on a job like this one
-      # (an actual Apple target); php-outbound-networking.yml's own
-      # outbound-policy-native-smoke-test job proves the same file in
-      # isolation, this one proves it linked into the real bridge+curl
-      # combination it's meant to protect.
+      # just iserve_php_bridge.c alone -- proving it linked into the real
+      # bridge+curl combination it's meant to protect, not just (as
+      # php-outbound-networking.yml's own outbound-policy-native-smoke-test
+      # job does) in isolation. The real SSRF/local-network defense itself
+      # -- iserve_curl_open_socket(), via CURLOPT_OPENSOCKETFUNCTION -- is
+      # injected directly into ext/curl/interface.c by
+      # curl_setopt_ssrf_guard.py (already applied above), not a separate
+      # PHP/Bridge/*.c file; what's compiled here is what it calls into.
       - name: Compile the iServe PHP bridge (+ outbound-networking defenses) + its smoke test against libphp.a + curl + mbedTLS
         working-directory: php-src
         run: |
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_guard.c iserve_outbound_toggle.c iserve_outbound_interpose.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c; do
             clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -I. -Imain -IZend -ITSRM -Iinclude \
               -I"$BRIDGE/include" \
@@ -643,7 +645,7 @@ jobs:
             -I"$BRIDGE/include" \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
 
-          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_guard.o iserve_outbound_toggle.o iserve_outbound_interpose.o iserve_bridge_smoke_test.o \
+          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_bridge_smoke_test.o \
             -o iserve_bridge_smoke_test \
             libs/libphp.a \
             $(pkg-config --libs libcurl) \
@@ -676,7 +678,7 @@ jobs:
             -I"$BRIDGE/include" \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
 
-          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_guard.o iserve_outbound_toggle.o iserve_outbound_interpose.o iserve_bridge_outbound_denylist_test.o \
+          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_bridge_outbound_denylist_test.o \
             -o iserve_bridge_outbound_denylist_test \
             libs/libphp.a \
             $(pkg-config --libs libcurl) \
