@@ -650,16 +650,43 @@ jobs:
       # resolve fails the link regardless of whether the program uses
       # it). Hardcoding a dependency list by hand, derived from one
       # build's own feature set, doesn't generalize to another build on
-      # another machine with different optional features -- LIBS/LDFLAGS
-      # are now derived directly from pkg-config's own report of
-      # *this* run's actual curl build instead, so they're automatically
-      # correct whatever curl ended up enabling.
+      # another machine with different optional features.
+      #
+      # A third real CI run, after switching to `pkg-config
+      # --libs-only-l/-L/-other libcurl` (adapting automatically to
+      # whatever curl enabled, instead of a hand-maintained guess),
+      # failed again at the exact same curl_easy_perform link check --
+      # despite PKG_CHECK_MODULES's own, separate pkg-config query for
+      # version/SSL metadata succeeding moments earlier in the very same
+      # configure run, which rules out a missing/unresolvable Requires:
+      # dependency as the cause (confirmed by deliberately reproducing
+      # that specific failure mode locally: an unresolvable Requires:
+      # breaks *every* pkg-config query against the file, not just
+      # --libs, and PKG_CHECK_MODULES's own query would have failed
+      # first). The exact reason `pkg-config --libs-only-l` itself came
+      # back incomplete there is still unconfirmed -- rather than keep
+      # guessing at pkg-config/pkgconf's own internal behavior on a
+      # platform this sandbox can't run, LIBS is now read directly from
+      # libcurl.pc's own `Libs:` line as plain text (grep + sed),
+      # expanding its `${prefix}`/`${exec_prefix}`/`${libdir}` variable
+      # references ourselves against the exact `--prefix` this same job
+      # already configured curl with. This bypasses pkg-config's own
+      # command entirely for this one purpose -- no dependency on which
+      # pkg-config/pkgconf implementation or version is on the runner,
+      # or how it resolves Requires:, just reading a file whose exact
+      # content this job produced two steps ago.
       - name: configure php-src (native macOS build, embed SAPI + ext/curl)
         working-directory: php-src
         run: |
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          export LDFLAGS="$(pkg-config --libs-only-L --libs-only-other libcurl)"
-          export LIBS="$(pkg-config --libs-only-l libcurl)"
+          CURL_PREFIX="$GITHUB_WORKSPACE/curlkit"
+          CURL_PC="$CURL_PREFIX/lib/pkgconfig/libcurl.pc"
+          export LIBS="$(grep '^Libs:' "$CURL_PC" | sed \
+            -e 's/^Libs: *//' \
+            -e "s#\${prefix}#$CURL_PREFIX#g" \
+            -e "s#\${exec_prefix}#$CURL_PREFIX#g" \
+            -e "s#\${libdir}#$CURL_PREFIX/lib#g")"
+          echo "Resolved LIBS: $LIBS"
           ./configure \
             --disable-all \
             --without-pear \
@@ -678,27 +705,36 @@ jobs:
 
       # On failure, config.log (not echoed to stdout by configure itself)
       # has the real failing compiler/linker command and its actual
-      # stderr -- printed here so a future failure is diagnosable
-      # straight from the CI log, without a separate log-fetch round
-      # trip. A plain tail isn't enough: config.log ends with an
-      # unrelated boilerplate/cache dump regardless of where in the
-      # script the real failure happened (confirmed by actually
-      # triggering a failure locally and inspecting the real file) --
-      # this finds the last "error:" line instead and prints a window
-      # ending there, which reliably lands on the real failing command
-      # whether the failure is an early, generic compiler sanity check
-      # or a later, curl-specific one.
+      # stderr. Two attempts at printing a useful window already proved
+      # wrong in real CI runs: a plain `tail` only shows trailing
+      # boilerplate; anchoring 60 lines *before* the final "error:"
+      # marker still landed inside the "failed program was:" source
+      # dump, not the real command+stderr above it, once php-src's own
+      # (much larger than curl's) confdefs.h pushed that dump past 60
+      # lines. Anchoring forward from the actual recorded compiler
+      # invocation line (autoconf always traces it as
+      # "configure:LINENO: cc ...") is robust regardless of confdefs.h
+      # size. Also uploaded as a full artifact below -- this inline
+      # printout is a convenience, not the only way to get the real
+      # file if it's ever still not enough.
       - name: Dump config.log on configure failure
         if: failure()
         working-directory: php-src
         run: |
-          line=$(grep -n "error:" config.log | tail -1 | cut -d: -f1)
+          line=$(grep -nE "^configure:[0-9]+: (cc|clang|\\\$CC)" config.log | tail -1 | cut -d: -f1)
           if [ -n "$line" ]; then
-            start=$((line > 60 ? line - 60 : 1))
-            sed -n "${start},$((line + 3))p" config.log
+            sed -n "${line},$((line + 30))p" config.log
           else
-            tail -100 config.log
+            tail -150 config.log
           fi
+
+      - name: Upload config.log on configure failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-curl-native-smoke-test-config-log
+          path: php-src/config.log
+          if-no-files-found: ignore
 
       - name: Check ext/curl was actually detected (not silently skipped)
         working-directory: php-src
