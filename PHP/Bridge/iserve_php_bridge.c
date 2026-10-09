@@ -20,6 +20,9 @@
 //   own usage, since the init helper itself doesn't set it.
 #include "include/iserve_php_bridge.h"
 
+#include "include/iserve_outbound_diagnostics.h"
+#include "include/iserve_outbound_guard.h"
+
 #include <sapi/embed/php_embed.h>
 #include <Zend/zend_stream.h>
 #include <string.h>
@@ -238,6 +241,19 @@ static void iserve_log_message(const char *message, int syslog_type_int)
     iserve_buffer_append(&g_capture_diagnostic, message, message_length);
 }
 
+// See include/iserve_outbound_diagnostics.h: called by the interposed
+// connect() (iserve_outbound_interpose.c, a different translation unit that
+// cannot safely touch Zend/PHP engine state) when it blocks an outbound
+// connection attempt. Reuses iserve_log_message's own capture path rather
+// than introducing a second diagnostic buffer -- same ADR-0009 "on-device
+// diagnostics only, never sent to the remote client" rule that function
+// already upholds, and the same PHPDiagnosticsLog pipeline surfaces it
+// through.
+void iserve_outbound_report_blocked(void)
+{
+    iserve_log_message("Blocked an outbound PHP connection to a denylisted address (docs/adr/0010-php-outbound-networking.md)", 0);
+}
+
 static int iserve_startup(sapi_module_struct *sapi_module)
 {
     return php_module_startup(sapi_module, NULL);
@@ -409,7 +425,14 @@ void iserve_php_execute(const iserve_php_request_t *request, iserve_php_result_t
     zend_stream_init_filename(&file_handle, request->script_filename);
     file_handle.primary_script = 1;
 
+    // Scoped tightly around the script's own execution, not the whole
+    // request (RINIT/RSHUTDOWN never originate outbound connections, so
+    // including them would only widen the window without reason) --
+    // see docs/adr/0010-php-outbound-networking.md and
+    // include/iserve_outbound_guard.h's own comment for what this gates.
+    iserve_outbound_guard_begin();
     php_execute_script(&file_handle);
+    iserve_outbound_guard_end();
 
     zend_destroy_file_handle(&file_handle);
 
