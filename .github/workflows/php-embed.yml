@@ -629,14 +629,28 @@ jobs:
       # injected directly into ext/curl/interface.c by
       # curl_setopt_ssrf_guard.py (already applied above), not a separate
       # PHP/Bridge/*.c file; what's compiled here is what it calls into.
+      # curl's own CA-bundle auto-detection is skipped when cross-compiling
+      # (see iserve_curl_ca_bundle.h's own header comment for the full
+      # citation against acinclude.m4) -- _php_curl_set_default_options()
+      # now installs an explicit, freshly-downloaded bundle via
+      # CURLOPT_CAINFO_BLOB on every handle, including here on a native
+      # build, so behavior doesn't depend on what this runner's own
+      # filesystem happens to contain either.
+      - name: Download curl's official CA bundle
+        run: curl -fsSL -o cacert.pem https://curl.se/ca/cacert.pem
+
+      - name: Generate iserve_curl_ca_bundle.c from the downloaded CA bundle
+        run: python3 iserve/PHP/Bridge/patches/generate_curl_ca_bundle.py cacert.pem iserve/PHP/Bridge/iserve_curl_ca_bundle.c
+
       - name: Compile the iServe PHP bridge (+ outbound-networking defenses) + its smoke test against libphp.a + curl + mbedTLS
         working-directory: php-src
         run: |
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c; do
             clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE" \
               -I"$BRIDGE/include" \
               -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
           done
@@ -645,7 +659,7 @@ jobs:
             -I"$BRIDGE/include" \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
 
-          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_bridge_smoke_test.o \
+          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_bridge_smoke_test.o \
             -o iserve_bridge_smoke_test \
             libs/libphp.a \
             $(pkg-config --libs libcurl) \
@@ -678,7 +692,7 @@ jobs:
             -I"$BRIDGE/include" \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
 
-          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_bridge_outbound_denylist_test.o \
+          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_bridge_outbound_denylist_test.o \
             -o iserve_bridge_outbound_denylist_test \
             libs/libphp.a \
             $(pkg-config --libs libcurl) \
@@ -826,15 +840,29 @@ jobs:
       # bridge object files as extern symbols resolved only at final link
       # time, so this smoke test's own link line needs them too, cross-
       # compiled for the same Simulator target as everything else here.
+      #
+      # Also downloads + generates iserve_curl_ca_bundle.c: curl's own
+      # CA-bundle auto-detection is skipped when cross-compiling (see
+      # that file's own header comment for the full citation) -- this is
+      # the exact failure a real CI run of this job caught directly
+      # ("mbedTLS: The certificate is not correctly signed by the trusted
+      # CA"), confirming the gap, not just the theory behind it.
+      - name: Download curl's official CA bundle
+        run: curl -fsSL -o cacert.pem https://curl.se/ca/cacert.pem
+
+      - name: Generate iserve_curl_ca_bundle.c from the downloaded CA bundle
+        run: python3 iserve/PHP/Bridge/patches/generate_curl_ca_bundle.py cacert.pem iserve/PHP/Bridge/iserve_curl_ca_bundle.c
+
       - name: Compile the iServe bridge objects (Simulator target)
         working-directory: php-src
         run: |
           export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c; do
             xcrun -sdk iphonesimulator clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -isysroot "$SIM_SDK" -mios-simulator-version-min=15.0 -arch arm64 \
               -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE" \
               -I"$BRIDGE/include" \
               -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
           done
@@ -844,7 +872,7 @@ jobs:
         run: |
           export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          xcrun -sdk iphonesimulator clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o embed_smoke_test \
+          xcrun -sdk iphonesimulator clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o embed_smoke_test \
             -isysroot "$SIM_SDK" -mios-simulator-version-min=15.0 -arch arm64 \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
@@ -1022,15 +1050,27 @@ jobs:
       # bridge object files as extern symbols resolved only at final link
       # time, so this smoke test's own link line needs them too, cross-
       # compiled for the same device target as everything else here.
+      #
+      # Also downloads + generates iserve_curl_ca_bundle.c -- see
+      # simulator-smoke-test's own step of the same name for the full
+      # reasoning (curl's own CA-bundle auto-detection is skipped when
+      # cross-compiling).
+      - name: Download curl's official CA bundle
+        run: curl -fsSL -o cacert.pem https://curl.se/ca/cacert.pem
+
+      - name: Generate iserve_curl_ca_bundle.c from the downloaded CA bundle
+        run: python3 iserve/PHP/Bridge/patches/generate_curl_ca_bundle.py cacert.pem iserve/PHP/Bridge/iserve_curl_ca_bundle.c
+
       - name: Compile the iServe bridge objects (device target)
         working-directory: php-src
         run: |
           export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c; do
             xcrun -sdk iphoneos clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -isysroot "$IOS_SDK" -mios-version-min=15.0 -arch arm64 \
               -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE" \
               -I"$BRIDGE/include" \
               -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
           done
@@ -1040,7 +1080,7 @@ jobs:
         run: |
           export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          xcrun -sdk iphoneos clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o embed_smoke_test \
+          xcrun -sdk iphoneos clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o embed_smoke_test \
             -isysroot "$IOS_SDK" -mios-version-min=15.0 -arch arm64 \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
@@ -1086,6 +1126,18 @@ jobs:
           name: phpkit-iphoneos
           path: PHP/Vendor/iphoneos
 
+      # iserve_curl_ca_bundle.c must exist before `xcodegen generate` scans
+      # PHP/ for sources (project.yml globs the whole directory), so this
+      # app build actually compiles it in -- same reasoning as every other
+      # job's own CA-bundle step; see iserve_curl_ca_bundle.h's header
+      # comment for why this file exists at all (curl's own CA-bundle
+      # auto-detection is skipped when cross-compiling).
+      - name: Download curl's official CA bundle
+        run: curl -fsSL -o cacert.pem https://curl.se/ca/cacert.pem
+
+      - name: Generate iserve_curl_ca_bundle.c from the downloaded CA bundle
+        run: python3 PHP/Bridge/patches/generate_curl_ca_bundle.py cacert.pem PHP/Bridge/iserve_curl_ca_bundle.c
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -1117,6 +1169,14 @@ jobs:
         with:
           name: phpkit-iphonesimulator
           path: PHP/Vendor/iphonesimulator
+
+      # See build-app-with-php-device's own step of the same name for the
+      # full reasoning.
+      - name: Download curl's official CA bundle
+        run: curl -fsSL -o cacert.pem https://curl.se/ca/cacert.pem
+
+      - name: Generate iserve_curl_ca_bundle.c from the downloaded CA bundle
+        run: python3 PHP/Bridge/patches/generate_curl_ca_bundle.py cacert.pem PHP/Bridge/iserve_curl_ca_bundle.c
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -1180,6 +1240,15 @@ jobs:
         with:
           name: phpkit-iphoneos
           path: PHP/Vendor/iphoneos
+
+      # See build-app-with-php-device's own step of the same name for the
+      # full reasoning (must land before `xcodegen generate` below scans
+      # PHP/ for sources).
+      - name: Download curl's official CA bundle
+        run: curl -fsSL -o cacert.pem https://curl.se/ca/cacert.pem
+
+      - name: Generate iserve_curl_ca_bundle.c from the downloaded CA bundle
+        run: python3 PHP/Bridge/patches/generate_curl_ca_bundle.py cacert.pem PHP/Bridge/iserve_curl_ca_bundle.c
 
       - name: Install XcodeGen
         run: brew install xcodegen

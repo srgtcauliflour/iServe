@@ -788,13 +788,29 @@ jobs:
       # fails with undefined references the moment it tries to link
       # against the now-patched interface.o inside that archive. Built
       # once here, reused by every test program below.
+      #
+      # Also generates and compiles iserve_curl_ca_bundle.c: curl's own CA-
+      # bundle auto-detection is skipped when cross-compiling (see that
+      # file's own header comment for the full citation against
+      # acinclude.m4), so _php_curl_set_default_options() now installs an
+      # explicit, freshly-downloaded bundle via CURLOPT_CAINFO_BLOB on
+      # every handle -- including here, on a native build, so behavior
+      # doesn't depend on what this runner's own filesystem happens to
+      # contain either.
+      - name: Download curl's official CA bundle
+        run: curl -fsSL -o cacert.pem https://curl.se/ca/cacert.pem
+
+      - name: Generate iserve_curl_ca_bundle.c from the downloaded CA bundle
+        run: python3 iserve/PHP/Bridge/patches/generate_curl_ca_bundle.py cacert.pem iserve/PHP/Bridge/iserve_curl_ca_bundle.c
+
       - name: Compile the iServe bridge objects (for linking into every embed test program below)
         working-directory: php-src
         run: |
           BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
-          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c; do
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c; do
             clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
               -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE" \
               -I"$BRIDGE/include" \
               -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
           done
@@ -838,7 +854,7 @@ jobs:
           # own comment for the full citation), the exact same code path
           # that made these two frameworks necessary there.
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang embed_curl_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o embed_curl_test \
+          clang embed_curl_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o embed_curl_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -881,7 +897,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_patch_bypass_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o curl_patch_bypass_test \
+          clang curl_patch_bypass_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o curl_patch_bypass_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -942,7 +958,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_maxredirs_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o curl_maxredirs_test \
+          clang curl_maxredirs_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o curl_maxredirs_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -1020,7 +1036,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_response_cap_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o curl_response_cap_test \
+          clang curl_response_cap_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o curl_response_cap_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -1069,7 +1085,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_multi_disabled_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o curl_multi_disabled_test \
+          clang curl_multi_disabled_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o -o curl_multi_disabled_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \

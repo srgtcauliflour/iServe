@@ -18,3 +18,7 @@ PHP/Bridge/Tests/fixtures/*.sqlite
 # fixtures/upload.php deletes this itself on every run (before and after);
 # same reasoning as the .sqlite rule above.
 PHP/Bridge/Tests/fixtures/uploaded-output.txt
+# Generated fresh each CI run by patches/generate_curl_ca_bundle.py from
+# curl's own official, regularly-updated CA bundle distribution — never
+# committed, same "reproducible from source" reasoning as PHP/Vendor/ above.
+PHP/Bridge/iserve_curl_ca_bundle.c
