@@ -1,10 +1,10 @@
 // Pure, platform-independent classification of a destination address as
 // denylisted for PHP-originated outbound connections (docs/adr/0010-php-
 // outbound-networking.md). Deliberately has nothing to do with *how* this
-// gets enforced (the DYLD_INTERPOSE'd connect() in iserve_php_bridge.c is a
-// separate, Apple-specific concern) -- this file is plain, portable C so it
-// can be unit-tested on any host, independent of whether the interposition
-// mechanism itself can even be exercised there.
+// gets enforced (iserve_curl_open_socket(), injected directly into
+// php-src's own ext/curl/interface.c by
+// PHP/Bridge/patches/curl_setopt_ssrf_guard.py, is a separate concern) --
+// this file is plain, portable C so it can be unit-tested on any host.
 #ifndef ISERVE_OUTBOUND_POLICY_H
 #define ISERVE_OUTBOUND_POLICY_H
 

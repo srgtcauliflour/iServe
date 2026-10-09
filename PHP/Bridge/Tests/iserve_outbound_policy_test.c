@@ -1,8 +1,7 @@
 // Standalone unit test for iserve_outbound_policy.c -- deliberately has no
-// dependency on php-src or the embed SAPI at all, so it can run on any host
-// (including this project's own CI runner for Linux-based tooling, not just
-// macOS), independent of whether the DYLD_INTERPOSE mechanism that will
-// actually enforce this policy can be exercised there.
+// dependency on php-src or the embed SAPI at all, so it can run on any
+// host (including this project's own CI runner for Linux-based tooling,
+// not just macOS).
 #include "../include/iserve_outbound_policy.h"
 
 #include <arpa/inet.h>

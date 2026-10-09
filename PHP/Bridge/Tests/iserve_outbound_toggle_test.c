@@ -1,7 +1,8 @@
 // Standalone unit test for iserve_outbound_toggle.c -- portable, no
-// dependency on php-src or DYLD_INTERPOSE (see iserve_outbound_guard_test.c's
-// own header comment for why this is kept separate from the Apple-specific
-// interposition wiring).
+// dependency on php-src or curl. The real integration (does
+// iserve_curl_open_socket() actually consult this toggle through a real
+// curl handle) is covered separately by iserve_bridge_outbound_denylist_test.c
+// and iserve_bridge_smoke_test.c's own request I.
 #include "../include/iserve_outbound_toggle.h"
 
 #include <stdio.h>

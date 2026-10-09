@@ -9,12 +9,12 @@
 // The port comes from $_GET['port'] -- the C driver starts a REAL
 // listening socket on 127.0.0.1 at that port before this request, and
 // confirms it's actually accepting connections, before running this
-// fixture. A bare "connect to an arbitrary port" can't tell "our own
-// denylist refused this" apart from "nothing was listening there anyway"
-// -- both look identical from curl's side (CURLE_COULDNT_CONNECT either
-// way) -- so proving the target is demonstrably live first is the only
-// way this test means anything (same discipline
-// iserve_outbound_interpose_test.c's own raw-socket test already uses).
+// fixture. iserve_curl_open_socket() refuses a denylisted address before
+// curl ever calls socket()/connect() on it at all, so this isn't needed
+// to disambiguate "our own check refused this" from "nothing was
+// listening there anyway" the way it would for a lower-level connect()
+// interception -- it's kept anyway as the stronger proof: the block
+// holds even though a real, ready target exists on the other end.
 $port = (int) ($_GET['port'] ?? 0);
 $ch = curl_init("http://127.0.0.1:{$port}/");
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -22,5 +22,6 @@ curl_setopt($ch, CURLOPT_TIMEOUT, 5);
 $body = curl_exec($ch);
 $errno = curl_errno($ch);
 curl_close($ch);
-// CURLE_COULDNT_CONNECT == 7 -- the interposed connect()'s ECONNREFUSED.
+// CURLE_COULDNT_CONNECT == 7 -- what a CURL_SOCKET_BAD return from
+// iserve_curl_open_socket() produces.
 echo "loopback_blocked=" . (($body === false) && $errno === 7 ? 'yes' : 'no') . "\n";

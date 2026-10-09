@@ -2,10 +2,10 @@
 // Fixture for PHP/Bridge/Tests/iserve_bridge_smoke_test.c's request I --
 // proves docs/adr/0010-php-outbound-networking.md's outbound-networking
 // toggle end to end, through the REAL bridge (iserve_php_bridge_startup()
-// -> iserve_outbound_networking_set_enabled() -> the interposed
-// connect()), not just the standalone C unit tests
-// .github/workflows/php-outbound-networking.yml's own jobs already cover.
-// That smoke test's own iserve_php_bridge_startup() call passes
+// -> iserve_outbound_networking_set_enabled() -> iserve_curl_open_socket(),
+// injected directly into php-src's own ext/curl/interface.c), not just
+// the standalone C unit tests iserve_outbound_toggle_test.c already
+// covers. That smoke test's own iserve_php_bridge_startup() call passes
 // outbound_networking_enabled=0 (the off-by-default state, see main()) --
 // so every outbound connection attempt below must be refused, even to a
 // real, non-denylisted public address.

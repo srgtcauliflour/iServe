@@ -21,7 +21,6 @@
 #include "include/iserve_php_bridge.h"
 
 #include "include/iserve_outbound_diagnostics.h"
-#include "include/iserve_outbound_guard.h"
 #include "include/iserve_outbound_toggle.h"
 
 #include <sapi/embed/php_embed.h>
@@ -242,14 +241,15 @@ static void iserve_log_message(const char *message, int syslog_type_int)
     iserve_buffer_append(&g_capture_diagnostic, message, message_length);
 }
 
-// See include/iserve_outbound_diagnostics.h: called by the interposed
-// connect() (iserve_outbound_interpose.c, a different translation unit that
-// cannot safely touch Zend/PHP engine state) when it blocks an outbound
-// connection attempt. Reuses iserve_log_message's own capture path rather
-// than introducing a second diagnostic buffer -- same ADR-0009 "on-device
-// diagnostics only, never sent to the remote client" rule that function
-// already upholds, and the same PHPDiagnosticsLog pipeline surfaces it
-// through.
+// See include/iserve_outbound_diagnostics.h: called by iserve_curl_open_socket()
+// (injected directly into php-src's own ext/curl/interface.c by
+// PHP/Bridge/patches/curl_setopt_ssrf_guard.py, a different translation
+// unit that cannot safely touch Zend/PHP engine state) when it blocks an
+// outbound connection attempt. Reuses iserve_log_message's own capture
+// path rather than introducing a second diagnostic buffer -- same
+// ADR-0009 "on-device diagnostics only, never sent to the remote client"
+// rule that function already upholds, and the same PHPDiagnosticsLog
+// pipeline surfaces it through.
 void iserve_outbound_report_blocked(void)
 {
     iserve_log_message("Blocked an outbound PHP connection to a denylisted address (docs/adr/0010-php-outbound-networking.md)", 0);
@@ -302,9 +302,10 @@ int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_
     // docs/adr/0010-php-outbound-networking.md's "Consent: a separate
     // toggle" -- off by default, layered on top of (never implied by)
     // PHP execution itself being enabled at all. Set once, here, for the
-    // life of this session; iserve_outbound_interpose.c's interposed
-    // connect() consults it on every connection attempt a script's own
-    // curl handle makes.
+    // life of this session; iserve_curl_open_socket() (injected directly
+    // into php-src's own ext/curl/interface.c by
+    // patches/curl_setopt_ssrf_guard.py) consults it on every connection
+    // attempt a script's own curl handle makes.
     iserve_outbound_networking_set_enabled(outbound_networking_enabled);
 
     // pcntl_*/posix_* are not covered here because they are simply not
@@ -450,14 +451,7 @@ void iserve_php_execute(const iserve_php_request_t *request, iserve_php_result_t
     zend_stream_init_filename(&file_handle, request->script_filename);
     file_handle.primary_script = 1;
 
-    // Scoped tightly around the script's own execution, not the whole
-    // request (RINIT/RSHUTDOWN never originate outbound connections, so
-    // including them would only widen the window without reason) --
-    // see docs/adr/0010-php-outbound-networking.md and
-    // include/iserve_outbound_guard.h's own comment for what this gates.
-    iserve_outbound_guard_begin();
     php_execute_script(&file_handle);
-    iserve_outbound_guard_end();
 
     zend_destroy_file_handle(&file_handle);
 

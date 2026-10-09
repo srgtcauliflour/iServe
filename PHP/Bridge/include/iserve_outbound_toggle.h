@@ -7,19 +7,19 @@
 // Distinct from iserve_outbound_policy.c's denylist: that decides WHICH
 // addresses are reachable once outbound networking is allowed at all.
 // This decides whether it's allowed at all -- when disabled (the
-// default), iserve_outbound_interpose.c blocks every destination, not
-// just denylisted ones, with the same ECONNREFUSED either way, so a
-// script can never use the failure itself to tell "the feature is off"
-// apart from "that specific address is denied" (ADR-0010's "remote error
-// behavior" rule).
+// default), iserve_curl_open_socket() (injected directly into php-src's
+// own ext/curl/interface.c by PHP/Bridge/patches/curl_setopt_ssrf_guard.py)
+// refuses every destination, not just denylisted ones, with the same
+// CURLE_COULDNT_CONNECT either way, so a script can never use the failure
+// itself to tell "the feature is off" apart from "that specific address
+// is denied" (ADR-0010's "remote error behavior" rule).
 //
 // Set exactly once per session, at iserve_php_bridge_startup() (mirrors
 // ServerCoordinator.swift's own "changing this while running has no
 // effect on the current session" rule for phpExecutionEnabled), then read
 // concurrently by every outbound connection attempt for the life of the
-// session -- an _Atomic int, not the execution guard's _Thread_local,
-// since this is genuinely shared, write-once/read-many session state,
-// not per-call-stack state scoped to one thread's own blocking call.
+// session -- a plain _Atomic int, since this is genuinely shared,
+// write-once/read-many session state.
 #ifndef ISERVE_OUTBOUND_TOGGLE_H
 #define ISERVE_OUTBOUND_TOGGLE_H
 

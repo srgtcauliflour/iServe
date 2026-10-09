@@ -1,15 +1,14 @@
 // Real integration test for docs/adr/0010-php-outbound-networking.md's IP
 // denylist, run through the REAL bridge (iserve_php_bridge_startup() ->
-// iserve_outbound_networking_set_enabled() -> the interposed connect()),
-// with outbound networking ON -- a separate process from
+// iserve_outbound_networking_set_enabled() -> iserve_curl_open_socket(),
+// injected directly into php-src's own ext/curl/interface.c), with
+// outbound networking ON -- a separate process from
 // iserve_bridge_smoke_test.c, which deliberately keeps it OFF (the real
 // off-by-default behavior) for every one of its own requests. PHP's module
 // startup/shutdown is non-reentrant, so a single process can only ever
 // pick one value for that one bridge-wide setting -- this file exists
-// specifically to exercise the OTHER one, the same split
-// iserve_outbound_interpose_test.c's own raw-connect() test already uses
-// (toggle ON to test the denylist itself, toggle OFF to test the
-// off-by-default state), just through curl/PHP instead of a bare socket.
+// specifically to exercise the OTHER one (toggle ON, to test the denylist
+// itself).
 //
 // Covers what docs/adr/0010's own "Costs" section names as still needing
 // proof "before this ships": not just "a request to a private IP is
@@ -58,10 +57,12 @@ static int body_contains(const iserve_php_result_t *result, const char *needle)
 // Starts a real listening TCP socket on 127.0.0.1 at an OS-assigned
 // ephemeral port -- so requests A/B below connect to a target genuinely
 // accepting connections, not an arbitrary port nothing happens to be
-// bound to (see denylist_loopback.php's own comment for why that
-// distinction is the whole point of this test). Never actually accepted
-// from PHP's side: the interposed connect() is expected to refuse the
-// attempt before a real TCP handshake with this socket ever completes.
+// bound to (see denylist_loopback.php's own comment: iserve_curl_open_socket()
+// refuses a denylisted address before curl ever opens a socket for it at
+// all, so this is the stronger proof that a real, ready target still gets
+// blocked). Never actually accepted from PHP's side: the block is
+// expected to happen before a real TCP handshake with this socket ever
+// gets the chance to start.
 static int start_real_listening_server(int *out_port)
 {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
