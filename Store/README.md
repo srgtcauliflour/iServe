@@ -25,6 +25,21 @@ standing up backend infrastructure this project doesn't otherwise have
 or need, and would be a real architectural departure from its fully local,
 foreground-only design (`AGENTS.md`).
 
+On a TestFlight install (`PurchaseManager.isRunningInTestFlight`, detected
+via `Bundle.main.appStoreReceiptURL`'s `"sandboxReceipt"` filename — the
+standard technique, since Apple exposes no public `isTestFlight` API),
+`isUnlocked` defaults to true automatically, with no purchase needed —
+beta testers should never hit the paywall. This auto-unlock has its own
+toggle (`isTestFlightAutoUnlockEnabled`, surfaced in both `OptionsView`'s
+"TestFlight Testing" section and directly on `PaywallView` so it's always
+reachable either way), because App Review's own team *also* installs via
+TestFlight to test a submission — without a way to turn it back off,
+reviewers could never verify the real $2.99 purchase/restore flow
+actually works (Guideline 3.1.1 expects it to be testable). Both the
+section and the toggle are compiled out of nothing at the API level, but
+only ever show themselves while `isRunningInTestFlight` — a real App
+Store release build never displays this at all.
+
 The product identifier (`PurchaseManager.unlockProductID`,
 `com.srgtcauliflour.iServe.unlockOptions`) must exactly match a
 Non-Consumable product created in App Store Connect (Monetization >

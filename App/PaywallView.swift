@@ -57,6 +57,10 @@ struct PaywallView: View {
                     .padding(.horizontal)
             }
 
+            if PurchaseManager.isRunningInTestFlight {
+                testFlightToggle
+            }
+
             Spacer(minLength: 0)
 
             Text("One-time purchase for lifetime access. Not a subscription.")
@@ -67,6 +71,19 @@ struct PaywallView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .glassCard()
         .padding()
+    }
+
+    /// Only ever shown on a TestFlight install (never in a production
+    /// build) -- seeing this screen at all during TestFlight already means
+    /// someone (a tester or an App Review reviewer) just turned auto-unlock
+    /// off to get here; this is the visible way back.
+    private var testFlightToggle: some View {
+        Toggle("Auto-Unlock for TestFlight", isOn: Binding(
+            get: { purchaseManager.isTestFlightAutoUnlockEnabled },
+            set: { purchaseManager.isTestFlightAutoUnlockEnabled = $0 }
+        ))
+        .font(.footnote)
+        .padding(.horizontal)
     }
 
     @ViewBuilder

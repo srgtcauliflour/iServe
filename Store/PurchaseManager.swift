@@ -33,6 +33,39 @@ final class PurchaseManager {
     /// App Store Connect product identifiers are permanent.
     static let unlockProductID = "com.srgtcauliflour.iServe.unlockOptions"
 
+    /// True when this binary's receipt is Apple's own TestFlight sandbox
+    /// receipt (`appStoreReceiptURL`'s last path component is
+    /// `"sandboxReceipt"` for a TestFlight install, `"receipt"` for a real
+    /// App Store release, and the URL itself is nil for a plain Xcode
+    /// Debug run with no receipt at all) -- the standard, widely-used way
+    /// apps distinguish a TestFlight build from a production one, since
+    /// Apple exposes no public `isTestFlight` API.
+    static var isRunningInTestFlight: Bool {
+        Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+    }
+
+    /// Whether a TestFlight install should unlock automatically, with no
+    /// purchase needed -- on by default, so ordinary beta testers never hit
+    /// the paywall. A real `@Observable`-tracked stored property (not a
+    /// computed one reading `UserDefaults` directly), so its own `Toggle`
+    /// in `OptionsView`/`PaywallView` updates instantly rather than waiting
+    /// on `refreshEntitlement()`'s async round trip; `didSet` is what
+    /// actually persists it. Exposed as its own toggle in both
+    /// `OptionsView` and `PaywallView` (visible only while
+    /// `isRunningInTestFlight`, never in a production build) so Apple's own
+    /// App Review team -- who also install via TestFlight -- can switch it
+    /// off and verify the real purchase/restore flow still works, same as
+    /// Guideline 3.1.1 expects them to be able to test. Without this escape
+    /// hatch, a blanket "TestFlight always unlocked" would leave reviewers
+    /// unable to test the IAP at all.
+    var isTestFlightAutoUnlockEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(isTestFlightAutoUnlockEnabled, forKey: Self.testFlightAutoUnlockKey)
+            Task { await refreshEntitlement() }
+        }
+    }
+    private static let testFlightAutoUnlockKey = "iServe.testFlightAutoUnlockEnabled"
+
     private(set) var product: Product?
     private(set) var isUnlocked = false
     private(set) var isLoading = true
@@ -51,6 +84,7 @@ final class PurchaseManager {
     private nonisolated(unsafe) var updateListenerTask: Task<Void, Never>?
 
     init() {
+        isTestFlightAutoUnlockEnabled = UserDefaults.standard.object(forKey: Self.testFlightAutoUnlockKey) as? Bool ?? true
         updateListenerTask = Self.listenForTransactionUpdates { [weak self] in
             await self?.refreshEntitlement()
         }
@@ -117,11 +151,16 @@ final class PurchaseManager {
 
     /// The one place that decides `isUnlocked` -- always re-derived from
     /// StoreKit's own live, signed entitlement list (see the type's own
-    /// doc comment on why this matters), never from a cached local flag.
-    /// `revocationDate == nil` is a belt-and-braces check alongside
-    /// `currentEntitlements` already excluding refunded/revoked
-    /// transactions on its own.
+    /// doc comment on why this matters), never from a cached local flag,
+    /// *except* the deliberate TestFlight auto-unlock above, which exists
+    /// specifically to skip this check for beta testers. `revocationDate
+    /// == nil` is a belt-and-braces check alongside `currentEntitlements`
+    /// already excluding refunded/revoked transactions on its own.
     private func refreshEntitlement() async {
+        if Self.isRunningInTestFlight && isTestFlightAutoUnlockEnabled {
+            isUnlocked = true
+            return
+        }
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result,
                   transaction.productID == Self.unlockProductID,

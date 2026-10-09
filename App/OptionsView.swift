@@ -67,6 +67,9 @@ struct OptionsView: View {
     /// content, only reachable once `purchaseManager.isUnlocked` is true.
     private var optionsList: some View {
         List {
+            if PurchaseManager.isRunningInTestFlight {
+                testFlightSection
+            }
             appearanceSection
             profileSection
             #if canImport(PHPBridge)
@@ -77,6 +80,24 @@ struct OptionsView: View {
         }
         .scrollContentBackground(.hidden)
         .background(OptionsBackground())
+    }
+
+    /// Only shown on a TestFlight install (never in a production build) --
+    /// lets a tester or App Review reviewer turn auto-unlock off to verify
+    /// the real purchase/restore flow, then back on. See
+    /// `PurchaseManager.isTestFlightAutoUnlockEnabled`'s own doc comment
+    /// for why this exists at all.
+    private var testFlightSection: some View {
+        Section {
+            Toggle("Auto-Unlock for TestFlight", isOn: Binding(
+                get: { purchaseManager.isTestFlightAutoUnlockEnabled },
+                set: { purchaseManager.isTestFlightAutoUnlockEnabled = $0 }
+            ))
+        } header: {
+            Text("TestFlight Testing")
+        } footer: {
+            Text("On by default so beta testers never hit the paywall. Turn this off to verify the real $2.99 purchase and restore flow — the App Store release build never shows this section at all.")
+        }
     }
 
     private var appearanceSection: some View {
