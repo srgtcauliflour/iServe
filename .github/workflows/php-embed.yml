@@ -821,12 +821,30 @@ jobs:
           }
           EOF
 
+      # iserve_curl_open_socket() -- injected directly into ext/curl/interface.c
+      # by the patch applied earlier -- calls out to these three iServe
+      # bridge object files as extern symbols resolved only at final link
+      # time, so this smoke test's own link line needs them too, cross-
+      # compiled for the same Simulator target as everything else here.
+      - name: Compile the iServe bridge objects (Simulator target)
+        working-directory: php-src
+        run: |
+          export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c; do
+            xcrun -sdk iphonesimulator clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
+              -isysroot "$SIM_SDK" -mios-simulator-version-min=15.0 -arch arm64 \
+              -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE/include" \
+              -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+          done
+
       - name: Compile + link smoke test against the Simulator-target libphp.a + curl
         working-directory: php-src
         run: |
           export SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          xcrun -sdk iphonesimulator clang embed_smoke_test.c -o embed_smoke_test \
+          xcrun -sdk iphonesimulator clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o embed_smoke_test \
             -isysroot "$SIM_SDK" -mios-simulator-version-min=15.0 -arch arm64 \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
@@ -999,12 +1017,30 @@ jobs:
           }
           EOF
 
+      # iserve_curl_open_socket() -- injected directly into ext/curl/interface.c
+      # by the patch applied earlier -- calls out to these three iServe
+      # bridge object files as extern symbols resolved only at final link
+      # time, so this smoke test's own link line needs them too, cross-
+      # compiled for the same device target as everything else here.
+      - name: Compile the iServe bridge objects (device target)
+        working-directory: php-src
+        run: |
+          export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c; do
+            xcrun -sdk iphoneos clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
+              -isysroot "$IOS_SDK" -mios-version-min=15.0 -arch arm64 \
+              -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE/include" \
+              -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+          done
+
       - name: Compile + link smoke test against the device-target libphp.a + curl
         working-directory: php-src
         run: |
           export IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          xcrun -sdk iphoneos clang embed_smoke_test.c -o embed_smoke_test \
+          xcrun -sdk iphoneos clang embed_smoke_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o embed_smoke_test \
             -isysroot "$IOS_SDK" -mios-version-min=15.0 -arch arm64 \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \

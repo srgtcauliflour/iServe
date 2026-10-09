@@ -777,6 +777,28 @@ jobs:
           test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
           nm libs/libphp.a 2>/dev/null | grep -q "zif_curl_init" || (echo "zif_curl_init not found in libphp.a -- ext/curl did not actually link in" && exit 1)
 
+      # iserve_curl_open_socket() -- injected directly into ext/curl/interface.c
+      # by the patch applied above -- calls out to these three iServe
+      # bridge object files (iserve_outbound_is_denied_sockaddr()/
+      # iserve_outbound_networking_is_enabled() declared via their own
+      # headers, iserve_outbound_report_blocked() defined in
+      # iserve_php_bridge.c) as extern symbols resolved only at final link
+      # time -- so every embed test program below that links libs/libphp.a
+      # now needs these three object files on its own link line too, or it
+      # fails with undefined references the moment it tries to link
+      # against the now-patched interface.o inside that archive. Built
+      # once here, reused by every test program below.
+      - name: Compile the iServe bridge objects (for linking into every embed test program below)
+        working-directory: php-src
+        run: |
+          BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c; do
+            clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
+              -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE/include" \
+              -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+          done
+
       # Real end-to-end proof, not just "it links": a PHP script, run
       # through the actual embed SAPI, calling curl_init()/curl_setopt()/
       # curl_exec()/curl_getinfo()/curl_error()/curl_close() against a
@@ -816,7 +838,7 @@ jobs:
           # own comment for the full citation), the exact same code path
           # that made these two frameworks necessary there.
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang embed_curl_test.c -o embed_curl_test \
+          clang embed_curl_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o embed_curl_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -859,7 +881,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_patch_bypass_test.c -o curl_patch_bypass_test \
+          clang curl_patch_bypass_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o curl_patch_bypass_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -920,7 +942,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_maxredirs_test.c -o curl_maxredirs_test \
+          clang curl_maxredirs_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o curl_maxredirs_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -998,7 +1020,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_response_cap_test.c -o curl_response_cap_test \
+          clang curl_response_cap_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o curl_response_cap_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -1047,7 +1069,7 @@ jobs:
           }
           EOF
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang curl_multi_disabled_test.c -o curl_multi_disabled_test \
+          clang curl_multi_disabled_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o -o curl_multi_disabled_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
