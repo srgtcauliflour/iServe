@@ -20,6 +20,7 @@ The product is inspired by the best sharing capabilities of the historical **Shu
 - **v0.2 — Shu Parity:** Wi-Fi/hotspot-oriented sharing, interface discovery, Bonjour, QR connection, browser file manager, uploads/downloads, large-file handling and transfer statistics.
 - **v0.3 — Advanced File Server:** Range/resume, streaming ZIP, permissions/authentication, WebDAV, advanced logging and optional multiple mounts.
 - **v0.4 — Web Application Server:** embedded PHP bridge/runtime, forms, cookies, sessions, uploads, SQLite/PDO, selected extensions and PHP diagnostics.
+- **v0.5 — PHP Outbound Networking:** real `curl` (built from source against mbedTLS), gated behind its own off-by-default consent toggle, with SSRF/DNS-rebinding defense enforced at the moment of each real connection attempt and bounded resource limits.
 - **v1.0 — Gold Release:** security hardening, stress/compatibility testing, polished iPhone/iPad UX, accessibility, public-reachability guidance and release documentation.
 
 See [`docs/MASTER-SPEC.md`](docs/MASTER-SPEC.md), [`docs/ROADMAP.md`](docs/ROADMAP.md), [`docs/SECURITY.md`](docs/SECURITY.md), and [`AGENTS.md`](AGENTS.md).

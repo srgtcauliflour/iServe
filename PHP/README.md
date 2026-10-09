@@ -40,6 +40,27 @@ suite (`PHP/Bridge/Tests/fixtures/security.php`) to resource-limit
 exhaustion (`max_execution_time`/`memory_limit` actually terminating a
 runaway script) — deferred deliberately, see the ROADMAP for why.
 
+v0.5 adds outbound networking (`docs/adr/0010-php-outbound-networking.md`):
+real `curl`, built from source against mbedTLS (also built from source),
+now compiled into the same `libphp.a` every job above already builds, and
+linked into `iServeWithPHP` alongside it (`project.yml`'s `OTHER_LDFLAGS`).
+Off by default, gated behind its own separate `ServerCoordinator.outboundNetworkingEnabled`
+toggle (never implied by `phpExecutionEnabled`) — `ServerDashboard` only
+shows it while "Run PHP Scripts" is on. The SSRF/local-network/DNS-rebinding
+defense lives in `Bridge/iserve_outbound_policy.c` (which addresses are
+denied), `Bridge/iserve_outbound_guard.c` (when the check applies),
+`Bridge/iserve_outbound_toggle.c` (whether it's allowed at all this
+session), and `Bridge/iserve_outbound_interpose.c` (the actual
+`DYLD_INTERPOSE`d `connect()` — Apple-only, compiles to nothing on any
+other platform). `Bridge/patches/curl_setopt_ssrf_guard.py` closes the
+`curl_setopt()`-level ways a script could otherwise route around that
+check, clamps timeout/redirect-limit options, and caps response size via
+a response-size-cap `CURLOPT_XFERINFOFUNCTION`; `curl_multi_*` is
+disabled outright (one worker, one request at a time, matching ADR-0009's
+already-accepted concurrency model). See `docs/ROADMAP.md`'s v0.5 section
+for the full deliverable list and verification status, and
+`docs/adr/0010-php-outbound-networking.md` for the design reasoning.
+
 For on-device testing (not App Store distribution — `iServeWithPHP` is
 never referenced by `ios.yml` or the real `iServe` bundle id, per
 ADR-0009's isolation guarantee above), `php-embed.yml` can build a signed
