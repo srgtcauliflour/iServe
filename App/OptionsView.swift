@@ -19,6 +19,7 @@ import UniformTypeIdentifiers
 struct OptionsView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var coordinator: ServerCoordinator
+    @Bindable var purchaseManager: PurchaseManager
     let recentEntries: [RequestLogEntry]
     let phpDiagnosticEntries: [PHPDiagnosticEntry]
 
@@ -34,17 +35,13 @@ struct OptionsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                appearanceSection
-                profileSection
-                #if canImport(PHPBridge)
-                phpSection
-                #endif
-                additionalMountsSection
-                diagnosticsSection
+            Group {
+                if purchaseManager.isUnlocked {
+                    optionsList
+                } else {
+                    PaywallView(purchaseManager: purchaseManager)
+                }
             }
-            .scrollContentBackground(.hidden)
-            .background(OptionsBackground())
             .navigationTitle("Options")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -64,6 +61,22 @@ struct OptionsView: View {
                 }
             }
         }
+    }
+
+    /// Everything that was free before the IAP gate -- unchanged in
+    /// content, only reachable once `purchaseManager.isUnlocked` is true.
+    private var optionsList: some View {
+        List {
+            appearanceSection
+            profileSection
+            #if canImport(PHPBridge)
+            phpSection
+            #endif
+            additionalMountsSection
+            diagnosticsSection
+        }
+        .scrollContentBackground(.hidden)
+        .background(OptionsBackground())
     }
 
     private var appearanceSection: some View {
@@ -251,5 +264,5 @@ private struct OptionsBackground: View {
 }
 
 #Preview {
-    OptionsView(coordinator: ServerCoordinator(), recentEntries: [], phpDiagnosticEntries: [])
+    OptionsView(coordinator: ServerCoordinator(), purchaseManager: PurchaseManager(), recentEntries: [], phpDiagnosticEntries: [])
 }

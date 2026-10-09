@@ -34,6 +34,7 @@ struct ServerDashboard: View {
     // of this file uses) still tracks changes for re-rendering either way —
     // this only adds the $-projection.
     @Bindable var coordinator: ServerCoordinator
+    @Bindable var purchaseManager: PurchaseManager
 
     private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -106,6 +107,7 @@ struct ServerDashboard: View {
             .sheet(isPresented: $isShowingOptions) {
                 OptionsView(
                     coordinator: coordinator,
+                    purchaseManager: purchaseManager,
                     recentEntries: recentEntries,
                     phpDiagnosticEntries: phpDiagnosticEntries
                 )
@@ -432,5 +434,5 @@ struct PHPDiagnosticEntryRow: View {
 }
 
 #Preview {
-    ServerDashboard(coordinator: ServerCoordinator())
+    ServerDashboard(coordinator: ServerCoordinator(), purchaseManager: PurchaseManager())
 }

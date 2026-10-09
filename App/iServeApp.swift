@@ -4,6 +4,12 @@ import SwiftUI
 struct iServeApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var coordinator: ServerCoordinator
+    /// One shared instance for the app's lifetime, same as `coordinator` --
+    /// `PurchaseManager`'s own `init()` kicks off loading the product and
+    /// checking the current entitlement immediately, so constructing it
+    /// here (not lazily inside `OptionsView`) means that check is already
+    /// underway well before anyone taps the gear button.
+    @State private var purchaseManager = PurchaseManager()
     /// The Options screen's "Appearance" picker writes this same key
     /// (`AppTheme`, `App/Theme.swift`) — both read the identical
     /// `UserDefaults`-backed storage, so a change there is reflected here
@@ -21,7 +27,7 @@ struct iServeApp: App {
             // Server-only product scope (docs/adr/0011-remove-native-file-manager.md):
             // ServerDashboard is the whole app now, so it's the window's root
             // view directly -- no tab bar, since there's nothing else to switch to.
-            ServerDashboard(coordinator: coordinator)
+            ServerDashboard(coordinator: coordinator, purchaseManager: purchaseManager)
                 .preferredColorScheme((AppTheme(rawValue: themeRawValue) ?? .system).colorScheme)
         }
         .onChange(of: scenePhase) { _, phase in

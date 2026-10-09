@@ -1,0 +1,37 @@
+{
+  "identifier" : "4A9B2D7E-6C1F-4E3A-9B2D-7E6C1F4E3A9B",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "2.99",
+      "familyShareable" : true,
+      "internalID" : "8F3C1A2B-5D4E-4F6A-8B9C-1A2B5D4E4F6A",
+      "localizations" : [
+        {
+          "description" : "Unlocks server profiles, password protection, PHP execution, additional folders, appearance, and diagnostics.",
+          "displayName" : "Unlock Options",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.srgtcauliflour.iServe.unlockOptions",
+      "referenceName" : "Unlock Options",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_billingIssuesEnabled" : false,
+    "_disableDialogView" : false,
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA"
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

@@ -44,6 +44,9 @@ targets:
       - path: Logging
         excludes:
           - "*.md"
+      - path: Store
+        excludes:
+          - "*.md"
     dependencies:
       - package: ZIPFoundation
       - package: SWCompression
@@ -94,6 +97,9 @@ targets:
         excludes:
           - "*.md"
       - path: Logging
+        excludes:
+          - "*.md"
+      - path: Store
         excludes:
           - "*.md"
       - path: PHP
