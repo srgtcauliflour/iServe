@@ -635,21 +635,31 @@ jobs:
       # strict single-pass linker (ld64) can process libcurl.a's
       # dependencies before anything has yet asked for them, then never
       # revisit them once the test program's own "-lcurl" (now needing
-      # curl_easy_perform) is linked in later. Exporting LIBS/LDFLAGS
-      # ourselves, matching pkg-config's own reported flags, puts
-      # "-lcurl" and its dependencies in the position a single-pass
-      # linker actually needs: LDFLAGS only for the -L search path (safe
-      # to set globally, adds a search path, forces nothing to link),
-      # LIBS for the "-lcurl plus what it depends on" chain so it's
-      # already in the autoconf-default position (after the test
-      # program) before this macro's own AC_CHECK_LIB prepends "-lcurl"
-      # to it again.
+      # curl_easy_perform) is linked in later.
+      #
+      # A second real CI run, after hardcoding LIBS to match this
+      # sandbox's own Linux curl build (which has brotli), failed even
+      # earlier -- AC_PROG_CC's own "does the C compiler work at all"
+      # sanity check, before any curl-specific code runs. Root cause,
+      # confirmed directly against that job's own real log, not guessed:
+      # this macOS runner's curl build reports "checking for
+      # BrotliDecoderDecompress in -lbrotlidec... no" -- brotli isn't
+      # available there, so curl's own real libcurl.pc never lists
+      # -lbrotlidec at all, and a hardcoded LIBS that still named it
+      # broke even a no-op test program (a `-l` flag with nothing to
+      # resolve fails the link regardless of whether the program uses
+      # it). Hardcoding a dependency list by hand, derived from one
+      # build's own feature set, doesn't generalize to another build on
+      # another machine with different optional features -- LIBS/LDFLAGS
+      # are now derived directly from pkg-config's own report of
+      # *this* run's actual curl build instead, so they're automatically
+      # correct whatever curl ended up enabling.
       - name: configure php-src (native macOS build, embed SAPI + ext/curl)
         working-directory: php-src
         run: |
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          export LDFLAGS="-L$GITHUB_WORKSPACE/curlkit/lib"
-          export LIBS="-lmbedtls -lmbedx509 -lmbedcrypto -lbrotlidec -lz"
+          export LDFLAGS="$(pkg-config --libs-only-L --libs-only-other libcurl)"
+          export LIBS="$(pkg-config --libs-only-l libcurl)"
           ./configure \
             --disable-all \
             --without-pear \
@@ -667,13 +677,28 @@ jobs:
             --with-curl
 
       # On failure, config.log (not echoed to stdout by configure itself)
-      # has the real compiler/linker invocation and error -- printed here
-      # so a future failure is diagnosable straight from the CI log,
-      # without a separate log-fetch round trip.
+      # has the real failing compiler/linker command and its actual
+      # stderr -- printed here so a future failure is diagnosable
+      # straight from the CI log, without a separate log-fetch round
+      # trip. A plain tail isn't enough: config.log ends with an
+      # unrelated boilerplate/cache dump regardless of where in the
+      # script the real failure happened (confirmed by actually
+      # triggering a failure locally and inspecting the real file) --
+      # this finds the last "error:" line instead and prints a window
+      # ending there, which reliably lands on the real failing command
+      # whether the failure is an early, generic compiler sanity check
+      # or a later, curl-specific one.
       - name: Dump config.log on configure failure
         if: failure()
         working-directory: php-src
-        run: tail -100 config.log
+        run: |
+          line=$(grep -n "error:" config.log | tail -1 | cut -d: -f1)
+          if [ -n "$line" ]; then
+            start=$((line > 60 ? line - 60 : 1))
+            sed -n "${start},$((line + 3))p" config.log
+          else
+            tail -100 config.log
+          fi
 
       - name: Check ext/curl was actually detected (not silently skipped)
         working-directory: php-src
@@ -720,13 +745,21 @@ jobs:
               return 0;
           }
           EOF
+          # -framework CoreFoundation -framework SystemConfiguration:
+          # pre-added here, not discovered the hard way a third time --
+          # this program actually calls curl_easy_init(), which runs
+          # curl_global_init() -> Curl_macos_init() (lib/macos.c, gated
+          # on CURL_MACOS_CALL_COPYPROXIES -- see curl-native-smoke-test's
+          # own comment for the full citation), the exact same code path
+          # that made these two frameworks necessary there.
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
           clang embed_curl_test.c -o embed_curl_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
             $(pkg-config --libs libcurl) \
-            -lresolv -liconv -lm -lsqlite3
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
           ./embed_curl_test | tee embed_curl_output.txt
           grep -q "^PASS: curl_exec via embed SAPI succeeded$" embed_curl_output.txt || (echo "PHP ext/curl embed SAPI smoke test failed" && exit 1)
 
