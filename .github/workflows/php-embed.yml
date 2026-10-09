@@ -656,6 +656,39 @@ jobs:
           ./iserve_bridge_smoke_test "$GITHUB_WORKSPACE/iserve/PHP/Bridge/Tests/fixtures" 2>&1 | tee bridge_smoke_output.txt
           grep -q "^all checks passed$" bridge_smoke_output.txt || (echo "bridge smoke test failed — see FAIL lines above" && exit 1)
 
+      # A SEPARATE process from iserve_bridge_smoke_test.c above (PHP's
+      # module startup/shutdown is non-reentrant, so one process can only
+      # ever pick one value for outbound_networking_enabled) -- that test
+      # keeps it off (the real off-by-default behavior); this one turns it
+      # ON specifically to prove docs/adr/0010's IP denylist itself still
+      # holds, including the two cases its own "Costs" section names as
+      # needing proof beyond "a request to a private IP is blocked": a
+      # hostname that resolves to a denylisted address, and a remote
+      # server's own redirect pointing at one. See the test file's own
+      # header comment and each fixture's own comment for the full
+      # reasoning.
+      - name: Compile the outbound-networking denylist test against libphp.a + curl + mbedTLS
+        working-directory: php-src
+        run: |
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
+          clang -c "$BRIDGE/Tests/iserve_bridge_outbound_denylist_test.c" -o iserve_bridge_outbound_denylist_test.o \
+            -I"$BRIDGE/include" \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+
+          clang iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_guard.o iserve_outbound_toggle.o iserve_outbound_interpose.o iserve_bridge_outbound_denylist_test.o \
+            -o iserve_bridge_outbound_denylist_test \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+
+      - name: Run the outbound-networking denylist test — literal IP, hostname resolution, redirect bypass
+        working-directory: php-src
+        run: |
+          ./iserve_bridge_outbound_denylist_test "$GITHUB_WORKSPACE/iserve/PHP/Bridge/Tests/fixtures" 2>&1 | tee bridge_denylist_output.txt
+          grep -q "^all checks passed$" bridge_denylist_output.txt || (echo "outbound-networking denylist test failed — see FAIL lines above" && exit 1)
+
   simulator-smoke-test:
     name: "Step 3: embed SAPI + ext/curl smoke test (iOS Simulator target)"
     # Combines what the two jobs above each proved separately: device
