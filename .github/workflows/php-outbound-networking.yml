@@ -271,6 +271,17 @@ jobs:
       # links it unless explicitly told not to -- omitting the flag is not
       # the same as HTTP/2 actually being absent. Revisit once curl itself
       # (HTTP/1.1, mbedTLS) is proven end-to-end.
+      #
+      # --without-libidn2 for the exact same reason: the runner also has
+      # libidn2 available via pkg-config, which curl auto-links for
+      # internationalized-domain-name support unless told not to. Not
+      # needed for this project's scope yet, and left implicit it would
+      # also risk curl-cross-compile-device silently picking up a
+      # native-macOS-architecture libidn2 via an unscoped pkg-config
+      # search when cross-compiling -- a link (or worse, a silently wrong-
+      # architecture) failure waiting to happen whenever this is wired
+      # into a real linked binary, not just a static .a. Revisit alongside
+      # HTTP/2 once there's an actual need for non-ASCII hostnames.
       - name: configure (cross-compile for iOS device, arm64, against mbedTLS)
         working-directory: curl
         run: |
@@ -284,6 +295,7 @@ jobs:
             --without-openssl \
             --without-libpsl \
             --without-nghttp2 \
+            --without-libidn2 \
             --disable-shared --enable-static \
             --disable-ftp --disable-file --disable-ldap --disable-ldaps \
             --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
@@ -383,6 +395,7 @@ jobs:
             --without-openssl \
             --without-libpsl \
             --without-nghttp2 \
+            --without-libidn2 \
             --disable-shared --enable-static \
             --disable-ftp --disable-file --disable-ldap --disable-ldaps \
             --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
@@ -406,6 +419,18 @@ jobs:
       # files linked cleanly -- the same "prove OUR build produces
       # correct behavior" standard mbedtls-native-smoke-test's own known-
       # answer test already applies to raw crypto output.
+      #
+      # -framework CoreFoundation -framework SystemConfiguration: a real
+      # CI run caught these as missing -- checked directly against curl's
+      # own lib/curl_setup.h rather than guessed: Curl_macos_init()
+      # (lib/macos.c, called unconditionally from curl_global_init() on
+      # any native build) reads the OS's configured proxy settings via
+      # SCDynamicStoreCopyProxies, gated on CURL_MACOS_CALL_COPYPROXIES --
+      # which that header only defines for TARGET_OS_MAC builds that are
+      # NOT also TARGET_OS_IPHONE. That confirms this code (and these two
+      # frameworks) is specific to this native-macOS verification job and
+      # curl-cross-compile-device's real iOS build never compiles it in
+      # at all, so nothing here widens the actual app's own link surface.
       - name: Write + compile + run a curl+mbedTLS HTTPS smoke test
         working-directory: curl
         run: |
@@ -462,6 +487,6 @@ jobs:
             ../mbedtls/mbedtlskit/lib/libmbedtls.a \
             ../mbedtls/mbedtlskit/lib/libmbedx509.a \
             ../mbedtls/mbedtlskit/lib/libmbedcrypto.a \
-            -lz
+            -lz -framework CoreFoundation -framework SystemConfiguration
           ./curl_smoke_test | tee curl_smoke_output.txt
           grep -q "^PASS: real HTTPS request over mbedTLS succeeded$" curl_smoke_output.txt || (echo "curl+mbedTLS smoke test failed" && exit 1)
