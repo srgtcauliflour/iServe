@@ -621,10 +621,35 @@ jobs:
       # scoped to exactly this job's own curlkit -- nothing else on the
       # runner should have a libcurl.pc, but being explicit costs nothing
       # and avoids ever silently picking up a stray system one.
+      #
+      # A first real CI run on macOS-14 failed exactly here: PKG_CHECK_MODULES
+      # itself succeeded (version/SSL metadata read fine from libcurl.pc),
+      # but ext/curl/config.m4's own follow-up link probe --
+      # PHP_CHECK_LIBRARY([curl], [curl_easy_perform], ..., [$CURL_LIBS])
+      # (confirmed directly against that file's real content, not
+      # assumed) -- failed with "checking for curl_easy_perform in
+      # -lcurl... no". That macro (build/php.m4) folds its 5th argument
+      # into LDFLAGS via PHP_EVAL_LIBLINE, while AC_CHECK_LIB's own
+      # "-lcurl" addition lands in LIBS -- LDFLAGS entries sit BEFORE the
+      # compiled test program on the link line, LIBS entries AFTER, so a
+      # strict single-pass linker (ld64) can process libcurl.a's
+      # dependencies before anything has yet asked for them, then never
+      # revisit them once the test program's own "-lcurl" (now needing
+      # curl_easy_perform) is linked in later. Exporting LIBS/LDFLAGS
+      # ourselves, matching pkg-config's own reported flags, puts
+      # "-lcurl" and its dependencies in the position a single-pass
+      # linker actually needs: LDFLAGS only for the -L search path (safe
+      # to set globally, adds a search path, forces nothing to link),
+      # LIBS for the "-lcurl plus what it depends on" chain so it's
+      # already in the autoconf-default position (after the test
+      # program) before this macro's own AC_CHECK_LIB prepends "-lcurl"
+      # to it again.
       - name: configure php-src (native macOS build, embed SAPI + ext/curl)
         working-directory: php-src
         run: |
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          export LDFLAGS="-L$GITHUB_WORKSPACE/curlkit/lib"
+          export LIBS="-lmbedtls -lmbedx509 -lmbedcrypto -lbrotlidec -lz"
           ./configure \
             --disable-all \
             --without-pear \
@@ -640,6 +665,15 @@ jobs:
             --enable-mbstring=static \
             --disable-mbregex \
             --with-curl
+
+      # On failure, config.log (not echoed to stdout by configure itself)
+      # has the real compiler/linker invocation and error -- printed here
+      # so a future failure is diagnosable straight from the CI log,
+      # without a separate log-fetch round trip.
+      - name: Dump config.log on configure failure
+        if: failure()
+        working-directory: php-src
+        run: tail -100 config.log
 
       - name: Check ext/curl was actually detected (not silently skipped)
         working-directory: php-src
