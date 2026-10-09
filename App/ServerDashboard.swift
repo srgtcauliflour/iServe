@@ -11,19 +11,30 @@ struct ServerDashboard: View {
         var id: URL { url }
     }
 
-    /// Which folder picker request is in flight, if any -- a single
-    /// `.fileImporter` driven by this (rather than two separate
+    /// A single `.fileImporter` (rather than two separate
     /// `.fileImporter(isPresented:)` modifiers with their own booleans
     /// chained on the same view) sidesteps a known SwiftUI/UIKit bug where
     /// stacking multiple such modifiers on one view makes the picker
     /// present but its completion handler not reliably fire: "Open"
     /// appears to do nothing, the sheet never dismisses, no folder gets
     /// selected.
+    ///
+    /// `isPresented` is its own plain Bool, deliberately never derived
+    /// from `folderPickerTarget` (an earlier version of this code used
+    /// `Binding(get: { folderPickerTarget != nil }, set: { ... })` and
+    /// cleared `folderPickerTarget` from that binding's own `set`): on a
+    /// real device, the system's own dismissal can flip that binding to
+    /// false *before* the completion handler below runs, so the handler
+    /// would read `folderPickerTarget` as already-nil and silently do
+    /// nothing -- no error, no selection, despite the picker otherwise
+    /// working correctly. Keeping the two separate means dismissal can
+    /// never race-clear which button opened it.
     private enum FolderPickerTarget: Identifiable {
         case primary
         case additionalMount
         var id: Self { self }
     }
+    @State private var isChoosingFolder = false
     @State private var folderPickerTarget: FolderPickerTarget?
     @State private var didRestore = false
     @State private var didCopyEndpoint = false
@@ -109,12 +120,10 @@ struct ServerDashboard: View {
             .task(id: isRunning) {
                 await pollRequestLog()
             }
-            .fileImporter(isPresented: Binding(
-                get: { folderPickerTarget != nil },
-                set: { isPresented in if !isPresented { folderPickerTarget = nil } }
-            ), allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
+            .fileImporter(isPresented: $isChoosingFolder,
+                          allowedContentTypes: [.folder],
+                          allowsMultipleSelection: false) { result in
                 let target = folderPickerTarget
-                folderPickerTarget = nil
                 switch result {
                 case .success(let urls):
                     guard let url = urls.first else { return }
@@ -181,6 +190,7 @@ struct ServerDashboard: View {
             Label(coordinator.folders.folderName ?? "No folder selected", systemImage: "folder")
             Button("Choose Folder", systemImage: "folder.badge.plus") {
                 folderPickerTarget = .primary
+                isChoosingFolder = true
             }
             .disabled(isBusy || isRunning)
             if coordinator.folders.hasSavedFolder {
@@ -223,6 +233,7 @@ struct ServerDashboard: View {
             }
             Button("Add Another Folder", systemImage: "plus") {
                 folderPickerTarget = .additionalMount
+                isChoosingFolder = true
             }
             .disabled(isBusy || isRunning)
         } header: {
