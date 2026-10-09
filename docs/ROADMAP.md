@@ -141,8 +141,12 @@ Deliverables:
   increments a new `RequestLog.rejectedConnectionCount`, surfaced on
   `ServerDashboard` once it's non-zero — the "advanced logs" half of this
   deliverable. See `docs/adr/0006-connection-and-rate-limits.md`.
-- Feature-rich in-app sandboxed file manager. Shipped: a native browse
-  screen (`App/FileManagerScreen.swift`), file preview via
+- Feature-rich in-app sandboxed file manager. **Removed** (2026-10-09,
+  `docs/adr/0011-remove-native-file-manager.md`): heading into App Store
+  submission, product scope narrowed to the server alone. The
+  implementation below shipped and worked; it is preserved unchanged on
+  the `experimental` branch, not deleted from history. Shipped: a native
+  browse screen (`App/FileManagerScreen.swift`), file preview via
   `QLPreviewController` (text, images, video, PDF — whatever QuickLook
   itself supports), in-place editing of text-based files (gated on the
   file extension's `UTType` conforming to `.text`), rename/delete (swipe

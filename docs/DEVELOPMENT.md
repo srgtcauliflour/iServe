@@ -789,3 +789,18 @@ Fixed by replacing `.onAppear(perform: refresh)` with
 itself changes, not just on first appearance — the general-purpose fix for
 this whole class of "a SwiftUI view's parameter changed but its cached
 `@State` didn't notice" bug.
+
+## Native file manager removed (2026-10-09)
+
+Heading into App Store submission, product scope narrowed to the server
+alone — see `docs/adr/0011-remove-native-file-manager.md`. Everything
+above describing the "Files" tab / `FileManagerScreen` / `FileManagerViewModel`
+is an accurate record of what was built and shipped at the time; none of
+it is rewritten here. It no longer exists in the current app:
+`App/FileManagerScreen.swift`, `App/FileManagerViewModel.swift`,
+`App/RootTabView.swift` and their tests were deleted, `App/iServeApp.swift`
+now opens directly to `ServerDashboard` with no tab bar, and `project.yml`
+no longer sets `UIFileSharingEnabled`/`LSSupportsOpeningDocumentsInPlace`
+(those existed only to make the file manager's own Documents directory
+reachable from Files/Finder). The removed implementation is preserved
+unchanged on the `experimental` branch.

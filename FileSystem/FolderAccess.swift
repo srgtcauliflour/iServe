@@ -50,10 +50,11 @@ final class UserDefaultsFolderBookmarkStore: FolderBookmarkStore {
     private let defaults: UserDefaults
     private let key: String
 
-    /// `key` defaults to the primary shared folder's own slot; the file
-    /// manager's "browse another location" feature
-    /// (`App/FileManagerViewModel.swift`) passes its own distinct key so
-    /// the two remembered folders never collide or overwrite each other.
+    /// `key` defaults to the primary shared folder's own slot; a second,
+    /// independent consumer can pass its own distinct key so the two
+    /// remembered folders never collide or overwrite each other (the
+    /// in-app file manager was one such consumer until
+    /// `docs/adr/0011-remove-native-file-manager.md` removed it).
     init(defaults: UserDefaults = .standard, key: String = "iServe.selectedFolderBookmark") {
         self.defaults = defaults
         self.key = key
