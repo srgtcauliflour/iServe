@@ -20,6 +20,9 @@
 //   own usage, since the init helper itself doesn't set it.
 #include "include/iserve_php_bridge.h"
 
+#include "include/iserve_outbound_diagnostics.h"
+#include "include/iserve_outbound_toggle.h"
+
 #include <sapi/embed/php_embed.h>
 #include <Zend/zend_stream.h>
 #include <string.h>
@@ -238,6 +241,20 @@ static void iserve_log_message(const char *message, int syslog_type_int)
     iserve_buffer_append(&g_capture_diagnostic, message, message_length);
 }
 
+// See include/iserve_outbound_diagnostics.h: called by iserve_curl_open_socket()
+// (injected directly into php-src's own ext/curl/interface.c by
+// PHP/Bridge/patches/curl_setopt_ssrf_guard.py, a different translation
+// unit that cannot safely touch Zend/PHP engine state) when it blocks an
+// outbound connection attempt. Reuses iserve_log_message's own capture
+// path rather than introducing a second diagnostic buffer -- same
+// ADR-0009 "on-device diagnostics only, never sent to the remote client"
+// rule that function already upholds, and the same PHPDiagnosticsLog
+// pipeline surfaces it through.
+void iserve_outbound_report_blocked(void)
+{
+    iserve_log_message("Blocked an outbound PHP connection to a denylisted address (docs/adr/0010-php-outbound-networking.md)", 0);
+}
+
 static int iserve_startup(sapi_module_struct *sapi_module)
 {
     return php_module_startup(sapi_module, NULL);
@@ -280,8 +297,17 @@ static sapi_module_struct iserve_sapi_module = {
     STANDARD_SAPI_MODULE_PROPERTIES
 };
 
-int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path, const char *upload_tmp_dir)
+int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_bytes, const char *session_save_path, const char *upload_tmp_dir, int outbound_networking_enabled)
 {
+    // docs/adr/0010-php-outbound-networking.md's "Consent: a separate
+    // toggle" -- off by default, layered on top of (never implied by)
+    // PHP execution itself being enabled at all. Set once, here, for the
+    // life of this session; iserve_curl_open_socket() (injected directly
+    // into php-src's own ext/curl/interface.c by
+    // patches/curl_setopt_ssrf_guard.py) consults it on every connection
+    // attempt a script's own curl handle makes.
+    iserve_outbound_networking_set_enabled(outbound_networking_enabled);
+
     // pcntl_*/posix_* are not covered here because they are simply not
     // compiled in at all (excluded from ADR-0009's extension allowlist) —
     // disable_functions only accepts exact, literal function names, it has
@@ -291,6 +317,19 @@ int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_
     // display_errors and max_execution_time are all PHP_INI_ALL — without
     // blocking the setter functions themselves, a script could widen or
     // remove every one of those restrictions at runtime via ini_set().
+    //
+    // The 11 curl_multi_* functions (docs/adr/0010-php-outbound-networking.md)
+    // are disabled outright rather than threaded through the same
+    // per-handle policy as curl_setopt()/curl_exec(): CurlMultiHandle
+    // (verified against ext/curl/curl.stub.php) is an opaque class with no
+    // PHP-visible methods of its own, so blocking these 11 function names
+    // closes off multi-handle usage completely, with no OO-call bypass
+    // left to find. The policy already patched into curl_setopt()/
+    // _php_curl_set_default_options() (curl_setopt_ssrf_guard.py) still
+    // governs every individual handle these functions would otherwise
+    // have driven concurrently; disabling them here just removes the
+    // concurrency itself, which is its own, separate resource-bound this
+    // single-worker bridge was never designed to arbitrate between.
     //
     // upload_tmp_dir is deliberately set even though open_basedir is
     // narrowed to each request's own document_root: verified against the
@@ -341,7 +380,10 @@ int iserve_php_bridge_startup(int max_execution_time_seconds, long memory_limit_
         // automatically.
         "post_max_size=8M\n"
         "upload_max_filesize=8M\n"
-        "disable_functions=exec,shell_exec,system,popen,proc_open,proc_close,dl,ini_set,ini_alter,set_time_limit\n",
+        "disable_functions=exec,shell_exec,system,popen,proc_open,proc_close,dl,ini_set,ini_alter,set_time_limit,"
+        "curl_multi_init,curl_multi_add_handle,curl_multi_remove_handle,curl_multi_select,curl_multi_exec,"
+        "curl_multi_getcontent,curl_multi_info_read,curl_multi_close,curl_multi_errno,curl_multi_strerror,"
+        "curl_multi_setopt\n",
         max_execution_time_seconds,
         max_execution_time_seconds,
         memory_limit_bytes,

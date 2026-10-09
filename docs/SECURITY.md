@@ -26,10 +26,12 @@ The selected Files folder is the maximum filesystem authority of a normal server
 - Unauthorized destructive WebDAV operations.
 - PHP access outside allowed roots and capability boundaries.
 - Leakage of absolute device paths, tokens or secrets in remote errors/logs.
+- PHP-originated outbound requests reaching the device's own LAN/loopback/link-local/CGNAT ranges, directly or via a redirect.
+- A hostname resolving to a disallowed address between an earlier check and the real connection (DNS rebinding).
 
 ## Default posture
 - Local/read-only website serving first.
-- Writes, WebDAV and PHP are explicit capabilities, not implied by selecting a folder.
+- Writes, WebDAV, PHP and PHP outbound networking are explicit capabilities, not implied by selecting a folder or by each other.
 - Public reachability should trigger stronger authentication guidance.
 - Do not expose hidden/special metadata by default.
 - No arbitrary shell execution.
@@ -42,6 +44,8 @@ A public/external IP is informational until external reachability is independent
 
 ## PHP
 PHP is a high-risk optional subsystem. Before v0.4 implementation, approve an ADR covering runtime origin/build reproducibility, iOS execution constraints, extension allowlist, filesystem restrictions, process/shell-related functions, resource limits and remote error behavior.
+
+PHP outbound networking (curl) is a further, separately-gated capability layered on top of PHP execution, never implied by it. Before v0.5 implementation, approve an ADR covering: the connection's own origin/build reproducibility, SSRF/local-network defense enforced at the moment of the real connection attempt (not an earlier hostname/URL check, which DNS rebinding can bypass), resource bounds (timeouts, redirect limits, response size, concurrency), and the same remote-error-behavior rule PHP execution already follows.
 
 ## Reporting
 Security-sensitive changes require tests. A discovered vulnerability should be fixed on a focused branch/PR without publishing unnecessary exploitation detail before a patch is available.

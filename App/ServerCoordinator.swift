@@ -56,6 +56,14 @@ final class ServerCoordinator {
     /// regardless. Changing this while running has no effect on the
     /// current session, same as `profile`/`requiresPassword`.
     var phpExecutionEnabled = false
+    /// Off by default, and orthogonal to `phpExecutionEnabled` the same way
+    /// that property is orthogonal to `profile` — `docs/adr/0010-php-outbound-networking.md`'s
+    /// "Consent: a separate toggle": turning on "Run PHP Scripts" alone must
+    /// never also grant outbound network access, a person opts into that
+    /// separately. Has no effect at all unless `phpExecutionEnabled` is also
+    /// on, and (like every other toggle here) changing it while running has
+    /// no effect on the current session.
+    var outboundNetworkingEnabled = false
     let folders: FolderRootManager
     private let service: any ServerService
     private let ipAddressProvider: @Sendable () -> String?
@@ -128,6 +136,21 @@ final class ServerCoordinator {
         }
     }
 
+    /// Shared by every view that needs to disable a control while a start()
+    /// is in flight -- `ServerDashboard` (the home screen) and `OptionsView`
+    /// (profile/password/PHP toggles, additional-folder management) both
+    /// need the identical check, so it lives here once rather than as two
+    /// separately-maintained copies of the same `switch`.
+    var isBusy: Bool {
+        if case .starting = state { return true }
+        return false
+    }
+
+    var isRunning: Bool {
+        if case .running = state { return true }
+        return false
+    }
+
     var statusTitle: String {
         switch state {
         case .noFolder: "No folder selected"
@@ -190,7 +213,7 @@ final class ServerCoordinator {
                 #if canImport(PHPBridge)
                 if phpExecutionEnabled {
                     let worker = PHPWorker()
-                    try await worker.start(limits: Self.phpWorkerLimits())
+                    try await worker.start(limits: Self.phpWorkerLimits(outboundNetworkingEnabled: outboundNetworkingEnabled))
                     phpWorker = worker
                     phpExecutor = worker
                 }
@@ -239,7 +262,7 @@ final class ServerCoordinator {
     /// own container cache directory, never a served folder, so a PHP
     /// session or a still-in-flight upload can't be listed/downloaded as if
     /// it were served content.
-    private static func phpWorkerLimits() -> PHPWorkerLimits {
+    private static func phpWorkerLimits(outboundNetworkingEnabled: Bool) -> PHPWorkerLimits {
         let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         let sessionsDirectory = cachesDirectory.appendingPathComponent("iServe-php-sessions", isDirectory: true)
         let uploadsDirectory = cachesDirectory.appendingPathComponent("iServe-php-uploads", isDirectory: true)
@@ -249,7 +272,8 @@ final class ServerCoordinator {
             maxExecutionTimeSeconds: 10,
             memoryLimitBytes: 64 * 1024 * 1024,
             sessionSavePath: sessionsDirectory.path,
-            uploadTmpDir: uploadsDirectory.path
+            uploadTmpDir: uploadsDirectory.path,
+            outboundNetworkingEnabled: outboundNetworkingEnabled
         )
     }
     #endif

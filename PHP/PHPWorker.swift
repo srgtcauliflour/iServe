@@ -34,7 +34,8 @@ public actor PHPWorker: PHPScriptExecutor {
                     Int32(limits.maxExecutionTimeSeconds),
                     limits.memoryLimitBytes,
                     sessionSavePath,
-                    uploadTmpDir
+                    uploadTmpDir,
+                    limits.outboundNetworkingEnabled ? 1 : 0
                 )
             }
         }
@@ -144,12 +145,21 @@ public struct PHPWorkerLimits: Sendable {
     /// written before a script `move_uploaded_file()`s it somewhere inside
     /// its own `open_basedir` (ADR-0009's filesystem-restrictions section).
     public var uploadTmpDir: String
+    /// `docs/adr/0010-php-outbound-networking.md`'s "Consent: a separate
+    /// toggle" — off by default, layered on top of (never implied by) PHP
+    /// execution being enabled at all. `false` means every outbound
+    /// connection a script's own curl handle attempts is refused,
+    /// independent of the SSRF denylist; `true` allows connections to
+    /// non-denylisted addresses. Only meaningful in a build that actually
+    /// links `ext/curl` in; harmless either way otherwise.
+    public var outboundNetworkingEnabled: Bool
 
-    public init(maxExecutionTimeSeconds: Int, memoryLimitBytes: Int, sessionSavePath: String, uploadTmpDir: String) {
+    public init(maxExecutionTimeSeconds: Int, memoryLimitBytes: Int, sessionSavePath: String, uploadTmpDir: String, outboundNetworkingEnabled: Bool) {
         self.maxExecutionTimeSeconds = maxExecutionTimeSeconds
         self.memoryLimitBytes = memoryLimitBytes
         self.sessionSavePath = sessionSavePath
         self.uploadTmpDir = uploadTmpDir
+        self.outboundNetworkingEnabled = outboundNetworkingEnabled
     }
 }
 

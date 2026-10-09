@@ -40,6 +40,36 @@ suite (`PHP/Bridge/Tests/fixtures/security.php`) to resource-limit
 exhaustion (`max_execution_time`/`memory_limit` actually terminating a
 runaway script) — deferred deliberately, see the ROADMAP for why.
 
+v0.5 adds outbound networking (`docs/adr/0010-php-outbound-networking.md`):
+real `curl`, built from source against mbedTLS (also built from source),
+now compiled into the same `libphp.a` every job above already builds, and
+linked into `iServeWithPHP` alongside it (`project.yml`'s `OTHER_LDFLAGS`).
+Off by default, gated behind its own separate `ServerCoordinator.outboundNetworkingEnabled`
+toggle (never implied by `phpExecutionEnabled`) — `ServerDashboard` only
+shows it while "Run PHP Scripts" is on. The SSRF/local-network/DNS-rebinding
+defense lives in `Bridge/iserve_outbound_policy.c` (which addresses are
+denied) and `Bridge/iserve_outbound_toggle.c` (whether outbound networking
+is allowed at all this session); the actual enforcement —
+`iserve_curl_open_socket()`, checked against every connection's real
+resolved address via `CURLOPT_OPENSOCKETFUNCTION` — is injected directly
+into php-src's own `ext/curl/interface.c` by
+`Bridge/patches/curl_setopt_ssrf_guard.py`, the same patch that closes the
+`curl_setopt()`-level ways a script could otherwise route around that
+check, clamps timeout/redirect-limit options, caps response size via a
+response-size-cap `CURLOPT_XFERINFOFUNCTION` (the threshold decision itself,
+`iserve_curl_response_cap_exceeded()`, lives in its own
+`Bridge/iserve_curl_response_cap.c` so it has a deterministic, no-network
+unit test alongside the policy/toggle ones), and installs a CA root
+bundle via `CURLOPT_CAINFO_BLOB` (generated fresh each build by
+`Bridge/patches/generate_curl_ca_bundle.py` — curl's own CA-bundle
+auto-detection is skipped when cross-compiling). `curl_multi_*` is
+disabled outright (one worker, one request at a time, matching ADR-0009's
+already-accepted concurrency model). See `docs/adr/0012-curl-opensocket-replaces-dyld-interpose.md`
+for why this replaced an originally-specified, Apple-only `DYLD_INTERPOSE`'d
+`connect()`. See `docs/ROADMAP.md`'s v0.5 section
+for the full deliverable list and verification status, and
+`docs/adr/0010-php-outbound-networking.md` for the design reasoning.
+
 For on-device testing (not App Store distribution — `iServeWithPHP` is
 never referenced by `ios.yml` or the real `iServe` bundle id, per
 ADR-0009's isolation guarantee above), `php-embed.yml` can build a signed

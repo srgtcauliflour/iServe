@@ -19,8 +19,12 @@
 // open_basedir escapes via several different functions, allow_url_fopen/
 // allow_url_include off, and the extension allowlist (request G);
 // fixtures/upload.php proves a real multipart/form-data body populates
-// $_FILES and move_uploaded_file() works within open_basedir (request H).
-// See each fixture for what its assertions below are reading back.
+// $_FILES and move_uploaded_file() works within open_basedir (request H);
+// fixtures/outbound.php proves docs/adr/0010-php-outbound-networking.md's
+// outbound-networking toggle is off by default, the curl_setopt()
+// SSRF-bypass options are silently accepted, and curl_multi_* is disabled
+// (request I). See each fixture for what its assertions below are
+// reading back.
 #include "iserve_php_bridge.h"
 
 #include <stdio.h>
@@ -105,7 +109,7 @@ int main(int argc, char **argv)
     const char *uploads_dir = "/tmp/iserve_bridge_smoke_test_uploads";
     mkdir(uploads_dir, 0700); // Best-effort: PHP's rfc1867 upload handling never creates upload_tmp_dir itself either.
 
-    if (iserve_php_bridge_startup(5, 64 * 1024 * 1024, sessions_dir, uploads_dir) != 0) {
+    if (iserve_php_bridge_startup(5, 64 * 1024 * 1024, sessions_dir, uploads_dir, 0) != 0) {
         fprintf(stderr, "FAIL: iserve_php_bridge_startup\n");
         return 1;
     }
@@ -340,6 +344,44 @@ int main(int argc, char **argv)
     check(body_contains(&result_h, "moved_content=hello from upload\n"), "request H: the moved file's content matches what was uploaded");
 
     iserve_php_free_result(&result_h);
+
+    // Request I: exercises fixtures/outbound.php -- docs/adr/0010's
+    // outbound-networking toggle, proven for the first time through the
+    // REAL bridge (iserve_php_bridge_startup()'s own
+    // outbound_networking_enabled=0 call above, not a standalone test
+    // program). native-smoke-test (the one job that runs this file)
+    // always builds with --with-curl, so curl_init() is always available
+    // here -- no runtime capability check needed.
+    char outbound_script_filename[1024];
+    snprintf(outbound_script_filename, sizeof(outbound_script_filename), "%s/outbound.php", fixtures_dir);
+
+    iserve_php_request_t request_i = {0};
+    request_i.method = "GET";
+    request_i.uri = "/outbound.php";
+    request_i.script_filename = outbound_script_filename;
+    request_i.document_root = fixtures_dir;
+
+    iserve_php_result_t result_i;
+    iserve_php_execute(&request_i, &result_i);
+
+    check(result_i.startup_diagnostic == NULL, "request I: no startup diagnostic");
+    check(body_contains(&result_i, "outbound_blocked_by_default=yes\n"), "request I: a real public address is refused while outbound networking is off by default");
+    check(body_contains(&result_i, "ssrf_bypass_options_silently_accepted=yes\n"), "request I: CURLOPT_RESOLVE/CONNECT_TO/DNS_SERVERS/INTERFACE are silently accepted");
+    static const char *disabled_curl_multi_functions[] = {
+        "curl_multi_init", "curl_multi_add_handle", "curl_multi_remove_handle",
+        "curl_multi_select", "curl_multi_exec", "curl_multi_getcontent",
+        "curl_multi_info_read", "curl_multi_close", "curl_multi_errno",
+        "curl_multi_strerror", "curl_multi_setopt"
+    };
+    for (size_t i = 0; i < sizeof(disabled_curl_multi_functions) / sizeof(disabled_curl_multi_functions[0]); i++) {
+        char expected[64];
+        snprintf(expected, sizeof(expected), "disabled_%s=disabled\n", disabled_curl_multi_functions[i]);
+        char description[128];
+        snprintf(description, sizeof(description), "request I: %s is disabled", disabled_curl_multi_functions[i]);
+        check(body_contains(&result_i, expected), description);
+    }
+
+    iserve_php_free_result(&result_i);
 
     iserve_php_bridge_shutdown();
 

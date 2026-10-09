@@ -524,6 +524,11 @@ jobs:
     runs-on: macos-14
     continue-on-error: true
     steps:
+      - name: Checkout iServe (for the curl_setopt() SSRF-guard patch script)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
       - name: Checkout mbedTLS
         uses: actions/checkout@v4
         with:
@@ -545,6 +550,17 @@ jobs:
           repository: php/php-src
           ref: ${{ env.PHP_SRC_REF }}
           path: php-src
+
+      # Small, tracked patch to ext/curl/interface.c (docs/adr/0010), the
+      # same way ADR-0009's own ext/standard/config.m4 patch already works
+      # -- against a fresh upstream checkout, never a maintained fork of
+      # the file. Applied before buildconf, same ordering php-embed.yml's
+      # own posix_spawn probe patch already uses, though for a different
+      # reason here: this patches a .c file buildconf doesn't touch at
+      # all, so the ordering is about doing it as early as possible, not
+      # about buildconf needing it done first.
+      - name: Patch ext/curl/interface.c — silently ignore SSRF-bypass options, clamp timeouts/redirects
+        run: python3 iserve/PHP/Bridge/patches/curl_setopt_ssrf_guard.py php-src/ext/curl/interface.c
 
       # Union of curl's own build prerequisites (autoconf/automake/
       # libtool/pkg-config) and php-embed.yml's own (autoconf/bison/re2c)
@@ -761,6 +777,44 @@ jobs:
           test -f libs/libphp.a || (echo "libphp.a not produced" && exit 1)
           nm libs/libphp.a 2>/dev/null | grep -q "zif_curl_init" || (echo "zif_curl_init not found in libphp.a -- ext/curl did not actually link in" && exit 1)
 
+      # iserve_curl_open_socket() -- injected directly into ext/curl/interface.c
+      # by the patch applied above -- calls out to these three iServe
+      # bridge object files (iserve_outbound_is_denied_sockaddr()/
+      # iserve_outbound_networking_is_enabled() declared via their own
+      # headers, iserve_outbound_report_blocked() defined in
+      # iserve_php_bridge.c) as extern symbols resolved only at final link
+      # time -- so every embed test program below that links libs/libphp.a
+      # now needs these three object files on its own link line too, or it
+      # fails with undefined references the moment it tries to link
+      # against the now-patched interface.o inside that archive. Built
+      # once here, reused by every test program below.
+      #
+      # Also generates and compiles iserve_curl_ca_bundle.c: curl's own CA-
+      # bundle auto-detection is skipped when cross-compiling (see that
+      # file's own header comment for the full citation against
+      # acinclude.m4), so _php_curl_set_default_options() now installs an
+      # explicit, freshly-downloaded bundle via CURLOPT_CAINFO_BLOB on
+      # every handle -- including here, on a native build, so behavior
+      # doesn't depend on what this runner's own filesystem happens to
+      # contain either.
+      - name: Download curl's official CA bundle
+        run: curl -fsSL -o cacert.pem https://curl.se/ca/cacert.pem
+
+      - name: Generate iserve_curl_ca_bundle.c from the downloaded CA bundle
+        run: python3 iserve/PHP/Bridge/patches/generate_curl_ca_bundle.py cacert.pem iserve/PHP/Bridge/iserve_curl_ca_bundle.c
+
+      - name: Compile the iServe bridge objects (for linking into every embed test program below)
+        working-directory: php-src
+        run: |
+          BRIDGE="$GITHUB_WORKSPACE/iserve/PHP/Bridge"
+          for src in iserve_php_bridge.c iserve_outbound_policy.c iserve_outbound_toggle.c iserve_curl_ca_bundle.c iserve_curl_response_cap.c; do
+            clang -c "$BRIDGE/$src" -o "$(basename "$src" .c).o" \
+              -I. -Imain -IZend -ITSRM -Iinclude \
+              -I"$BRIDGE" \
+              -I"$BRIDGE/include" \
+              -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+          done
+
       # Real end-to-end proof, not just "it links": a PHP script, run
       # through the actual embed SAPI, calling curl_init()/curl_setopt()/
       # curl_exec()/curl_getinfo()/curl_error()/curl_close() against a
@@ -772,7 +826,16 @@ jobs:
           cat > embed_curl_test.c <<'EOF'
           #include <sapi/embed/php_embed.h>
 
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
           int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
               PHP_EMBED_START_BLOCK(argc, argv)
               zend_eval_string(
                   "$ch = curl_init('https://pypi.org/');"
@@ -800,7 +863,7 @@ jobs:
           # own comment for the full citation), the exact same code path
           # that made these two frameworks necessary there.
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
-          clang embed_curl_test.c -o embed_curl_test \
+          clang embed_curl_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o embed_curl_test \
             -I. -Imain -IZend -ITSRM -Iinclude \
             -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
             libs/libphp.a \
@@ -809,6 +872,255 @@ jobs:
             -framework CoreFoundation -framework SystemConfiguration
           ./embed_curl_test | tee embed_curl_output.txt
           grep -q "^PASS: curl_exec via embed SAPI succeeded$" embed_curl_output.txt || (echo "PHP ext/curl embed SAPI smoke test failed" && exit 1)
+
+      # Proves the curl_setopt_ssrf_guard.py patch actually changed
+      # behavior, not just that the patched source still compiles: a
+      # script setting these four options must get curl_setopt() == true
+      # (not an error a script could use to detect this policy exists)
+      # with no curl_error() -- exactly ADR-0010's "silently ignored"
+      # requirement, verified as real script-observable behavior.
+      - name: Verify curl_setopt() silently accepts the four SSRF-bypass options
+        working-directory: php-src
+        run: |
+          cat > curl_patch_bypass_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
+          int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string(
+                  "$ch = curl_init();"
+                  "$r1 = curl_setopt($ch, CURLOPT_RESOLVE, ['example.com:443:1.2.3.4']);"
+                  "$r2 = curl_setopt($ch, CURLOPT_CONNECT_TO, ['example.com:443:1.2.3.4:443']);"
+                  "$r3 = curl_setopt($ch, CURLOPT_DNS_SERVERS, '8.8.8.8');"
+                  "$r4 = curl_setopt($ch, CURLOPT_INTERFACE, 'en0');"
+                  "$err = curl_error($ch);"
+                  "curl_close($ch);"
+                  "echo ($r1 && $r2 && $r3 && $r4 && $err === '')"
+                  "    ? 'PASS: all four SSRF-bypass options silently accepted'"
+                  "    : 'FAIL: r1=' . ($r1?'t':'f') . ' r2=' . ($r2?'t':'f') . ' r3=' . ($r3?'t':'f') . ' r4=' . ($r4?'t':'f') . ' err=' . $err;"
+                  "echo PHP_EOL;",
+                  NULL, "curl_patch_bypass_test"
+              );
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          clang curl_patch_bypass_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o curl_patch_bypass_test \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+          ./curl_patch_bypass_test | tee curl_patch_bypass_output.txt
+          grep -q "^PASS: all four SSRF-bypass options silently accepted$" curl_patch_bypass_output.txt || (echo "curl_setopt() SSRF-bypass-option test failed" && exit 1)
+
+      # Proves the MAXREDIRS clamp is real, enforced behavior, not just
+      # patched source that compiles: httpbin.org/redirect/999 (a real
+      # external test service -- iserve_curl_open_socket() now denies
+      # every loopback/private address unconditionally regardless of the
+      # outbound-networking toggle, so a local test server is no longer
+      # reachable here at all; this is the same reason
+      # docs/adr/0010-php-outbound-networking.md's own redirect-based-
+      # bypass test, denylist_redirect_bypass.php, already uses a real
+      # external redirect service rather than a local one) redirects up
+      # to 999 times, far more than the patched ceiling (10) -- proving
+      # curl_exec() fails with CURLE_TOO_MANY_REDIRECTS (47) at exactly
+      # that ceiling despite the script's own CURLOPT_MAXREDIRS asking for
+      # far more confirms the clamp is real, not just that it compiles.
+      - name: Verify CURLOPT_MAXREDIRS is clamped against a real redirect chain
+        working-directory: php-src
+        run: |
+          cat > curl_maxredirs_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
+          int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string(
+                  "$ch = curl_init('https://httpbin.org/redirect/999');"
+                  "curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);"
+                  "curl_setopt($ch, CURLOPT_MAXREDIRS, 999999);"
+                  "curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);"
+                  "curl_setopt($ch, CURLOPT_TIMEOUT, 15);"
+                  "curl_exec($ch);"
+                  "$errno = curl_errno($ch);"
+                  "curl_close($ch);"
+                  "echo ($errno === CURLE_TOO_MANY_REDIRECTS)"
+                  "    ? 'PASS: MAXREDIRS was clamped despite the script requesting 999999'"
+                  "    : 'FAIL: expected CURLE_TOO_MANY_REDIRECTS (47), got ' . $errno;"
+                  "echo PHP_EOL;",
+                  NULL, "curl_maxredirs_test"
+              );
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          clang curl_maxredirs_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o curl_maxredirs_test \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+
+          ./curl_maxredirs_test | tee curl_maxredirs_output.txt
+          grep -q "^PASS: MAXREDIRS was clamped despite the script requesting 999999$" curl_maxredirs_output.txt || (echo "CURLOPT_MAXREDIRS clamp test failed" && exit 1)
+
+      # Proves the response-size cap (iserve_curl_xferinfo(), injected by
+      # curl_setopt_ssrf_guard.py into _php_curl_set_default_options(), its
+      # threshold decision factored out into iserve_curl_response_cap.c so
+      # outbound-policy-native-smoke-test's own unit test above can verify
+      # the decision logic deterministically) actually aborts a real
+      # in-progress transfer, not just that the patched source compiles and
+      # the logic is correct in isolation. First tried httpbin.org/stream-bytes
+      # for a genuinely undeclared-length stream, but a real CI run showed
+      # httpbin.org's own stream-bytes endpoint doesn't actually deliver the
+      # requested byte count at all (observed stopping at 100KB regardless
+      # of the requested size) -- an external-service quirk unrelated to
+      # this project's own code, but unusable as a test input either way.
+      # nodejs.org's own official release tarball is used instead: a real,
+      # CDN-backed (Cloudflare), highly available HTTPS download, 87MB (a
+      # declared Content-Length, unlike the httpbin.org attempt -- but this
+      # patch never sets CURLOPT_MAXFILESIZE, so the xferinfo-based cap is
+      # exercised exactly the same regardless of whether a length is
+      # declared). Confirms curl_exec() fails with CURLE_ABORTED_BY_CALLBACK
+      # (42) having received well under the 87MB the server would have sent
+      # if the cap had not fired, and well above the 50MB cap itself (ruling
+      # out the test merely observing the download's own natural end).
+      # Also proves a script cannot defeat the cap by trying to
+      # replace/disable it via
+      # CURLOPT_PROGRESSFUNCTION/CURLOPT_XFERINFOFUNCTION/CURLOPT_NOPROGRESS
+      # -- all three are the "silently ignored" options this same patch
+      # blocks, so the cap must still fire despite the script's attempt.
+      - name: Verify the response-size cap aborts an unbounded streamed download
+        working-directory: php-src
+        run: |
+          cat > curl_response_cap_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
+          int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string(
+                  "$ch = curl_init('https://nodejs.org/dist/v20.17.0/node-v20.17.0.tar.gz');"
+                  "curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function () { return 0; });"
+                  "curl_setopt($ch, CURLOPT_XFERINFOFUNCTION, function () { return 0; });"
+                  "curl_setopt($ch, CURLOPT_NOPROGRESS, 1);"
+                  "curl_setopt($ch, CURLOPT_TIMEOUT, 60);"
+                  "curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) {"
+                  "    global $received; $received = ($received ?? 0) + strlen($data); return strlen($data);"
+                  "});"
+                  "curl_exec($ch);"
+                  "$errno = curl_errno($ch);"
+                  "curl_close($ch);"
+                  "echo ($errno === CURLE_ABORTED_BY_CALLBACK"
+                  "        && ($received ?? 0) > 40 * 1024 * 1024"
+                  "        && ($received ?? 0) < 80 * 1024 * 1024)"
+                  "    ? 'PASS: response-size cap aborted the transfer despite the override attempt'"
+                  "    : 'FAIL: errno=' . $errno . ' received=' . ($received ?? 0);"
+                  "echo PHP_EOL;",
+                  NULL, "curl_response_cap_test"
+              );
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          clang curl_response_cap_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o curl_response_cap_test \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+
+          ./curl_response_cap_test | tee curl_response_cap_output.txt
+          grep -q "^PASS: response-size cap aborted the transfer despite the override attempt$" curl_response_cap_output.txt || (echo "response-size cap test failed" && exit 1)
+
+      # Proves the 11 curl_multi_* functions (docs/adr/0010, "Resource
+      # bounds" -- Concurrency) are genuinely blocked when a build matches
+      # production: iserve_php_bridge.c's own disable_functions ini value,
+      # applied via a real php.ini/PHPRC (the mechanism disable_functions
+      # actually uses -- it's read once at module startup, never settable
+      # at runtime), not re-derived or assumed to match.
+      - name: Verify the 11 curl_multi_* functions are blocked by disable_functions
+        working-directory: php-src
+        run: |
+          mkdir -p ini_test_dir
+          cat > ini_test_dir/php.ini <<'EOF'
+          disable_functions=curl_multi_init,curl_multi_add_handle,curl_multi_remove_handle,curl_multi_select,curl_multi_exec,curl_multi_getcontent,curl_multi_info_read,curl_multi_close,curl_multi_errno,curl_multi_strerror,curl_multi_setopt
+          EOF
+
+          cat > curl_multi_disabled_test.c <<'EOF'
+          #include <sapi/embed/php_embed.h>
+
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
+          int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
+              PHP_EMBED_START_BLOCK(argc, argv)
+              zend_eval_string(
+                  "$fns = ['curl_multi_init', 'curl_multi_add_handle', 'curl_multi_remove_handle',"
+                  "        'curl_multi_select', 'curl_multi_exec', 'curl_multi_getcontent',"
+                  "        'curl_multi_info_read', 'curl_multi_close', 'curl_multi_errno',"
+                  "        'curl_multi_strerror', 'curl_multi_setopt'];"
+                  "$all_blocked = true;"
+                  "foreach ($fns as $fn) { $all_blocked = $all_blocked && !function_exists($fn); }"
+                  "echo $all_blocked"
+                  "    ? 'PASS: all 11 curl_multi_* functions are blocked'"
+                  "    : 'FAIL: at least one curl_multi_* function is still available';"
+                  "echo PHP_EOL;",
+                  NULL, "curl_multi_disabled_test"
+              );
+              PHP_EMBED_END_BLOCK()
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/curlkit/lib/pkgconfig"
+          clang curl_multi_disabled_test.c iserve_php_bridge.o iserve_outbound_policy.o iserve_outbound_toggle.o iserve_curl_ca_bundle.o iserve_curl_response_cap.o -o curl_multi_disabled_test \
+            -I. -Imain -IZend -ITSRM -Iinclude \
+            -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 \
+            libs/libphp.a \
+            $(pkg-config --libs libcurl) \
+            -lresolv -liconv -lm -lsqlite3 \
+            -framework CoreFoundation -framework SystemConfiguration
+
+          PHPRC="$PWD/ini_test_dir" ./curl_multi_disabled_test | tee curl_multi_disabled_output.txt
+          grep -q "^PASS: all 11 curl_multi_\* functions are blocked$" curl_multi_disabled_output.txt || (echo "curl_multi_* disable_functions test failed" && exit 1)
 
   php-curl-cross-compile-device:
     name: "Step 6: cross-compile libphp.a + ext/curl (iOS device, arm64, build-only)"
@@ -823,6 +1135,11 @@ jobs:
     runs-on: macos-14
     continue-on-error: true
     steps:
+      - name: Checkout iServe (for the curl_setopt() SSRF-guard patch script)
+        uses: actions/checkout@v4
+        with:
+          path: iserve
+
       - name: Checkout php-src
         uses: actions/checkout@v4
         with:
@@ -849,6 +1166,12 @@ jobs:
         working-directory: php-src
         run: |
           sed -i '' 's/AC_CHECK_FUNCS(\[posix_spawn_file_actions_addchdir_np elf_aux_info\])/AC_CHECK_FUNCS([elf_aux_info])/' ext/standard/config.m4
+
+      # Same patch, same reasoning, as php-curl-native-smoke-test's own
+      # step -- applied here too so both jobs' libphp.a agree on the same
+      # curl_setopt() behavior, not just the native one.
+      - name: Patch ext/curl/interface.c — silently ignore SSRF-bypass options, clamp timeouts/redirects
+        run: python3 iserve/PHP/Bridge/patches/curl_setopt_ssrf_guard.py php-src/ext/curl/interface.c
 
       - name: buildconf (generate ./configure)
         working-directory: php-src
@@ -930,3 +1253,60 @@ jobs:
         with:
           name: phpkit-with-curl-iphoneos
           path: php-src/phpkit
+
+  outbound-policy-native-smoke-test:
+    name: "Step 7: SSRF denylist + outbound-networking toggle + response-cap unit tests"
+    # Unlike every job above, this one needs none of mbedTLS/curl/php-src --
+    # PHP/Bridge/iserve_outbound_policy.c and iserve_outbound_toggle.c are
+    # deliberately pure, portable C with no PHP dependency at all (see their
+    # own header comments). A plain checkout-and-compile job, no PHPKit/
+    # curlkit/mbedtlskit artifacts involved.
+    #
+    # Previously also compiled+ran a standalone DYLD_INTERPOSE'd connect()
+    # test here (iserve_outbound_interpose.c, since removed): a real macOS
+    # CI run proved that mechanism fundamentally cannot work the way it was
+    # built -- dyld only processes a __DATA,__interpose section from a
+    # loaded *dylib*, never the main executable every iServe target links
+    # this code directly into (confirmed against Apple's own open-source
+    # dyld, RuntimeState.cpp's buildInterposingTables()). Replaced with
+    # curl's own CURLOPT_OPENSOCKETFUNCTION (iserve_curl_open_socket(),
+    # injected directly into php-src's own ext/curl/interface.c by
+    # curl_setopt_ssrf_guard.py) -- a portable mechanism with no
+    # Mach-O/dyld dependency, so its own real integration test
+    # (iserve_bridge_outbound_denylist_test.c, in php-embed.yml's
+    # native-smoke-test job, where the real bridge+curl build already
+    # lives) can run on any host this project builds curl on, not just a
+    # real Apple target. This job keeps only the two still-standalone,
+    # portable unit tests below.
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile + run the pure denylist policy unit test
+        working-directory: PHP/Bridge
+        run: |
+          clang -Wall -Wextra -std=c11 -o /tmp/iserve_policy_test iserve_outbound_policy.c Tests/iserve_outbound_policy_test.c
+          /tmp/iserve_policy_test | tee /tmp/iserve_policy_test_output.txt
+          grep -q "^all checks passed$" /tmp/iserve_policy_test_output.txt || (echo "denylist policy test failed" && exit 1)
+
+      - name: Compile + run the outbound-networking toggle unit test
+        working-directory: PHP/Bridge
+        run: |
+          clang -Wall -Wextra -std=c11 -o /tmp/iserve_toggle_test iserve_outbound_toggle.c Tests/iserve_outbound_toggle_test.c
+          /tmp/iserve_toggle_test | tee /tmp/iserve_toggle_test_output.txt
+          grep -q "^all checks passed$" /tmp/iserve_toggle_test_output.txt || (echo "outbound-networking toggle test failed" && exit 1)
+
+      # Deterministic, no-network unit test for the response-size-cap
+      # threshold decision itself (iserve_curl_response_cap_exceeded()),
+      # extracted out of the injected xferinfo callback specifically so it
+      # can be verified this way -- php-curl-native-smoke-test's own
+      # "Verify the response-size cap..." step still separately proves the
+      # real curl_exec() integration (the callback is actually wired up and
+      # aborts a real in-progress transfer).
+      - name: Compile + run the response-size-cap unit test
+        working-directory: PHP/Bridge
+        run: |
+          clang -Wall -Wextra -std=c11 -o /tmp/iserve_response_cap_test iserve_curl_response_cap.c Tests/iserve_curl_response_cap_test.c
+          /tmp/iserve_response_cap_test | tee /tmp/iserve_response_cap_test_output.txt
+          grep -q "^all checks passed$" /tmp/iserve_response_cap_test_output.txt || (echo "response-size-cap unit test failed" && exit 1)
