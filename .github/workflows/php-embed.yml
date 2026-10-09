@@ -813,7 +813,16 @@ jobs:
           cat > embed_smoke_test.c <<'EOF'
           #include <sapi/embed/php_embed.h>
 
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and a
+          // real curl_exec() below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
           int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
               PHP_EMBED_START_BLOCK(argc, argv)
               zend_eval_string(
                   "echo 'hello from embed SAPI (iOS Simulator target)' . PHP_EOL;"

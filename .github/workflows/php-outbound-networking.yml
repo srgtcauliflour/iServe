@@ -826,7 +826,16 @@ jobs:
           cat > embed_curl_test.c <<'EOF'
           #include <sapi/embed/php_embed.h>
 
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
           int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
               PHP_EMBED_START_BLOCK(argc, argv)
               zend_eval_string(
                   "$ch = curl_init('https://pypi.org/');"
@@ -876,7 +885,16 @@ jobs:
           cat > curl_patch_bypass_test.c <<'EOF'
           #include <sapi/embed/php_embed.h>
 
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
           int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
               PHP_EMBED_START_BLOCK(argc, argv)
               zend_eval_string(
                   "$ch = curl_init();"
@@ -908,42 +926,41 @@ jobs:
           grep -q "^PASS: all four SSRF-bypass options silently accepted$" curl_patch_bypass_output.txt || (echo "curl_setopt() SSRF-bypass-option test failed" && exit 1)
 
       # Proves the MAXREDIRS clamp is real, enforced behavior, not just
-      # patched source that compiles: starts a real local redirect loop
-      # first (a script asking for 999999 redirects against a server that
-      # never stops redirecting would hang forever if the clamp didn't
-      # actually apply), then confirms curl_exec() fails with
-      # CURLE_TOO_MANY_REDIRECTS (47) at exactly the patched ceiling (10),
-      # despite the script's own CURLOPT_MAXREDIRS asking for far more.
-      - name: Verify CURLOPT_MAXREDIRS is clamped against a real redirect loop
+      # patched source that compiles: httpbin.org/redirect/999 (a real
+      # external test service -- iserve_curl_open_socket() now denies
+      # every loopback/private address unconditionally regardless of the
+      # outbound-networking toggle, so a local test server is no longer
+      # reachable here at all; this is the same reason
+      # docs/adr/0010-php-outbound-networking.md's own redirect-based-
+      # bypass test, denylist_redirect_bypass.php, already uses a real
+      # external redirect service rather than a local one) redirects up
+      # to 999 times, far more than the patched ceiling (10) -- proving
+      # curl_exec() fails with CURLE_TOO_MANY_REDIRECTS (47) at exactly
+      # that ceiling despite the script's own CURLOPT_MAXREDIRS asking for
+      # far more confirms the clamp is real, not just that it compiles.
+      - name: Verify CURLOPT_MAXREDIRS is clamped against a real redirect chain
         working-directory: php-src
         run: |
-          cat > redirect_server.py <<'EOF'
-          import http.server
-          PORT = 18080
-          class Handler(http.server.BaseHTTPRequestHandler):
-              def do_GET(self):
-                  self.send_response(302)
-                  self.send_header('Location', f'http://127.0.0.1:{PORT}/')
-                  self.end_headers()
-              def log_message(self, *args):
-                  pass
-          http.server.HTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
-          EOF
-          python3 redirect_server.py &
-          REDIRECT_SERVER_PID=$!
-          sleep 1
-
           cat > curl_maxredirs_test.c <<'EOF'
           #include <sapi/embed/php_embed.h>
 
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
           int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
               PHP_EMBED_START_BLOCK(argc, argv)
               zend_eval_string(
-                  "$ch = curl_init('http://127.0.0.1:18080/');"
+                  "$ch = curl_init('https://httpbin.org/redirect/999');"
                   "curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);"
                   "curl_setopt($ch, CURLOPT_MAXREDIRS, 999999);"
                   "curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);"
-                  "curl_setopt($ch, CURLOPT_TIMEOUT, 10);"
+                  "curl_setopt($ch, CURLOPT_TIMEOUT, 15);"
                   "curl_exec($ch);"
                   "$errno = curl_errno($ch);"
                   "curl_close($ch);"
@@ -967,65 +984,60 @@ jobs:
             -framework CoreFoundation -framework SystemConfiguration
 
           ./curl_maxredirs_test | tee curl_maxredirs_output.txt
-          kill "$REDIRECT_SERVER_PID" 2>/dev/null || true
           grep -q "^PASS: MAXREDIRS was clamped despite the script requesting 999999$" curl_maxredirs_output.txt || (echo "CURLOPT_MAXREDIRS clamp test failed" && exit 1)
 
       # Proves the response-size cap (iserve_curl_xferinfo(), injected by
       # curl_setopt_ssrf_guard.py into _php_curl_set_default_options())
       # actually aborts an in-progress transfer, not just that the patched
-      # source compiles: starts a real local server streaming a chunked,
-      # unbounded response (no Content-Length for CURLOPT_MAXFILESIZE to
-      # ever catch), then confirms curl_exec() fails with
-      # CURLE_ABORTED_BY_CALLBACK (42) having received nowhere near what
-      # the server would have sent if left running. Also proves a script
-      # cannot defeat the cap by trying to replace/disable it via
+      # source compiles: httpbin.org/stream-bytes/104857600 (a real
+      # external test service -- iserve_curl_open_socket() now denies
+      # every loopback/private address unconditionally regardless of the
+      # outbound-networking toggle, so a local chunked server is no longer
+      # reachable here at all, the same reason the MAXREDIRS test above
+      # moved to httpbin.org too) streams 100MB with no Content-Length
+      # header (genuine undeclared-length streaming, so CURLOPT_MAXFILESIZE
+      # could never catch it -- only the xferinfo-based cap can), then
+      # confirms curl_exec() fails with CURLE_ABORTED_BY_CALLBACK (42)
+      # having received well under the 100MB the server would have sent if
+      # the cap had not fired, and well above the 50MB cap itself (ruling
+      # out the test merely observing the server's own stream ending).
+      # Also proves a script cannot defeat the cap by trying to
+      # replace/disable it via
       # CURLOPT_PROGRESSFUNCTION/CURLOPT_XFERINFOFUNCTION/CURLOPT_NOPROGRESS
       # -- all three are the "silently ignored" options this same patch
       # blocks, so the cap must still fire despite the script's attempt.
-      - name: Verify the response-size cap aborts an unbounded chunked download
+      - name: Verify the response-size cap aborts an unbounded streamed download
         working-directory: php-src
         run: |
-          cat > chunked_server.py <<'EOF'
-          import http.server
-          PORT = 18081
-          class Handler(http.server.BaseHTTPRequestHandler):
-              def do_GET(self):
-                  self.send_response(200)
-                  self.send_header('Content-Type', 'application/octet-stream')
-                  self.send_header('Transfer-Encoding', 'chunked')
-                  self.end_headers()
-                  chunk = b'A' * 65536
-                  header = b'%x\r\n' % len(chunk)
-                  try:
-                      for _ in range(160000):  # ~10GB if never capped
-                          self.wfile.write(header + chunk + b'\r\n')
-                  except Exception:
-                      pass
-              def log_message(self, *args):
-                  pass
-          http.server.HTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
-          EOF
-          python3 chunked_server.py &
-          CHUNKED_SERVER_PID=$!
-          sleep 1
-
           cat > curl_response_cap_test.c <<'EOF'
           #include <sapi/embed/php_embed.h>
 
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
           int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
               PHP_EMBED_START_BLOCK(argc, argv)
               zend_eval_string(
-                  "$ch = curl_init('http://127.0.0.1:18081/');"
+                  "$ch = curl_init('https://httpbin.org/stream-bytes/104857600');"
                   "curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function () { return 0; });"
                   "curl_setopt($ch, CURLOPT_XFERINFOFUNCTION, function () { return 0; });"
                   "curl_setopt($ch, CURLOPT_NOPROGRESS, 1);"
+                  "curl_setopt($ch, CURLOPT_TIMEOUT, 60);"
                   "curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) {"
                   "    global $received; $received = ($received ?? 0) + strlen($data); return strlen($data);"
                   "});"
                   "curl_exec($ch);"
                   "$errno = curl_errno($ch);"
                   "curl_close($ch);"
-                  "echo ($errno === CURLE_ABORTED_BY_CALLBACK && ($received ?? 0) < 200 * 1024 * 1024)"
+                  "echo ($errno === CURLE_ABORTED_BY_CALLBACK"
+                  "        && ($received ?? 0) > 40 * 1024 * 1024"
+                  "        && ($received ?? 0) < 90 * 1024 * 1024)"
                   "    ? 'PASS: response-size cap aborted the transfer despite the override attempt'"
                   "    : 'FAIL: errno=' . $errno . ' received=' . ($received ?? 0);"
                   "echo PHP_EOL;",
@@ -1045,7 +1057,6 @@ jobs:
             -framework CoreFoundation -framework SystemConfiguration
 
           ./curl_response_cap_test | tee curl_response_cap_output.txt
-          kill "$CHUNKED_SERVER_PID" 2>/dev/null || true
           grep -q "^PASS: response-size cap aborted the transfer despite the override attempt$" curl_response_cap_output.txt || (echo "response-size cap test failed" && exit 1)
 
       # Proves the 11 curl_multi_* functions (docs/adr/0010, "Resource
@@ -1065,7 +1076,16 @@ jobs:
           cat > curl_multi_disabled_test.c <<'EOF'
           #include <sapi/embed/php_embed.h>
 
+          // This program uses the stock embed SAPI directly (PHP_EMBED_START_BLOCK),
+          // not iserve_php_bridge_startup() -- so iserve_outbound_toggle.c's own
+          // default (off) is still in effect unless set here explicitly, and any
+          // real connection attempt below would otherwise be refused by
+          // iserve_curl_open_socket() exactly like any other outbound connection
+          // attempt with the toggle left off (docs/adr/0010-php-outbound-networking.md).
+          extern void iserve_outbound_networking_set_enabled(int enabled);
+
           int main(int argc, char **argv) {
+              iserve_outbound_networking_set_enabled(1);
               PHP_EMBED_START_BLOCK(argc, argv)
               zend_eval_string(
                   "$fns = ['curl_multi_init', 'curl_multi_add_handle', 'curl_multi_remove_handle',"
