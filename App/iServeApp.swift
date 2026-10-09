@@ -4,6 +4,11 @@ import SwiftUI
 struct iServeApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var coordinator: ServerCoordinator
+    /// The Options screen's "Appearance" picker writes this same key
+    /// (`AppTheme`, `App/Theme.swift`) — both read the identical
+    /// `UserDefaults`-backed storage, so a change there is reflected here
+    /// without any direct view-to-view wiring.
+    @AppStorage("iServe.appTheme") private var themeRawValue = AppTheme.system.rawValue
 
     init() {
         let folders = FolderRootManager()
@@ -17,6 +22,7 @@ struct iServeApp: App {
             // ServerDashboard is the whole app now, so it's the window's root
             // view directly -- no tab bar, since there's nothing else to switch to.
             ServerDashboard(coordinator: coordinator)
+                .preferredColorScheme((AppTheme(rawValue: themeRawValue) ?? .system).colorScheme)
         }
         .onChange(of: scenePhase) { _, phase in
             // Only `.background` is "truly left the foreground" (ADR-0001:

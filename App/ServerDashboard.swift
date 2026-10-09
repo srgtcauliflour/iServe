@@ -2,6 +2,13 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+/// The app's home screen: the standard, default flow only -- choose a
+/// folder, start serving (read-only, no password, no PHP, until changed),
+/// connect from another device. Everything else (server profile, password,
+/// PHP execution/outbound networking, additional mounted folders, on-device
+/// diagnostics) lives in `OptionsView`, reached through the toolbar's gear
+/// button, so a first-time opener sees a small, focused screen rather than
+/// a form full of settings most sessions never touch.
 struct ServerDashboard: View {
     /// A single "Preview in App" target — the primary endpoint or one
     /// additional mount's own address — for the in-app browser sheet.
@@ -11,31 +18,8 @@ struct ServerDashboard: View {
         var id: URL { url }
     }
 
-    /// A single `.fileImporter` (rather than two separate
-    /// `.fileImporter(isPresented:)` modifiers with their own booleans
-    /// chained on the same view) sidesteps a known SwiftUI/UIKit bug where
-    /// stacking multiple such modifiers on one view makes the picker
-    /// present but its completion handler not reliably fire: "Open"
-    /// appears to do nothing, the sheet never dismisses, no folder gets
-    /// selected.
-    ///
-    /// `isPresented` is its own plain Bool, deliberately never derived
-    /// from `folderPickerTarget` (an earlier version of this code used
-    /// `Binding(get: { folderPickerTarget != nil }, set: { ... })` and
-    /// cleared `folderPickerTarget` from that binding's own `set`): on a
-    /// real device, the system's own dismissal can flip that binding to
-    /// false *before* the completion handler below runs, so the handler
-    /// would read `folderPickerTarget` as already-nil and silently do
-    /// nothing -- no error, no selection, despite the picker otherwise
-    /// working correctly. Keeping the two separate means dismissal can
-    /// never race-clear which button opened it.
-    private enum FolderPickerTarget: Identifiable {
-        case primary
-        case additionalMount
-        var id: Self { self }
-    }
     @State private var isChoosingFolder = false
-    @State private var folderPickerTarget: FolderPickerTarget?
+    @State private var isShowingOptions = false
     @State private var didRestore = false
     @State private var didCopyEndpoint = false
     @State private var previewTarget: PreviewTarget?
@@ -44,10 +28,11 @@ struct ServerDashboard: View {
     @State private var rejectedConnectionCount = 0
     @State private var recentEntries: [RequestLogEntry] = []
     @State private var phpDiagnosticEntries: [PHPDiagnosticEntry] = []
-    // @Bindable, not `let`: the profile picker and password field need a
-    // Binding into coordinator's properties. Plain @Observable property
-    // access (as every other property here already uses) still tracks
-    // changes for re-rendering either way - this only adds the $-projection.
+    // @Bindable, not `let`: the password field (inside OptionsView, which
+    // this view hands the same coordinator down to) needs a Binding into
+    // coordinator's properties. Plain @Observable property access (as most
+    // of this file uses) still tracks changes for re-rendering either way —
+    // this only adds the $-projection.
     @Bindable var coordinator: ServerCoordinator
 
     private static let byteFormatter: ByteCountFormatter = {
@@ -63,16 +48,6 @@ struct ServerDashboard: View {
         }
     }
 
-    private var isBusy: Bool {
-        if case .starting = coordinator.state { return true }
-        return false
-    }
-
-    private var isRunning: Bool {
-        if case .running = coordinator.state { return true }
-        return false
-    }
-
     private var endpoint: String? {
         if case .running(let endpoint) = coordinator.state { return endpoint }
         return nil
@@ -82,34 +57,31 @@ struct ServerDashboard: View {
         endpoint.flatMap(URL.init(string:))
     }
 
-    private var serverStatusText: String {
-        switch coordinator.state {
-        case .noFolder: "No folder selected"
-        case .ready: "Stopped"
-        case .starting: "Starting…"
-        case .running: "Running"
-        case .error(let message): message
-        case .unavailable: "Stopped"
-        }
-    }
-
     var body: some View {
         NavigationStack {
-            List {
-                overviewSection
-                folderSection
-                additionalMountsSection
-                serverSection
-                connectionsSection
-                if isRunning {
-                    alternateAddressesSection
-                    recentRequestsSection
-                    if coordinator.phpExecutionEnabled {
-                        phpDiagnosticsSection
+            ScrollView {
+                VStack(spacing: GlassMetrics.cardSpacing) {
+                    heroCard
+                    folderCard
+                    startStopControl
+                    if coordinator.isRunning {
+                        connectionCard
                     }
                 }
+                .padding(GlassMetrics.cardPadding)
             }
+            .background(DashboardBackground(tint: statusTint))
             .navigationTitle("iServe")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isShowingOptions = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Options")
+                }
+            }
             .onChange(of: endpoint) { _, _ in didCopyEndpoint = false }
             .task {
                 guard !didRestore else { return }
@@ -117,24 +89,26 @@ struct ServerDashboard: View {
                 coordinator.restoreFolder()
                 coordinator.folders.restoreMounts()
             }
-            .task(id: isRunning) {
+            .task(id: coordinator.isRunning) {
                 await pollRequestLog()
             }
             .fileImporter(isPresented: $isChoosingFolder,
                           allowedContentTypes: [.folder],
                           allowsMultipleSelection: false) { result in
-                let target = folderPickerTarget
                 switch result {
                 case .success(let urls):
                     guard let url = urls.first else { return }
-                    switch target {
-                    case .primary: coordinator.selectFolder(url)
-                    case .additionalMount: coordinator.folders.addMount(url)
-                    case nil: break
-                    }
+                    coordinator.selectFolder(url)
                 case .failure(let error):
                     coordinator.folders.reportPickerFailure(error)
                 }
+            }
+            .sheet(isPresented: $isShowingOptions) {
+                OptionsView(
+                    coordinator: coordinator,
+                    recentEntries: recentEntries,
+                    phpDiagnosticEntries: phpDiagnosticEntries
+                )
             }
             .sheet(item: $previewTarget) { target in
                 InAppBrowserSheet(url: target.url, password: coordinator.requiresPassword ? coordinator.password : nil)
@@ -143,7 +117,7 @@ struct ServerDashboard: View {
     }
 
     private func pollRequestLog() async {
-        guard isRunning, let log = coordinator.requestLog else {
+        guard coordinator.isRunning, let log = coordinator.requestLog else {
             requestCount = 0
             bytesTransferred = 0
             rejectedConnectionCount = 0
@@ -163,283 +137,259 @@ struct ServerDashboard: View {
         }
     }
 
-    @ViewBuilder
-    private var overviewSection: some View {
-        Section {
-            Label {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(coordinator.statusTitle)
-                        .font(.headline)
-                    Text("Choose a folder, start serving, then connect from another device.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            } icon: {
-                Image(systemName: "externaldrive.badge.wifi")
-                    .font(.title)
-                    .foregroundStyle(.tint)
-                    .accessibilityHidden(true)
-            }
-            .padding(.vertical, 8)
+    // MARK: - Status
+
+    private var statusTint: Color {
+        switch coordinator.state {
+        case .running: .green
+        case .starting: .yellow
+        case .error, .unavailable: .orange
+        case .noFolder, .ready: .accentColor
         }
     }
 
+    private var statusIcon: String {
+        switch coordinator.state {
+        case .running: "dot.radiowaves.left.and.right"
+        case .starting: "hourglass"
+        case .error, .unavailable: "exclamationmark.triangle.fill"
+        case .noFolder, .ready: "externaldrive.badge.wifi"
+        }
+    }
+
+    private var heroSubtitle: String {
+        switch coordinator.state {
+        case .noFolder:
+            "Choose a folder, start serving, then connect from another device."
+        case .ready:
+            "Ready to start serving \(coordinator.folders.folderName ?? "your folder")."
+        case .starting:
+            "Starting…"
+        case .running:
+            coordinator.requiresPassword
+            ? "\(coordinator.profile.displayName) · Password protected"
+            : coordinator.profile.displayName
+        case .error(let message):
+            message
+        case .unavailable:
+            "Serving stopped because iServe left the foreground."
+        }
+    }
+
+    // MARK: - Cards
+
     @ViewBuilder
-    private var folderSection: some View {
-        Section {
-            Label(coordinator.folders.folderName ?? "No folder selected", systemImage: "folder")
-            Button("Choose Folder", systemImage: "folder.badge.plus") {
-                folderPickerTarget = .primary
-                isChoosingFolder = true
+    private var heroCard: some View {
+        HStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(statusTint.opacity(0.18))
+                    .frame(width: 56, height: 56)
+                Image(systemName: statusIcon)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(statusTint)
+                    .accessibilityHidden(true)
             }
-            .disabled(isBusy || isRunning)
-            if coordinator.folders.hasSavedFolder {
-                Button("Retry Saved Folder", systemImage: "arrow.clockwise") {
-                    coordinator.restoreFolder()
+            VStack(alignment: .leading, spacing: 4) {
+                Text(coordinator.statusTitle)
+                    .font(.title3.bold())
+                Text(heroSubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(GlassMetrics.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(tint: statusTint)
+    }
+
+    @ViewBuilder
+    private var folderCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label {
+                Text(coordinator.folders.folderName ?? "No folder selected")
+                    .font(.headline)
+            } icon: {
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(.tint)
+            }
+            HStack(spacing: 10) {
+                Button("Choose Folder", systemImage: "folder.badge.plus") {
+                    isChoosingFolder = true
                 }
-                .disabled(isBusy || isRunning)
-                Button("Forget Folder", role: .destructive) {
-                    coordinator.forgetFolder()
+                .buttonStyle(.bordered)
+                .disabled(coordinator.isBusy || coordinator.isRunning)
+
+                if coordinator.folders.hasSavedFolder {
+                    Button("Retry", systemImage: "arrow.clockwise") {
+                        coordinator.restoreFolder()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(coordinator.isBusy || coordinator.isRunning)
+
+                    Button("Forget", systemImage: "trash", role: .destructive) {
+                        coordinator.forgetFolder()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(coordinator.isBusy || coordinator.isRunning)
                 }
-                .disabled(isBusy || isRunning)
             }
             if let message = coordinator.folders.errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
                     .foregroundStyle(.orange)
                     .accessibilityLabel("Folder error: \(message)")
             }
-        } header: {
-            Text("Shared folder")
-        } footer: {
-            Text("The selected folder is remembered on this device. You can change or forget it at any time.")
         }
-    }
-
-    /// Additional mounts (v0.3, `docs/adr/0007-multiple-mounted-folders.md`)
-    /// are always read/download only, regardless of the chosen profile —
-    /// the footer says so plainly, since the "Full Access" warning above
-    /// only ever applies to the shared folder.
-    @ViewBuilder
-    private var additionalMountsSection: some View {
-        Section {
-            ForEach(coordinator.folders.additionalMounts) { mount in
-                Label(mount.name, systemImage: "folder.badge.plus")
-                    .swipeActions {
-                        Button("Remove", systemImage: "trash", role: .destructive) {
-                            coordinator.folders.removeMount(named: mount.name)
-                        }
-                        .disabled(isBusy || isRunning)
-                    }
-            }
-            Button("Add Another Folder", systemImage: "plus") {
-                folderPickerTarget = .additionalMount
-                isChoosingFolder = true
-            }
-            .disabled(isBusy || isRunning)
-        } header: {
-            Text("Additional folders")
-        } footer: {
-            Text("Each additional folder is served at its own address, browse/download only — never writable, regardless of the server profile above. Adding or removing one only takes effect the next time the server starts.")
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(GlassMetrics.cardPadding)
+        .glassCard()
     }
 
     @ViewBuilder
-    private var serverSection: some View {
-        Section {
-            Picker("Profile", selection: $coordinator.profile) {
-                ForEach(ServerProfile.selectable) { profile in
-                    Text(profile.displayName).tag(profile)
+    private var startStopControl: some View {
+        if coordinator.isBusy {
+            Button {
+                // No-op: disabled while starting, shown only as feedback.
+            } label: {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .tint(.white)
+                    Text("Starting…")
                 }
             }
-            .disabled(isBusy || isRunning)
-            Text(coordinator.profile.summary)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Toggle("Require Password", isOn: $coordinator.requiresPassword)
-                .disabled(isBusy || isRunning)
-            if coordinator.requiresPassword {
-                SecureField("Password", text: $coordinator.password)
-                    .disabled(isBusy || isRunning)
-                    .textContentType(.password)
+            .buttonStyle(.appGlassProminent(tint: .yellow))
+            .disabled(true)
+        } else if coordinator.isRunning {
+            Button("Stop Server", systemImage: "stop.fill") {
+                coordinator.stop()
             }
-            Toggle("Run PHP Scripts", isOn: $coordinator.phpExecutionEnabled)
-                .disabled(isBusy || isRunning)
-            if coordinator.phpExecutionEnabled {
-                Toggle("Allow Network Access", isOn: $coordinator.outboundNetworkingEnabled)
-                    .disabled(isBusy || isRunning)
+            .buttonStyle(.appGlassProminent(tint: .red))
+        } else {
+            Button("Start Server", systemImage: "play.fill") {
+                coordinator.start()
             }
-            LabeledContent("Status", value: serverStatusText)
-            if isRunning {
-                Button("Stop Server", systemImage: "stop.fill", role: .destructive) {
-                    coordinator.stop()
-                }
-            } else {
-                Button("Start Server", systemImage: "play.fill") {
-                    coordinator.start()
-                }
-                .disabled(!canStart)
-                .accessibilityHint(
-                    canStart
-                    ? "Starts serving the selected folder to your local network."
-                    : "Choose a folder before starting the server."
-                )
-            }
-        } header: {
-            Text("Server")
-        } footer: {
-            Text(serverSectionFooterText)
-        }
-    }
-
-    private var serverSectionFooterText: String {
-        var lines = [
-            coordinator.profile.allowsUploads
-            ? "Keep iServe open while sharing. Anyone who can reach this address can add files to the selected folder."
-            : "Keep iServe open while sharing. Serving stops when the app is no longer active."
-        ]
-        if coordinator.profile.allowsWebDAVWrites {
-            lines.append(
-                "Full Access also lets a connected WebDAV client overwrite, move, or delete files and folders in the selected folder — including replacing existing files without a prompt."
+            .buttonStyle(.appGlassProminent(tint: .green))
+            .disabled(!canStart)
+            .accessibilityHint(
+                canStart
+                ? "Starts serving the selected folder to your local network."
+                : "Choose a folder before starting the server."
             )
         }
-        if coordinator.requiresPassword {
-            lines.append(
-                "A password prompt will appear before anyone can connect. iServe has no encryption, so only rely on this on networks you trust — not open/public Wi-Fi."
-            )
-        }
-        if coordinator.phpExecutionEnabled {
-            lines.append(
-                "PHP files (including index.php) will run instead of downloading as plain text. Scripts can only read and write inside the selected folder, can't run other programs, and are stopped if they run too long."
-            )
-            if coordinator.outboundNetworkingEnabled {
-                lines.append(
-                    "Scripts can also make their own web requests (for a remote API, RSS feed, or asset) — never to this device, your home network, or other devices on it, only to the open internet."
-                )
-            } else {
-                lines.append("Scripts can't reach the network.")
-            }
-        }
-        return lines.joined(separator: " ")
     }
 
     @ViewBuilder
-    private var connectionsSection: some View {
-        Section("Connections") {
+    private var connectionCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Connected", systemImage: "checkmark.circle.fill")
+                .font(.headline)
+                .foregroundStyle(.green)
+
             if let endpoint {
-                Label(endpoint, systemImage: "network")
+                Text(endpoint)
+                    .font(.system(.body, design: .monospaced))
                     .textSelection(.enabled)
-                Button(didCopyEndpoint ? "Copied" : "Copy Address", systemImage: "doc.on.doc") {
-                    UIPasteboard.general.string = endpoint
-                    didCopyEndpoint = true
+
+                HStack(spacing: 10) {
+                    Button(didCopyEndpoint ? "Copied" : "Copy", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = endpoint
+                        didCopyEndpoint = true
+                    }
+                    .buttonStyle(.bordered)
+                    Button("Preview", systemImage: "safari") {
+                        guard let endpointURL else { return }
+                        previewTarget = PreviewTarget(url: endpointURL)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                Button("Preview in App", systemImage: "safari") {
-                    guard let endpointURL else { return }
-                    previewTarget = PreviewTarget(url: endpointURL)
-                }
+
                 if case .published(let name) = coordinator.bonjourState {
                     Label(name, systemImage: "dot.radiowaves.left.and.right")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("Also discoverable on the local network as \(name)")
                 }
+
                 DisclosureGroup("Show QR Code") {
                     QRCodeView(string: endpoint)
-                        .frame(maxWidth: 220)
-                        .padding(.vertical, 8)
+                        .frame(maxWidth: 200)
                         .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
                 }
-                Text("Open this address from another device on the same network.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                LabeledContent("Requests", value: "\(requestCount)")
-                LabeledContent("Transferred", value: Self.byteFormatter.string(fromByteCount: Int64(bytesTransferred)))
+                .font(.subheadline)
+
+                Divider()
+
+                HStack(spacing: 24) {
+                    statPill(title: "Requests", value: "\(requestCount)")
+                    statPill(title: "Transferred", value: Self.byteFormatter.string(fromByteCount: Int64(bytesTransferred)))
+                }
+
                 if rejectedConnectionCount > 0 {
                     Label("\(rejectedConnectionCount) connection(s) turned away by server limits", systemImage: "exclamationmark.shield")
-                        .foregroundStyle(.orange)
                         .font(.footnote)
+                        .foregroundStyle(.orange)
                         .accessibilityLabel("\(rejectedConnectionCount) connections turned away by server limits this session")
                 }
+
                 ForEach(coordinator.folders.additionalMounts) { mount in
                     let mountEndpoint = endpoint + "\(mount.name)/"
                     VStack(alignment: .leading, spacing: 4) {
                         Label(mountEndpoint, systemImage: "folder.badge.plus")
+                            .font(.footnote)
                             .textSelection(.enabled)
                             .accessibilityLabel("\(mount.name): \(mountEndpoint)")
                         if let mountURL = URL(string: mountEndpoint) {
-                            Button("Preview in App", systemImage: "safari") {
+                            Button("Preview", systemImage: "safari") {
                                 previewTarget = PreviewTarget(url: mountURL)
                             }
                             .font(.footnote)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
                     }
                 }
-            } else {
-                Text("No listening endpoint")
-                    .foregroundStyle(.secondary)
-                Text("Local addresses will appear here when the server is ready. Public connectivity depends on your network.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(GlassMetrics.cardPadding)
+        .glassCard(tint: .green)
     }
 
-    @ViewBuilder
-    private var alternateAddressesSection: some View {
-        let entries = coordinator.alternateEndpoints
-        if !entries.isEmpty {
-            Section {
-                ForEach(entries) { entry in
-                    Label(entry.copyValue, systemImage: entry.address.family == .ipv4 ? "wifi" : "wifi.circle")
-                        .textSelection(.enabled)
-                        .accessibilityLabel("\(entry.address.interfaceName): \(entry.copyValue)")
-                }
-            } header: {
-                Text("Other Addresses")
-            } footer: {
-                Text("Other network interfaces this device has. Use one of these if the main address above isn't reachable.")
-            }
+    private func statPill(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.headline.monospacedDigit())
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-    }
-
-    @ViewBuilder
-    private var recentRequestsSection: some View {
-        Section("Recent requests") {
-            if recentEntries.isEmpty {
-                Text("No requests yet")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(recentEntries.prefix(10)) { entry in
-                    RequestLogEntryRow(entry: entry)
-                }
-            }
-        }
-    }
-
-    /// Only shown while `phpExecutionEnabled` is on -- the ROADMAP's "PHP
-    /// diagnostics console" deliverable: `display_errors` is always off
-    /// (ADR-0009), so a script's warnings/notices/uncaught-exception
-    /// messages are otherwise invisible to whoever is running the server.
-    /// Unlike `recentRequestsSection`, entries are unsanitized (may include
-    /// a local file path) -- fine here since this never leaves the device.
-    @ViewBuilder
-    private var phpDiagnosticsSection: some View {
-        Section {
-            if phpDiagnosticEntries.isEmpty {
-                Text("No PHP diagnostics yet")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(phpDiagnosticEntries.prefix(10)) { entry in
-                    PHPDiagnosticEntryRow(entry: entry)
-                }
-            }
-        } header: {
-            Text("PHP Diagnostics")
-        } footer: {
-            Text("Warnings and errors from your PHP scripts, kept on this device only. Never shown to anyone connecting to the server.")
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-private struct RequestLogEntryRow: View {
+/// The home screen's soft background gradient -- present so the glass
+/// cards above it have something with color/depth to actually show
+/// translucency against, rather than a flat system background. Tints
+/// toward the current status color (green while running, etc.) at very
+/// low opacity, subtle rather than loud.
+private struct DashboardBackground: View {
+    var tint: Color
+
+    var body: some View {
+        LinearGradient(
+            colors: [tint.opacity(0.16), Color(.systemGroupedBackground)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.3), value: tint)
+    }
+}
+
+struct RequestLogEntryRow: View {
     let entry: RequestLogEntry
 
     var body: some View {
@@ -461,7 +411,7 @@ private struct RequestLogEntryRow: View {
     }
 }
 
-private struct PHPDiagnosticEntryRow: View {
+struct PHPDiagnosticEntryRow: View {
     let entry: PHPDiagnosticEntry
 
     var body: some View {

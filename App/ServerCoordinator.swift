@@ -136,6 +136,21 @@ final class ServerCoordinator {
         }
     }
 
+    /// Shared by every view that needs to disable a control while a start()
+    /// is in flight -- `ServerDashboard` (the home screen) and `OptionsView`
+    /// (profile/password/PHP toggles, additional-folder management) both
+    /// need the identical check, so it lives here once rather than as two
+    /// separately-maintained copies of the same `switch`.
+    var isBusy: Bool {
+        if case .starting = state { return true }
+        return false
+    }
+
+    var isRunning: Bool {
+        if case .running = state { return true }
+        return false
+    }
+
     var statusTitle: String {
         switch state {
         case .noFolder: "No folder selected"
